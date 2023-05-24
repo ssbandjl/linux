@@ -17,8 +17,11 @@ Kconfig 文件的作用是：
 module_init(nvme_core_init) -> static int __init nvme_core_init(void)
 class_create("nvme")
 
+drivers/nvme/target/rdma.c
 static int __init nvmet_rdma_init(void)
 ib_register_client -> drivers/infiniband/core/device.c -> int ib_register_client -> IB 驱动程序的上层用户可以使用 ib_register_client() 来注册 IB 设备添加和删除的回调。 添加 IB 设备时，将调用每个已注册客户端的 add 方法（按照客户端注册的顺序），而当删除设备时，将调用每个客户端的 remove 方法（按照客户端注册的相反顺序）。 另外，调用ib_register_client()时，客户端会收到所有已经注册的设备的add回调
-nvmet_register_transport
+nvmet_register_transport -> int nvmet_register_transport
+	down_write
+	up_write
 
 EXPORT_SYMBOL(ib_register_client) 导出符号表
