@@ -14,7 +14,9 @@ Kconfig 文件的作用是：
 1.控制make menuconfig时， 出现的配置选项；
 2.根据用户配置界面的选择，将配置结果保存在.config 配置文件（该文件将提供给Makefile使用，用以决定要编译的内核组件以及如何编译）
 
+drivers/nvme/host/core.c
 module_init(nvme_core_init) -> static int __init nvme_core_init(void)
+alloc_chrdev_region nvme
 class_create("nvme")
 
 drivers/nvme/target/rdma.c
