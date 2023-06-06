@@ -1,0 +1,98 @@
+nvme
+static struct blk_mq_ops nvme_mq_ops -> struct blk_mq_ops 
+static const struct blk_mq_ops bsg_mq_ops = {
+	.queue_rq		= bsg_queue_rq,
+	.init_request		= bsg_init_rq,
+	.exit_request		= bsg_exit_rq,
+	.complete		= bsg_complete,
+	.timeout		= bsg_timeout,
+};
+
+驱动目录: drivers/nvme/Makefile
+参考: https://mp.weixin.qq.com/s/GKVIY_NOXDfUCOho4zBMzw
+Kconfig 文件的作用是：
+1.控制make menuconfig时， 出现的配置选项；
+2.根据用户配置界面的选择，将配置结果保存在.config 配置文件（该文件将提供给Makefile使用，用以决定要编译的内核组件以及如何编译）
+
+drivers/nvme/host/core.c
+module_init(nvme_core_init) -> static int __init nvme_core_init(void)
+alloc_chrdev_region nvme
+class_create("nvme")
+
+drivers/nvme/target/rdma.c
+static int __init nvmet_rdma_init(void)
+ib_register_client -> drivers/infiniband/core/device.c -> int ib_register_client -> IB 驱动程序的上层用户可以使用 ib_register_client() 来注册 IB 设备添加和删除的回调。 添加 IB 设备时，将调用每个已注册客户端的 add 方法（按照客户端注册的顺序），而当删除设备时，将调用每个客户端的 remove 方法（按照客户端注册的相反顺序）。 另外，调用ib_register_client()时，客户端会收到所有已经注册的设备的add回调
+nvmet_register_transport -> int nvmet_register_transport
+	down_write
+	up_write
+
+EXPORT_SYMBOL(ib_register_client) 导出符号表
+
+multi_path:
+drivers/md/md.c
+drivers/md/md-multipath.c
+
+
+
+
+dm-mpath.c -> static int fail_path #路径故障
+	dm_path_uevent(DM_UEVENT_PATH_FAILED
+	schedule_work
+static int __multipath_map_bio
+
+insert_work(pwq, work, worklist, work_flags)
+
+
+__map_bio
+
+io_path, io路径
+static const struct block_device_operations dm_blk_dops = {
+	.submit_bio = dm_submit_bio,  -> static void dm_submit_bio
+
+dm_split_and_process_bio
+	__split_and_process_bio 选择正确的策略来处理非flush bio
+		dm_table_find_target
+		__map_bio
+			ti->type->map(ti, clone) -> .map = multipath_map_bio -> static int __multipath_map_bio -> bio_set_dev(bio, pgpath->path.dev->bdev) -> pgpath->pg->ps.type->start_io
+	bio_trim
+	trace_block_split
+	bio_inc_remaining
+	submit_bio_noacct -> void submit_bio_noacct(struct bio *bio) ->  为 I/O 重新提交 bio 到块设备层 bio 描述内存和设备上的位置。 这是 submit_bio() 的一个版本，只能用于通过堆叠块驱动程序重新提交给较低级别驱动程序的 I/O。 块层的所有文件系统和其他上层用户应该使用 submit_bio() 代替, bio 在节流之前已经被检查过，所以在从节流队列中调度它之前不需要再次检查它。 为此目的添加 submit_bio_noacct_nocheck() 的助手
+		__submit_bio_noacct_mq
+		submit_bio_noacct_nocheck -> submit_bio() 确实可以通过递归调用 submit_bio_noacct 添加更多的 bios
+			__submit_bio
+				blk_mq_submit_bio -> void blk_mq_submit_bio -> 向块设备提交bio, 会执行调度,合并等操作
+					blk_mq_bio_to_request
+					blk_queue_bounce -> 弹跳
+					__bio_split_to_limits
+					blk_mq_bio_to_request -> request
+					blk_mq_insert_request
+						blk_mq_request_bypass_insert
+					blk_mq_run_hw_queue
+
+blk_mq_plug_issue_direct
+blk_add_rq_to_plug
+
+blk_mq_requeue_request
+	blk_mq_sched_requeue_request
+		e->type->ops.requeue_request(rq) -> requeue_request = 
+
+blk_mq_submit_bio
+blk_mq_run_hw_queue
+__blk_mq_sched_dispatch_requests
+
+static const struct blk_mq_ops nvme_rdma_mq_ops = {
+	.queue_rq	= nvme_rdma_queue_rq,
+	.complete	= nvme_rdma_complete_rq,
+	.init_request	= nvme_rdma_init_request,
+	.exit_request	= nvme_rdma_exit_request,
+	.init_hctx	= nvme_rdma_init_hctx,
+	.timeout	= nvme_rdma_timeout,
+	.map_queues	= nvme_rdma_map_queues,
+	.poll		= nvme_rdma_poll,
+};
+nvme_rdma_queue_rq
+drivers/nvme/host/rdma.c -> static int nvme_rdma_post_send
+	ib_post_send
+
+
