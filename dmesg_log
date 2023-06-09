@@ -1,0 +1,45 @@
+2840 [28315.374582] scsi 14:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+2841 [28315.375519] scsi 14:0:0:0: Attached scsi generic sg1 type 12
+2842 [28323.709610] scsi host15: iSCSI Initiator over TCP/IP
+2843 [28323.729564] scsi 15:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+2844 [28323.730521] scsi 15:0:0:0: Attached scsi generic sg2 type 12
+2845 [28908.998891] scsi host14: iSCSI Initiator over TCP/IP
+2846 [28909.018440] scsi 14:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+2847 [28909.019478] scsi 14:0:0:0: Attached scsi generic sg1 type 12
+2848 [28915.536818] scsi host15: iSCSI Initiator over TCP/IP
+2849 [28915.557001] scsi 15:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+2850 [28915.557919] scsi 15:0:0:0: Attached scsi generic sg2 type 12
+2851 [29403.708600] scsi host14: iSCSI Initiator over TCP/IP
+2852 [29403.724985] scsi 14:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+2853 [29403.726007] scsi 14:0:0:0: Attached scsi generic sg1 type 12
+2854 [29415.103965] sysctl (683680): drop_caches: 3
+2855 [29680.888405] scsi host14: iSCSI Initiator over TCP/IP
+2856 [29680.909005] scsi 14:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+2857 [29680.910078] scsi 14:0:0:0: Attached scsi generic sg1 type 12
+2858 [29680.910379] scsi 14:0:0:0: Power-on or device reset occurred
+2859 [29680.911178] scsi 14:0:0:1: Direct-Access     IET      VIRTUAL-DISK     0001 PQ: 0 ANSI: 5
+2860 [29680.913732] sd 14:0:0:1: [sdb] 209715200 512-byte logical blocks: (107 GB/100 GiB)
+2861 [29680.913945] sd 14:0:0:1: [sdb] Write Protect is off
+2862 [29680.913946] sd 14:0:0:1: [sdb] Mode Sense: 69 00 10 08
+2863 [29680.914455] sd 14:0:0:1: [sdb] Write cache: disabled, read cache: enabled, supports DPO and FUA
+2864 [29680.939121] sd 14:0:0:1: [sdb] Attached SCSI disk
+2865 [29680.939203] sd 14:0:0:1: Attached scsi generic sg2 type 0
+2866 [29759.135131] scsi host15: iSCSI Initiator over TCP/IP
+2867 [29759.156619] scsi 15:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+2868 [29759.157545] scsi 15:0:0:0: Attached scsi generic sg3 type 12
+2869 [29759.157782] scsi 15:0:0:0: Power-on or device reset occurred
+2870 [29759.158489] scsi 15:0:0:1: Direct-Access     IET      VIRTUAL-DISK     0001 PQ: 0 ANSI: 5
+2871 [29759.161052] sd 15:0:0:1: [sdc] 209715200 512-byte logical blocks: (107 GB/100 GiB)
+2872 [29759.161304] sd 15:0:0:1: [sdc] Write Protect is off
+2873 [29759.161305] sd 15:0:0:1: [sdc] Mode Sense: 69 00 10 08
+2874 [29759.161788] sd 15:0:0:1: [sdc] Write cache: disabled, read cache: enabled, supports DPO and FUA
+2875 [29759.193513] sd 15:0:0:1: [sdc] Attached SCSI disk
+2876 [29759.193604] sd 15:0:0:1: Attached scsi generic sg4 type 0
+
+2877 [29759.238769] device-mapper: multipath service-time: version 0.3.0 loaded
+2878 [30418.496673]  connection9:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4325075259, last ping 4325080320, now 4325085696
+2879 [30418.501470]  connection9:0: detected conn error (1022)
+2880 [30423.616696]  session9: session recovery timed out after 5 secs
+2881 [30423.688673] device-mapper: multipath: 253:3: Failing path 8:16.
+2882 [30458.693772] sd 14:0:0:1: Power-on or device reset occurred
+2883 [30459.693704] device-mapper: multipath: 253:3: Reinstating path 8:16.
