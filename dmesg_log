@@ -43,3 +43,48 @@
 2881 [30423.688673] device-mapper: multipath: 253:3: Failing path 8:16.
 2882 [30458.693772] sd 14:0:0:1: Power-on or device reset occurred
 2883 [30459.693704] device-mapper: multipath: 253:3: Reinstating path 8:16.
+
+
+
+[11473.922967] Process accounting resumed
+[11969.007237] scsi host15: iSCSI Initiator over TCP/IP
+[11969.030970] scsi 15:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+[11969.032210] scsi 15:0:0:0: Attached scsi generic sg3 type 12
+[11969.032404] scsi 15:0:0:0: Power-on or device reset occurred
+[11969.032997] scsi 15:0:0:1: Direct-Access     IET      VIRTUAL-DISK     0001 PQ: 0 ANSI: 5
+[11969.035474] sd 15:0:0:1: [sdc] 209715200 512-byte logical blocks: (107 GB/100 GiB)
+[11969.035697] sd 15:0:0:1: [sdc] Write Protect is off
+[11969.035698] sd 15:0:0:1: [sdc] Mode Sense: 69 00 10 08
+[11969.036095] sd 15:0:0:1: [sdc] Write cache: disabled, read cache: enabled, supports DPO and FUA
+[11969.066361] sd 15:0:0:1: [sdc] Attached SCSI disk
+[11969.066454] sd 15:0:0:1: Attached scsi generic sg4 type 0
+
+
+[12009.027180]  connection3:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4306666059, last ping 4306671104, now 4306676225
+[12009.027233]  connection3:0: detected conn error (1022)
+[12014.146201]  session3: session recovery timed out after 5 secs
+[12014.154199] sd 14:0:0:1: rejecting I/O to offline device
+[12014.154273] blk_update_request: I/O error, dev sdb, sector 0 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+[12014.533276] device-mapper: multipath: 253:3: Failing path 8:16.
+[12069.538535] sd 14:0:0:1: Power-on or device reset occurred
+[12070.538492] device-mapper: multipath: 253:3: Reinstating path 8:16.
+
+
+ip set link xxx down (close 1 path) -> 
+[12291.650194]  connection3:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4306948309, last ping 4306953344, now 4306958848
+[12291.650313]  connection3:0: detected conn error (1022)
+[12296.770199]  session3: session recovery timed out after 5 secs
+[12297.554572] device-mapper: multipath: 253:3: Failing path 8:16.
+
+
+[root@node1 linux]# bpftrace -e 'kprobe:fail_path { printf("bt:%s\n", kstack); }'
+Attaching 1 probe...
+bt:
+        fail_path+1
+        multipath_message+342
+        target_message+627
+        ctl_ioctl+431
+        dm_ctl_ioctl+10
+        __x64_sys_ioctl+132
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68

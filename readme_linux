@@ -1,6 +1,10 @@
+https://docs.kernel.org/driver-api/scsi.html
 https://github.com/ssbandjl/linux.git
 bio下发流程: https://blog.csdn.net/flyingnosky/article/details/121362813
 io路径: https://zhuanlan.zhihu.com/p/545906763
+用户态与内核态通信netlink: https://gist.github.com/lflish/15e85da8bb9200794255439d0563b195
+
+dmesg -w
 
 git tag -d v5.10
 
@@ -286,7 +290,7 @@ ko:
 drivers/scsi/sd.h
 include/scsi/scsi_host.h
 struct scsi_host_template, Let it rip 分叉, 
-drivers/scsi/scsi.c -> init -> static int __init init_scsi
+drivers/scsi/scsi.c -> init -> static int __init init_scsi -> 驱动加载
 	scsi_init_devinfo
 	scsi_init_hosts
 	scsi_sysfs_register
@@ -303,10 +307,13 @@ static struct pci_driver isci_pci_driver = {
 isci_pci_probe
 isci_host_alloc
 scsi_host_alloc -> struct Scsi_Host *scsi_host_alloc
-	scsi_error_handler -> int scsi_error_handler
+	scsi_error_handler -> int scsi_error_handler -> 错误恢复
 		scsi_restart_operations(shost) -> static void scsi_restart_operations
-			
 
+int iscsi_host_add -> 模块加载
+	scsi_add_host -> scsi_add_host_with_dma 
+
+scsi_remove_host -> 模块卸载
 
 Linux打印内核函数调用栈 dump_stack, krpobe, systemtap, ftrace, qemu等等, bpftrace, perf调性能
 
@@ -344,3 +351,102 @@ bpftrace -e 'kprobe:do_sys_open { printf("opening: %s\n", str(arg1)); }'
 bpftrace -e 'kprobe:ip_output { @[kstack] = count(); }'
 
 bpftrace -e 'kprobe:scsi_error_handler { printf("bt:%s\n", kstack); }'
+
+动态跟踪事件: bpftrace -e 'kprobe:scsi_host_set_state { printf("bt:%s\n", kstack); }'
+bt:
+        scsi_host_set_state+1
+        scsi_remove_host+155
+        iscsi_host_remove+120
+        iscsi_sw_tcp_session_destroy+85 -> .destroy_session	= iscsi_sw_tcp_session_destroy
+        iscsi_if_recv_msg+3382 -> ISCSI_UEVENT_DESTROY_SESSION
+        iscsi_if_rx+202
+        netlink_unicast+421
+        netlink_sendmsg+539
+        sock_sendmsg+91
+        ____sys_sendmsg+451
+        ___sys_sendmsg+124
+        __sys_sendmsg+87
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+				
+断开会话:
+iscsiadm -m node --logoutall=all
+ISCSI_UEVENT_DESTROY_SESSION
+transport->destroy_session(session) -> iscsi_sw_tcp_session_destroy
+	if (scsi_host_set_state(shost, SHOST_CANCEL))
+
+rfc:
+7. iSCSI Error Handling and Recovery ..............................92
+bpftrace -e 't:syscalls:sys_enter_execve { printf("%s called %s\n", comm, str(args->filename)); }'
+
+查看所有事件: bpftrace -l|grep scsi
+
+scsi_scan_host -> void scsi_scan_host
+
+sd_spinup_disk
+	scsi_execute_cmd TEST_UNIT_READY START_UNIT
+
+scsi_execute_req 
+blk_execute_rq -> blk_status_t blk_execute_rq -> 底层调用高层(scci -> blk)
+
+
+错误恢复:
+● int (* eh_abort_handler) (struct scsi_cmnd *);
+● int (* eh_device_reset_handler) (struct scsi_cmnd *);
+● int (* eh_target_reset_handler) (struct scsi_cmnd *);
+● int (* eh_bus_reset_handler) (struct scsi_cmnd *);
+● int (* eh_host_reset_handler) (struct scsi_cmnd *);
+
+scsi_eh_scmd_add
+scsi_eh_abort_cmds
+scsi_eh_flush_done_q
+
+__blk_run_queue
+scsi_send_eh_cmnd
+
+查看会话: iscsiadm --mode session
+连接: iscsiadm -m node -T iqn.2018-01.com.h3c.onestor:622a4b9193bb4ee68cdb6cae6b76cc74 -p 172.16.156.3:3260 -l
+bt:
+        scsi_host_set_state+1
+        scsi_add_host_with_dma.cold.9+294
+        iscsi_sw_tcp_session_create+130
+        iscsi_if_create_session+48 -> iscsi_if_create_session(struct iscsi_internal *priv  -> ISCSI_UEVENT_CREATE_SESSION
+        iscsi_if_recv_msg+1109 -> iscsi_if_recv_msg(struct sk_buff *skb
+        iscsi_if_rx+202 -> .input	= iscsi_if_rx
+        netlink_unicast+421 -> int netlink_unicast
+        netlink_sendmsg+539
+        sock_sendmsg+91
+        ____sys_sendmsg+451
+        ___sys_sendmsg+124
+        __sys_sendmsg+87
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+
+
+netlink_kernel_create(&init_net, NETLINK_ISCSI, &cfg) -> netlink_kernel_create(struct net *net, int unit, struct netlink_kernel_cfg *cfg) ->input：为内核模块定义的netlink消息处理函数，当有消 息到达这个netlink socket时，该input函数指针就会被引用，且只有此函数返回时，调用者的sendmsg才能返回
+	nlk_sk(sk)->netlink_rcv = cfg->input -> nlk->netlink_rcv(skb) <- static int netlink_unicast_kernel
+
+
+netlink_unicast
+	netlink_unicast_kernel
+
+
+Attaching 1 probe...
+bt:
+        fail_path+1
+        multipath_message+342 -> .message = multipath_message
+        target_message+627
+        ctl_ioctl+431
+        dm_ctl_ioctl+10
+        __x64_sys_ioctl+132
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+
+int dm_register_target(struct target_type *tt)
+
+static ioctl_fn lookup_ioctl
+{DM_TARGET_MSG_CMD, 0, target_message} -> static int target_message
+	ti->type->message(ti, argc, argv, result, maxlen) -> static int multipath_message
+		action = fail_path;
+		action_dev(m, dev, action) -> static int action_dev
+			action(pgpath)
