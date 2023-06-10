@@ -450,3 +450,13 @@ static ioctl_fn lookup_ioctl
 		action = fail_path;
 		action_dev(m, dev, action) -> static int action_dev
 			action(pgpath)
+
+
+Documentation/kbuild/modules.rst
+
+cp /lib/modules/`uname -r`/build/Makefile ./Makefile_current
+
+CONFIG_PREEMPT_BUILD=y
+此选项通过使所有内核代码（不在关键部分中执行）可抢占来减少内核的延迟。 这允许通过允许低优先级进程被非自愿地抢占来对交互事件做出反应，即使它在内核模式下执行系统调用，否则不会到达自然抢占点。 这允许应用程序即使在系统处于负载下时也能更“流畅”地运行，但代价是吞吐量略低，内核代码的运行时开销也很小。
+如果您正在为延迟要求在毫秒范围内的桌面或嵌入式系统构建内核，请选择此选项
+
