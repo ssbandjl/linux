@@ -3,12 +3,6 @@ https://github.com/ssbandjl/linux.git
 bio下发流程: https://blog.csdn.net/flyingnosky/article/details/121362813
 io路径: https://zhuanlan.zhihu.com/p/545906763
 用户态与内核态通信netlink: https://gist.github.com/lflish/15e85da8bb9200794255439d0563b195
-实现rfc3720: https://github.com/ssbandjl/linux/commit/39e84790d3b65a4af1ea1fb0d8f06c3ad75304b3
-管理内核模块,红帽: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/managing_monitoring_and_updating_the_kernel/managing-kernel-modules_managing-monitoring-and-updating-the-kernel
-存储技术原理: file:///D:/xb/project/c/%E5%AD%98%E5%82%A8%E6%8A%80%E6%9C%AF%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90_%E5%9F%BA%E4%BA%8ELinux%202.6%E5%86%85%E6%A0%B8%E6%BA%90%E4%BB%A3%E7%A0%81.pdf
-
-
-
 
 dmesg -w
 
@@ -296,21 +290,11 @@ ko:
 drivers/scsi/sd.h
 include/scsi/scsi_host.h
 struct scsi_host_template, Let it rip 分叉, 
-drivers/scsi/scsi.c -> subsys_initcall(init_scsi) -> init -> static int __init init_scsi -> 驱动加载
-	scsi_init_procfs -> int __init scsi_init_procfs -> proc_mkdir("scsi", NULL) -> struct proc_dir_entry *proc_mkdir -> /proc/scsi -> device_info  scsi  sg -> 创建proc目录或文件: https://www.cnblogs.com/lialong1st/p/8317143.html
-		proc_create("scsi/scsi", 0, NULL, &scsi_scsi_proc_ops) -> static const struct proc_ops scsi_scsi_proc_ops -> struct proc_ops {
-	scsi_init_devinfo 动态设备信息列表 -> int __init scsi_init_devinfo -> SCSI_DEVINFO_GLOBAL = 0 -> 增强多个表的设备信息匹配 当前的 scsi_devinfo.c 匹配例程对全局黑名单使用单个表。 但是，我们也需要将特定传输列入黑名单（特别是一些使用 SPI 的磁带驱动器，它们对高速协议的响应不佳）。 不是为每个需要它的传输类开发单独的黑名单匹配，而是增强当前的列表匹配以允许多个列表
-		scsi_dev_info_add_list -> int scsi_dev_info_add_list -> scsi_devinfo_lookup_by_key(key) -> static LIST_HEAD(scsi_dev_info_list);
-			devinfo_table = kmalloc(sizeof(*devinfo_table), GFP_KERNEL) -> GFP_KERNEL - 允许后台和直接回收，并使用默认的页面分配器行为。这意味着廉价的分配请求基本上是不会失败的，但不能保证这种行为, get_free_page -> 
-			list_add_tail(&devinfo_table->node, &scsi_dev_info_list) -> 初始化,并加链表
-		scsi_dev_info_list_add_str
-		scsi_dev_info_list_add
-		proc_create("scsi/device_info"
-	scsi_init_hosts -> /sys/class/iscsi_host
+drivers/scsi/scsi.c -> init -> static int __init init_scsi -> 驱动加载
+	scsi_init_devinfo
+	scsi_init_hosts
 	scsi_sysfs_register
 	scsi_netlink_init
-
-
 
 
 static struct pci_driver isci_pci_driver = {
@@ -323,9 +307,11 @@ static struct pci_driver isci_pci_driver = {
 isci_pci_probe
 isci_host_alloc
 scsi_host_alloc -> struct Scsi_Host *scsi_host_alloc
-	scsi_error_handler -> int scsi_error_handler -> 错误恢复
+	shost->ehandler = kthread_run(scsi_error_handler -> scsi_error_handler -> int scsi_error_handler -> 错误恢复
 		scsi_restart_operations(shost) -> static void scsi_restart_operations
-			
+
+int iscsi_host_add -> 模块加载
+	scsi_add_host -> scsi_add_host_with_dma 
 
 scsi_remove_host -> 模块卸载
 
@@ -351,6 +337,7 @@ Block I/O by
 
 lsmod|grep sd_mod
 modinfo sd_mod
+modinfo drivers/scsi/sd_mod.ko
 make clean; make; rmmod sd_mod.ko; insmod sd_mod.ko
 
 bpftrace -l | more
@@ -373,7 +360,7 @@ bt:
         iscsi_host_remove+120
         iscsi_sw_tcp_session_destroy+85 -> .destroy_session	= iscsi_sw_tcp_session_destroy
         iscsi_if_recv_msg+3382 -> ISCSI_UEVENT_DESTROY_SESSION
-        iscsi_if_rx+202  调用 netlink_unicast 是将消息发送到内核 netlink 套接字的唯一路径。 但是，不幸的是，它也用于向用户发送数据
+        iscsi_if_rx+202
         netlink_unicast+421
         netlink_sendmsg+539
         sock_sendmsg+91
@@ -474,61 +461,192 @@ CONFIG_PREEMPT_BUILD=y
 此选项通过使所有内核代码（不在关键部分中执行）可抢占来减少内核的延迟。 这允许通过允许低优先级进程被非自愿地抢占来对交互事件做出反应，即使它在内核模式下执行系统调用，否则不会到达自然抢占点。 这允许应用程序即使在系统处于负载下时也能更“流畅”地运行，但代价是吞吐量略低，内核代码的运行时开销也很小。
 如果您正在为延迟要求在毫秒范围内的桌面或嵌入式系统构建内核，请选择此选项
 
+编译指定模块: 
+cd drivers/scsi/
+make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
 
-动态跟踪事件: bpftrace -e 'kprobe:scsi_host_set_state { printf("bt:%s\n", kstack); }'
+.config -> CONFIG_SYSTEM_TRUSTED_KEYS
+make menuconfig
+
+include/config/kernel.release
+include/generated/utsrelease.h
+include/linux/vermagic.h
+
+查看压缩ko:
+cd /lib/modules/5.10.38-21.hl10.el7.x86_64/kernel/drivers/scsi
+xz -l sd_mod.ko.xz
+
+make modules_install
+make install
+grub2-set-default 0
+
+make oldconfig && make prepare
+
+include/generated/autoconf.h is generated in the make prepare step. If you are trying to build a kernel module, you will also need the make scripts step:
+gunzip < /proc/config.gz > .config
+make oldconfig
+make prepare
+make scripts
+
+ip set link xxx down (close 1 path) -> iscsi_check_transport_timeouts
+[12291.650194]  connection3:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4306948309, last ping 4306953344, now 4306958848
+[12291.650313]  connection3:0: detected conn error (1022) <- void iscsi_conn_error_event
+[12296.770199]  session3: session recovery timed out after 5 secs
+[12297.554572] device-mapper: multipath: 253:3: Failing path 8:16.
+
+
+[root@node1 linux]# bpftrace -e 'kprobe:fail_path { printf("bt:%s\n", kstack); }'
+Attaching 1 probe...
 bt:
-        scsi_host_set_state+1
-        scsi_remove_host+155
-        iscsi_host_remove+120
-        iscsi_sw_tcp_session_destroy+85 -> .destroy_session	= iscsi_sw_tcp_session_destroy
-        iscsi_if_recv_msg+3382 -> ISCSI_UEVENT_DESTROY_SESSION
-        iscsi_if_rx+202
-        netlink_unicast+421
-        netlink_sendmsg+539
-        sock_sendmsg+91
-        ____sys_sendmsg+451
-        ___sys_sendmsg+124
-        __sys_sendmsg+87
+        fail_path+1
+        multipath_message+342
+        target_message+627
+        ctl_ioctl+431
+        dm_ctl_ioctl+10
+        __x64_sys_ioctl+132
         do_syscall_64+51
         entry_SYSCALL_64_after_hwframe+68
-				
-断开会话:
-iscsiadm -m node --logoutall=all
-ISCSI_UEVENT_DESTROY_SESSION
-transport->destroy_session(session) -> iscsi_sw_tcp_session_destroy
-
-rfc:
-7. iSCSI Error Handling and Recovery ..............................92
-bpftrace -e 't:syscalls:sys_enter_execve { printf("%s called %s\n", comm, str(args->filename)); }'
-
-查看所有事件: bpftrace -l|grep scsi
 
 
-static struct iscsi_transport iscsi_sw_tcp_transport
-.create_conn		= iscsi_sw_tcp_conn_create, -> conn = transport->create_conn(session, ev->u.c_conn.cid)
-iscsi_sw_tcp_conn_create
-iscsi_tcp_conn_setup
 iscsi_conn_setup(struct iscsi_cls_session *cls_session
 iscsi_check_transport_timeouts -> callback
 	void iscsi_conn_error_event
 
 
 
-iscsi_if_recv_msg -> struct iscsi_uevent *ev = nlmsg_data(nlh) -> (unsigned char *) nlh + NLMSG_HDRLEN
-case ISCSI_UEVENT_SEND_PDU
-iscsi_if_transport_conn
-case ISCSI_UEVENT_CREATE_CONN
-iscsi_if_create_conn
-	conn = transport->create_conn(session, ev->u.c_conn.cid)
+iscsiadm -> main.c
+MODE_DISCOVERY
+exec_disc_op
+do_target_discovery
+sendtargets
+do_software_sendtargets
+discovery_sendtargets
+iscsi_create_session
+iscsi_create_leading_conn
+create_conn -> kcreate_conn
+  ev.type = ISCSI_UEVENT_CREATE_CONN
+  rc = __kipc_call(iov, 2) -> driver -> kernel -> drivers/scsi/scsi_transport_iscsi.c -> iscsi_if_recv_msg
+  	case ISCSI_UEVENT_CREATE_CONN:
+		err = iscsi_if_create_conn(transport, ev);
+			session = iscsi_session_lookup(ev->u.c_conn.sid)
+			conn = transport->create_conn -> iscsi_sw_tcp_conn_create
+				iscsi_tcp_conn_setup
 
 
 
-ev->r.retcode =	transport->send_pdu( -> iscsi_conn_send_pdu -> (struct iscsi_hdr *)((char *)ev + sizeof(*ev))
+discovery
+login/logout
+1. Discovery
+In this code path, we usually call to 
+discovery_sendtarget
+--> request_target
+     --> iscsi_io_send_pdu,  which basically writes on a socket opened by iscsiadm, and reads from the socket by "iscsi_io_rev_pdu".
+
+2. login/logout
+In this code path, it get usually triggers to 
+mgmt_ipc_session_login
+   -> __session_login_task -> static int __session_login_task
+    iscsi_sysfs_get_transport_by_name
+      transport_load_kmod
+		    rc = kmod_module_new_from_name(ctx, "ib_iser", &mod);
+        加载内核模块ko -> iscsi_tcp | ib_iser
+        __session_create
+          iscsi_setup_authentication
+          iscsi_session_init_params
+          list_add_tail(&session->list, &t->sessions)
+        __session_conn_create
+        iscsi_host_set_net_params
+        qtask->rsp.command = MGMT_IPC_SESSION_LOGIN
+        -> iscsi_conn_connect -> static int iscsi_conn_connect
+          iscsi_ev_context_get
+          conn->session->t->template->ep_connect -> iscsi_io_tcp_connect
+            connect(conn->socket_fd, (struct sockaddr *) ss, sizeof (*ss)) -> 连接到tgt
+                --> iscsi_sched_ev_context -> static int iscsi_sched_ev_context
+                  case EV_CONN_POLL -> actor_poll
+                        --> session_conn_poll -> static void session_conn_poll
+                          iscsi_ev_context_put
+                          session->t->template->ep_poll
+                          session_ipc_create -> static int session_ipc_create
+                            ipc->create_session -> kcreate_session(uint64_t transport_handle
+                              ev.type = ISCSI_UEVENT_CREATE_SESSION
+                              __kipc_call(iov, 2) -> __kipc_call(struct iovec *iovp, int count)
+                                kwritev(type, iovp, count) -> 调用内核态驱动函数 -> iscsi_if_recv_msg -> iscsi_if_create_session -> ...
+                              ...
+                                --> iscsi_login_req
+                                  iscsi_make_login_pdu
+                                    login_hdr->opcode = ISCSI_OP_LOGIN | ISCSI_OP_IMMEDIATE
+                                      --> iscsi_io_send_pdu -> send a PDU to the target -> iscsi_io_send_pdu(iscsi_conn_t *conn
+                                        case ISCSI_OP_LOGIN
+                                        login_hdr->flags & ISCSI_FLAG_LOGIN_TRANSIT
+In my understanding, discovery, login/logout does not involve iscsi kernel and send pdu over open by userspace socket.
 
 
-拷贝源码
-cd /lib/modules/5.10.38-21.hl10.el7.x86_64/build/include
-rsync -ravpl root@node2:/lib/modules/5.10.38-21.hl10.el7.x86_64/build/include/* .
+iscsi_if_create_session(struct iscsi_internal *priv
+	transport->create_session -> iscsi_sw_tcp_session_create
+		shost = iscsi_host_alloc -> struct Scsi_Host *iscsi_host_alloc
+      scsi_host_alloc -> struct Scsi_Host *scsi_host_alloc
+        shost->ehandler = kthread_run(scsi_error_handler, shost -> 错误处理 -> int scsi_error_handler(void *data)
+      ihost = shost_priv(shost)
+      init_waitqueue_head
+		iscsi_host_add
+		iscsi_session_setup
+		iscsi_tcp_r2tpool_alloc -> hook iscsi_tcp -> libiscsi_tcp
 
 
+int scsi_error_handler(void *data)
+
+
+断连内核栈
+[root@node1 ~]# bpftrace -e 'kprobe:iscsi_conn_error_event { printf("bt:%s\n", kstack); }'
+Attaching 1 probe...
+bt:
+        iscsi_conn_error_event+1
+        call_timer_fn+41
+        run_timer_softirq+474 -> 软中断,定时器, 内核定时器: https://cloud.tencent.com/developer/article/1720701, 内核定时器初始化会打开内核TIMER_SOFTIRQ软中断，执行时会执行到run_timer_softirq函数
+        __softirqentry_text_start+268 -> 分析cpu, perf -> perf top -C 0 --call-graph dwarf -d 30 -> 堆栈信息
+        asm_call_on_stack+18
+        do_softirq_own_stack+55
+        irq_exit_rcu+243
+        sysvec_apic_timer_interrupt+52
+        asm_sysvec_apic_timer_interrupt+18
+        native_safe_halt+14
+        acpi_idle_do_entry+75
+        acpi_idle_enter+90
+        cpuidle_enter_state+145
+        cpuidle_enter+41
+        do_idle+636
+        cpu_startup_entry+25
+        start_secondary+280
+        secondary_startup_64_no_verify+176
+
+run_local_timers
+run_timer_softirq -> 注册软中断处理函数 -> init_timers -> open_softirq(TIMER_SOFTIRQ, run_timer_softirq) -> 触发执行 -> raise_softirq(TIMER_SOFTIRQ)
+static void call_timer_fn
+  fn(timer) -> iscsi_conn_error_event
+
+
+iscsi_session_failure
+iscsi_conn_failure
+iscsi_recv_pdu -> iscsi收到PDU
+  iscsi_conn_error_event
+
+
+void iscsi_conn_error_event
+  ev->type = ISCSI_KEVENT_CONN_ERROR; 内核设置连接错误状态事件
+  iscsi_multicast_skb(skb, ISCSI_NL_GRP_ISCSID, GFP_ATOMIC)
+    nlmsg_multicast(nls, skb, 0, group, gfp) -> 通过netlink广播, 向用户态发送事件 -> static inline int nlmsg_multicast -> netlink_broadcast(sk, skb, portid, group, flags)
+  ...
+static int ctldev_handle
+  case ISCSI_KEVENT_CONN_ERROR
+  ipc_ev_clbk->sched_ev_context EV_CONN_ERROR -> iscsi_sched_ev_context -> static int iscsi_sched_ev_context
+    case EV_CONN_ERROR
+    ...
+
+
+nop_in, nop_out, BHS, AHS -> Allocate buffer for BHS + AHS
+The Basic Header Segment (BHS) is the first segment in all of the   iSCSI PDUs.  The BHS is a fixed-length 48-byte header segment.  It   MAY be followed by Additional Header Segments (AHS), a Header-Digest,   a Data Segment, and/or a Data-Digest
+
+
+make -C /lib/modules/`uname -r`/build M=$PWD
+make -C /lib/modules/`uname -r`/build M=$PWD modules_install
 

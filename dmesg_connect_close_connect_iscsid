@@ -1,0 +1,107 @@
+[167978.580915] scsi host14: iSCSI Initiator over TCP/IP
+[167978.609326] scsi 14:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+[167978.611044] scsi 14:0:0:0: Attached scsi generic sg1 type 12
+[167978.611271] scsi 14:0:0:0: Power-on or device reset occurred
+[167978.612100] scsi 14:0:0:1: Direct-Access     IET      VIRTUAL-DISK     0001 PQ: 0 ANSI: 5
+[167978.614386] sd 14:0:0:1: [sdb] 209715200 512-byte logical blocks: (107 GB/100 GiB)
+[167978.614611] sd 14:0:0:1: [sdb] Write Protect is off
+[167978.614612] sd 14:0:0:1: [sdb] Mode Sense: 69 00 10 08
+[167978.615030] sd 14:0:0:1: [sdb] Write cache: disabled, read cache: enabled, supports DPO and FUA
+[167978.647521] sd 14:0:0:1: [sdb] Attached SCSI disk
+[167978.647616] sd 14:0:0:1: Attached scsi generic sg2 type 0
+
+
+[168044.106210]  connection29:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4462700982, last ping 4462705984, now 4462711296
+[168044.109030]  connection29:0: detected conn error (1022)
+[168049.226222]  session29: session recovery timed out after 5 secs
+[168053.672466] device-mapper: multipath: 253:3: Failing path 8:16.
+[168053.676140] blk_update_request: I/O error, dev dm-3, sector 209715072 op 0x0:(READ) flags 0x80700 phys_seg 1 prio class 0
+[168053.678318] blk_update_request: I/O error, dev dm-3, sector 209715072 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+[168053.680671] Buffer I/O error on dev dm-3, logical block 26214384, async page read
+
+
+[root@node1 ~]# bpftrace -e 'kprobe:iscsi_conn_error_event { printf("bt:%s\n", kstack); }'
+Attaching 1 probe...
+bt:
+        iscsi_conn_error_event+1
+        call_timer_fn+41
+        run_timer_softirq+474
+        __softirqentry_text_start+268
+        asm_call_on_stack+18
+        do_softirq_own_stack+55
+        irq_exit_rcu+243
+        sysvec_apic_timer_interrupt+52
+        asm_sysvec_apic_timer_interrupt+18
+        native_safe_halt+14
+        acpi_idle_do_entry+75
+        acpi_idle_enter+90
+        cpuidle_enter_state+145
+        cpuidle_enter+41
+        do_idle+636
+        cpu_startup_entry+25
+        start_secondary+280
+        secondary_startup_64_no_verify+176
+
+
+用户态 iscsid
+Jun 12 14:28:33 node1 iscsid: iscsid: poll result 1
+Jun 12 14:28:33 node1 iscsid: iscsid: in ctldev_handle
+Jun 12 14:28:33 node1 iscsid: iscsid: in nl_read
+Jun 12 14:28:33 node1 iscsid: iscsid: ctldev_handle got event type 102
+Jun 12 14:28:33 node1 iscsid: iscsid: get ev context 0x55a7c8888340
+Jun 12 14:28:33 node1 iscsid: iscsid: message real length is 72 bytes, recv_handle 0x55a7c8888388
+Jun 12 14:28:33 node1 iscsid: iscsid: in nlpayload_read
+Jun 12 14:28:33 node1 iscsid: iscsid: sched conn context 0x55a7c8888340 event 3, tmo 0
+Jun 12 14:28:33 node1 iscsid: iscsid: thread 0x55a7c8888340 schedule: delay 0 state 3
+Jun 12 14:28:33 node1 iscsid: iscsid: current time 159041
+Jun 12 14:28:33 node1 iscsid: iscsid: nothing on pend_list, deactivating alarm
+Jun 12 14:28:33 node1 iscsid: iscsid: exec thread 55a7c8888340 callback
+Jun 12 14:28:33 node1 iscsid: iscsid: Kernel reported iSCSI connection 28:0 error (1022 - ISCSI_ERR_NOP_TIMEDOUT: A NOP has timed out) state (3)
+Jun 12 14:28:33 node1 iscsid: iscsid: put ev context 0x55a7c8888340
+Jun 12 14:28:33 node1 iscsid: iscsid: re-opening session 28 (reopen_cnt 0)
+Jun 12 14:28:33 node1 iscsid: iscsid: thread 55a7c88837a8 delete: state 3
+Jun 12 14:28:33 node1 iscsid: iscsid: thread 55a7c88837d8 delete: state 0
+Jun 12 14:28:33 node1 iscsid: iscsid: disconnecting conn 0x55a7c88812e0, fd 7
+Jun 12 14:28:33 node1 iscsid: iscsid: in kstop_conn
+Jun 12 14:28:33 node1 iscsid: iscsid: in __kipc_call
+Jun 12 14:28:33 node1 iscsid: iscsid: in kwritev
+Jun 12 14:28:33 node1 iscsid: iscsid: in nlpayload_read
+Jun 12 14:28:33 node1 iscsid: iscsid: in nlpayload_read
+Jun 12 14:28:33 node1 iscsid: iscsid: connection 28:0 is stopped for recovery
+Jun 12 14:28:33 node1 iscsid: iscsid: Waiting 2 seconds before trying to reconnect.
+Jun 12 14:28:33 node1 iscsid: iscsid: Requeue reopen attempt in 2 secs
+Jun 12 14:28:33 node1 iscsid: iscsid: thread 55a7c88837a8 delete: state 3
+Jun 12 14:28:33 node1 iscsid: iscsid: thread 0x55a7c88837a8 schedule: delay 2 state 3
+Jun 12 14:28:33 node1 iscsid: iscsid: new thread 0x55a7c88837a8 due 159043 is first item on pend_list
+Jun 12 14:28:33 node1 iscsid: iscsid: new alarm set for 2 seconds, old alarm 0
+Jun 12 14:28:33 node1 iscsid: iscsid: thread 55a7c8888340 done
+Jun 12 14:28:35 node1 iscsid: iscsid: poll result 1
+Jun 12 14:28:35 node1 iscsid: iscsid: Poll was woken by an alarm
+Jun 12 14:28:35 node1 iscsid: iscsid: current time 159043
+Jun 12 14:28:35 node1 iscsid: iscsid: thread 55a7c88837a8 was scheduled for 159043, curtime 159043 q_forw 0x55a7c6e000a0 &pend_list 0x55a7c6e000a0
+Jun 12 14:28:35 node1 iscsid: iscsid: thread 55a7c88837a8 now in ready_list
+Jun 12 14:28:35 node1 iscsid: iscsid: nothing on pend_list, deactivating alarm
+Jun 12 14:28:35 node1 iscsid: iscsid: exec thread 55a7c88837a8 callback
+Jun 12 14:28:35 node1 iscsid: iscsid: iscsi_login_eh
+Jun 12 14:28:35 node1 iscsid: iscsid: login failed ISCSI_CONN_STATE_XPT_WAIT/R_STAGE_SESSION_REOPEN 0
+Jun 12 14:28:35 node1 iscsid: iscsid: re-opening session 28 (reopen_cnt 0)
+Jun 12 14:28:35 node1 iscsid: iscsid: thread 55a7c88837a8 delete: state 3
+Jun 12 14:28:35 node1 iscsid: iscsid: thread 55a7c88837d8 delete: state 3
+Jun 12 14:28:35 node1 iscsid: iscsid: get ev context 0x55a7c8888340
+Jun 12 14:28:35 node1 iscsid: iscsid: set TCP recv window size to 524288, actually got 425984
+Jun 12 14:28:35 node1 iscsid: iscsid: set TCP send window size to 524288, actually got 425984
+Jun 12 14:28:35 node1 iscsid: iscsid: connecting to 172.17.136.132:3260
+Jun 12 14:28:35 node1 iscsid: iscsid: sched conn context 0x55a7c8888340 event 2, tmo 0
+Jun 12 14:28:35 node1 iscsid: iscsid: thread 0x55a7c8888340 schedule: delay 0 state 3
+Jun 12 14:28:35 node1 iscsid: iscsid: Setting login timer 0x55a7c88837a8 timeout 15
+Jun 12 14:28:35 node1 iscsid: iscsid: thread 55a7c88837a8 delete: state 3
+Jun 12 14:28:35 node1 iscsid: iscsid: thread 0x55a7c88837a8 schedule: delay 15 state 3
+Jun 12 14:28:35 node1 iscsid: iscsid: new thread 0x55a7c88837a8 due 159058 is first item on pend_list
+Jun 12 14:28:35 node1 iscsid: iscsid: new alarm set for 15 seconds, old alarm 0
+Jun 12 14:28:35 node1 iscsid: iscsid: thread 55a7c88837a8 done
+Jun 12 14:28:35 node1 iscsid: iscsid: exec thread 55a7c8888340 callback
+
+
+
+
+
