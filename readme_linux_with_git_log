@@ -7,7 +7,7 @@ io路径: https://zhuanlan.zhihu.com/p/545906763
 管理内核模块,红帽: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/managing_monitoring_and_updating_the_kernel/managing-kernel-modules_managing-monitoring-and-updating-the-kernel
 存储技术原理: file:///D:/xb/project/c/%E5%AD%98%E5%82%A8%E6%8A%80%E6%9C%AF%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90_%E5%9F%BA%E4%BA%8ELinux%202.6%E5%86%85%E6%A0%B8%E6%BA%90%E4%BB%A3%E7%A0%81.pdf
 内核定时器: 
-
+bpftrace: 
 
 
 dmesg -w
@@ -727,24 +727,57 @@ blk_mq_request_issue_directly
 	static blk_status_t __blk_mq_issue_directly
 
 
-IO路径, 块io, 
+
+IO路径-文件系统-系统调用
+int main()
+{
+       char buff[128] = {0};
+       int fd = open("/var/pilgrimtao.txt", O_CREAT|O_RDWR);
+
+       write(fd, "pilgrimtao is cool", 18);
+       pread(fd, buff, 128, 0);
+       printf("%s\n", buff);
+
+       close(fd);
+       return 0;
+}
+
+IO路径-块层
+SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter ->write_iter -> xfs_file_write_iter
+xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead -> xfs_buf_readahead_map -> xfs_buf_read_map -> xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> submit_bio -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __ submit_bio_noacct_mq/ __ submit_bio_noacct -> __ submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
+request插入ctx：blk_mq_submit_bio -> blk_mq_sched_insert_request -> __ blk_mq_insert_request -> __ blk_mq_insert_req_list -> list_add(&rq->queuelist, &ctx->rq_lists[type])
+取出request：blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __ blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
+
+IO路径, 块io, iscsi层, iopath, 
 bool blk_mq_dispatch_rq_list
-		ret = q->mq_ops->queue_rq(hctx, &bd)
+		ret = q->mq_ops->queue_rq(hctx, &bd) # 关键函数 queue_rq, IO请求入队列
 		.queue_rq	= scsi_queue_rq
-		static blk_status_t scsi_queue_rq(
-			scsi_dispatch_cmd
+		static blk_status_t scsi_queue_rq( -> scsi处理流程: https://blog.csdn.net/marlos/article/details/131171560, 这个函数之后大致要完成的工作是，把队列中的request再转化为对硬件的command，接着下发command到硬件，完成io。也就是说，对于request的解析，一定是在command生成之前的。在上面代码的35行之前，是在做一些必要的检查，确保队列、硬件处于正常工作的状态，接着37行，出现一个关键的函数 scsi_prepare_cmd, 顾名思义，command可能会在这个函数中进行初始化
+			struct scsi_cmnd *cmd = blk_mq_rq_to_pdu(req) -> cmd已经填充了?
+			WARN_ON_ONCE(cmd->budget_token < 0) -> 预算令牌, scsi：blk-mq：从 .get_budget 回调中返回预算令牌 SCSI 使用全局原子变量来跟踪每个 LUN/请求队列的队列深度,当有很多 CPU 核心并且磁盘非常快时，这不能很好地扩展。 通过在 I/O 路径中的 sdev->device_busy 跟踪队列深度，观察到 IOPS 受到很大影响,从 .get_budget 回调中返回预算令牌。 预算令牌可以传递给驱动程序，这样我们就可以用 sbitmap_queue 替换原子变量，并以这种方式缓解缩放问题, 链接：https://lore.kernel.org/r/20210122023317.687987-9-ming.lei@redhat.com
+			ret = BLK_STS_RESOURCE -> 块：引入新的块状态代码类型目前我们在块层中使用标准的 Linux errno 值，虽然我们接受任何错误，但一些错误具有超载的魔法含义。 这个补丁引入了一个新的 blk_status_t 值，它包含块层特定的状态代码并明确解释它们的含义。 现在提供了与以前的特殊含义相互转换的助手，但我怀疑我们希望从长远来看摆脱它们——那些有错误输入（例如网络）的驱动程序通常会得到不知道特殊块层的错误 重载，并类似地将它们返回到用户空间通常会返回一些严格来说对于文件系统操作不正确的东西，但这留作以后的练习。目前错误集是一个非常有限的集合，与之前重载的 errno 值密切相关 , 但有一些低挂果来改进它。blk_status_t (ab) 使用稀疏的 __bitwise 注释来允许稀疏类型检查，这样我们就可以很容易地捕捉到传递错误值的地方
+			scsi_prepare_cmd -> static blk_status_t scsi_prepare_cmd(struct request *req)
+				struct scsi_cmnd
+				cmd->prot_op = SCSI_PROT_NORMAL 命令保护操作
+				return scsi_cmd_to_driver(cmd)->init_command(cmd) -> .init_command		= sd_init_command -> scsi_init_command -> static blk_status_t sd_init_command -> scsi层里面，高级驱动可不止sd一个，因此，我们可以猜测这个函数只是在做一些通用性的命令初始化，对于特异性的初始化，一定会转交sd驱动处理，所以直接看代码的66行，调用了对应cmd绑定驱动的init_command函数
+					case REQ_OP_WRITE
+					return sd_setup_read_write_cmnd(cmd)
+						bool write = rq_data_dir(rq) == WRITE
+						scsi_alloc_sgtables
+						dix = scsi_prot_sg_count(cmd) -> 数据保护
+						if (protect && sdkp->protection_type == T10_PI_TYPE2_PROTECTION) -> T10保护信息(T10 Protection Information (PI))
+						sd_setup_rw10_cmnd(cmd, write, lba, nr_blocks -> static blk_status_t sd_setup_rw10_cmnd -> 打印日志: SCSI_LOG_  -> SCSI_LOG_HLQUEUE -> [66521.609478] sd 6:0:0:0: [sda] tag#23 sd_setup_read_write_cmnd: block=893164736, count=8
+							cmd->cmd_len = 10
+
+			static int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 				trace_scsi_dispatch_cmd_start(cmd)
-				rtn = host->hostt->queuecommand(host, cmd) -> .queuecommand           = iscsi_queuecommand,
+				rtn = host->hostt->queuecommand(host, cmd) -> .queuecommand           = iscsi_queuecommand, -> int iscsi_queuecommand
 					iscsi_session_chkready -> 检查会话通过iscsi_session_chkready进行。当会话状态不是ISCSI_SESSION_LOGGED_IN时，不适合处理scsi指令。链接检查通过链接是否存在、链接状态、链接可接收的命令窗口是否达到最大值。这几个方面判断
 					task = iscsi_alloc_task(conn, sc)
 					iscsi_prep_scsi_cmd_pdu(task)
+						ISCSI_DBG_SESSION
 					list_add_tail(&task->running, &conn->cmdqueue) -> 将任务插入命令队列 cmdqueue -> 由 iscsi_xmitworker 线程发送命令
 					iscsi_conn_queue_xmit(conn)
-				...
-				sd_init_command -> static blk_status_t sd_init_command(struct scsi_cmnd *cmd)
-					case REQ_OP_WRITE
-					sd_setup_read_write_cmnd(cmd)
-						sd_setup_rw10_cmnd(cmd, write, lba, nr_blocks
 
 
 static void iscsi_xmitworker(struct work_struct *work)
@@ -760,9 +793,19 @@ static void iscsi_xmitworker(struct work_struct *work)
 							iov_iter_kvec
 							sock_sendmsg(sock, msg)
 					memalloc_noreclaim_restore
+				iscsi_tcp_get_curr_r2t
+				conn->session->tt->alloc_pdu
+				iscsi_prep_data_out_pdu -> 初始化 Data-Out
+					hdr->ttt = r2t->ttt
+					hdr->opcode = ISCSI_OP_SCSI_DATA_OUT
+				rc = conn->session->tt->init_pdu
 			iscsi_put_task(task)
 
+iscsit_send_r2t
 
+
+/* SCSI Data Hdr */ -> 11.2.1.  Basic Header Segment (BHS)
+struct iscsi_data
 
 
 static int iscsi_if_transport_conn
@@ -827,4 +870,54 @@ static void scsi_starved_list_run -> 只要 shost 正在接受命令并且队列
 
 
 include/scsi/scsi_cmnd.h
+
+last_sector_bug
+
+iscsi协议 -> include/scsi/iscsi_proto.h, scsi_proto.h -> /* defined in T10 SCSI Primary Commands-2 (SPC2) */ 变长命令 -> struct scsi_varlen_cdb_hdr
+/* iSCSI PDU Header */
+struct iscsi_scsi_req
+
+/* Extended CDB AHS */
+
+11.3.5. CDB - SCSI Command Descriptor Block ..............160
+
+
+queue_cmd_ring
+target_cmd_init_cdb
+scsi_command_size
+
+
+
+ceph内核接管块层IO:
+.queue_rq	= rbd_queue_rq -> static blk_status_t rbd_queue_rq
+	rbd_img_is_write
+	queue_work(rbd_wq, &img_req->work)
+
+
+printk(KERN_ALERT, "init_scsi %s:%d\n", __FILE__, __LINE__);
+
+
+SCSI Command, 命令
+
+
+
+unsigned char cmnd[32]; /* SCSI CDB */
+8 7 6 5 4 3 2 1 0
+#define WRITE_10              0x2a
+8 7 6 5 4 3 2 1 0
+8 7 6 5 4 3 2 1 0
+8 7 6 5 4 3 2 1 0
+8 7 6 5 4 3 2 1 0
+...
+
+
+开启日志:
+drivers/scsi/Kconfig
+config SCSI_LOGGING
+	bool "SCSI logging facility"
+
+开启日志: scsi_logging_level -s -a 3
+echo -1 > /proc/sys/dev/scsi/logging_level
+
+
 

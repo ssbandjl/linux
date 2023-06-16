@@ -1,0 +1,38 @@
+[66521.609635] sd 6:0:0:0: Notifying upper driver of completion (result 0)
+[66521.609637] sd 6:0:0:0: [sda] tag#23 sd_done: completed 4096 of 4096 bytes
+[66521.609639] sd 6:0:0:0: [sda] tag#23 8 sectors total, 4096 bytes done.
+[66521.609653] sd 6:0:0:0: [sda] tag#24 Done: SUCCESS Result: hostbyte=DID_OK driverbyte=DRIVER_OK cmd_age=0s
+[66521.609655] sd 6:0:0:0: [sda] tag#24 CDB: Write(10) 2a 00 35 3c 9c c8 00 00 18 00
+[66521.609657] sd 6:0:0:0: [sda] tag#24 scsi host busy 1 failed 0
+[66521.609658] sd 6:0:0:0: Notifying upper driver of completion (result 0)
+[66521.609661] sd 6:0:0:0: [sda] tag#24 sd_done: completed 12288 of 12288 bytes
+[66521.609663] sd 6:0:0:0: [sda] tag#24 24 sectors total, 12288 bytes done.
+[66521.609727] sd 6:0:0:0: [sda] tag#25 Send: scmd 0x000000004c09f4b1
+[66521.609743] sd 6:0:0:0: [sda] tag#25 CDB: Synchronize Cache(10) 35 00 00 00 00 00 00 00 00 00
+[66521.609787] sd 6:0:0:0: [sda] tag#25 Done: SUCCESS Result: hostbyte=DID_OK driverbyte=DRIVER_OK cmd_age=0s
+[66521.609790] sd 6:0:0:0: [sda] tag#25 CDB: Synchronize Cache(10) 35 00 00 00 00 00 00 00 00 00
+[66521.609793] sd 6:0:0:0: [sda] tag#25 scsi host busy 1 failed 0
+[66521.609795] sd 6:0:0:0: Notifying upper driver of completion (result 0)
+[66521.609798] sd 6:0:0:0: [sda] tag#25 sd_done: completed 0 of 0 bytes
+[66521.609801] sd 6:0:0:0: [sda] tag#25 0 sectors total, 0 bytes done.
+[66521.609815] sd 6:0:0:0: [sda] tag#26 sd_setup_read_write_cmnd: block=885308824, count=24
+[66521.609817] sd 6:0:0:0: [sda] tag#26 writing 24/24 512 byte blocks.
+[66521.609820] sd 6:0:0:0: [sda] tag#26 Send: scmd 0x00000000a525c454
+[66521.609823] sd 6:0:0:0: [sda] tag#26 CDB: Write(10) 2a 00 34 c4 bd 98 00 00 18 00
+[66521.609894] sd 6:0:0:0: [sda] tag#26 Done: SUCCESS Result: hostbyte=DID_OK driverbyte=DRIVER_OK cmd_age=0s
+[66521.609897] sd 6:0:0:0: [sda] tag#26 CDB: Write(10) 2a 00 34 c4 bd 98 00 00 18 00
+[66521.609899] sd 6:0:0:0: [sda] tag#26 scsi host busy 1 failed 0
+[66521.609901] sd 6:0:0:0: Notifying upper driver of completion (result 0)
+[66521.609904] sd 6:0:0:0: [sda] tag#26 sd_done: completed 12288 of 12288 bytes
+[66521.609907] sd 6:0:0:0: [sda] tag#26 24 sectors total, 12288 bytes done.
+[66521.609914] sd 6:0:0:0: [sda] tag#27 Send: scmd 0x000000004c09f4b1
+[66521.609917] sd 6:0:0:0: [sda] tag#27 CDB: Synchronize Cache(10) 35 00 00 00 00 00 00 00 00 00
+[66521.609972] sd 6:0:0:0: [sda] tag#27 Done: SUCCESS Result: hostbyte=DID_OK driverbyte=DRIVER_OK cmd_age=0s
+[66521.609977] sd 6:0:0:0: [sda] tag#27 CDB: Synchronize Cache(10) 35 00 00 00 00 00 00 00 00 00
+[66521.609980] sd 6:0:0:0: [sda] tag#27 scsi host busy 1 failed 0
+[66521.609984] sd 6:0:0:0: Notifying upper driver of completion (result 0)
+[66521.609986] sd 6:0:0:0: [sda] tag#27 sd_done: completed 0 of 0 bytes
+[66521.609989] sd 6:0:0:0: [sda] tag#27 0 sectors total, 0 bytes done.
+^C
+
+
