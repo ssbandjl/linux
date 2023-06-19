@@ -8,7 +8,7 @@ io路径: https://zhuanlan.zhihu.com/p/545906763
 存储技术原理: file:///D:/xb/project/c/%E5%AD%98%E5%82%A8%E6%8A%80%E6%9C%AF%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90_%E5%9F%BA%E4%BA%8ELinux%202.6%E5%86%85%E6%A0%B8%E6%BA%90%E4%BB%A3%E7%A0%81.pdf
 内核定时器: 
 bpftrace: 
-
+spec: 官方指南: https://rpm-packaging-guide.github.io/, 
 
 dmesg -w
 
@@ -919,5 +919,19 @@ config SCSI_LOGGING
 开启日志: scsi_logging_level -s -a 3
 echo -1 > /proc/sys/dev/scsi/logging_level
 
+
+
+multipath, 多路径, https://blog.csdn.net/superyongzhe/article/details/126439055
+dm-mpath.c
+libdevicemapper
+加载模块
+module_init(dm_multipath_init) -> static int __init dm_multipath_init(void)
+	创建一个slab缓冲区，用于后续多路径中需要快速申请和释放内存的地方使用；
+	向DeviceMapper框架中注册多路径的Target Type；
+	申请两个工作队列，用于异步执行耗时的IO操作
+
+
+构造实例
+static int multipath_ctr
 
 
