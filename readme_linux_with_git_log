@@ -369,6 +369,12 @@ lsmod|grep sd_mod
 modinfo sd_mod
 make clean; make; rmmod sd_mod.ko; insmod sd_mod.ko
 
+install mod
+make -C /lib/modules/`uname -r`/build M=$PWD
+make -C /lib/modules/`uname -r`/build M=$PWD modules_install
+
+
+
 bpftrace -l | more
 
 #!/usr/local/bin/bpftrace
@@ -934,4 +940,9 @@ module_init(dm_multipath_init) -> static int __init dm_multipath_init(void)
 构造实例
 static int multipath_ctr
 
+
+更新模块, 比较简单的方法是把原来的 *.ko 文件直接替换，但这样有不好的地方，如果想换回来，比较麻烦
+cp libdrm/linux-core/drm.ko /lib/modules/`uname -r`/updates/
+depmod
+/sbin/modinfo drm
 
