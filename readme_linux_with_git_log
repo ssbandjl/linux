@@ -9,8 +9,13 @@ io路径: https://zhuanlan.zhihu.com/p/545906763
 内核定时器: 
 bpftrace: 
 spec: 官方指南: https://rpm-packaging-guide.github.io/, 
+io路径分析: https://codeantenna.com/a/ADadbOp8tQ
 
-dmesg -w
+dm-verity简介 ——（1）: https://www.cnblogs.com/hellokitty2/p/12364836.html
+管理工具源码_lvm_dmsetup: https://sourceware.org/dm/
+
+
+监听ring_buffer日志: dmesg -w
 
 git tag -d v5.10
 
@@ -49,9 +54,56 @@ drivers/md/md.c
 drivers/md/md-multipath.c
 
 
+dm_early_create - 在早期启动时创建映射设备。
+@dmi：包含要创建的设备映射的主要信息。
+@spec_array：指向 struct dm_target_spec 的指针数组。 描述设备的映射表。
+@target_params_array：包含特定目标参数的字符串数组。不要将 struct dm_target_spec 和每个目标的参数嵌入在 struct dm_ioctl 的末尾（如在普通 ioctl 中执行的那样），而是将它们作为参数传递，因此调用者不需要序列化它们。 Spec_array 和 target_params_array 的大小由下式给出
+@dmi->目标计数。
+该函数应该在早期启动时调用，因此不需要用于防止并发加载的锁定机制
+
+
+long vfs_ioctl
+error = filp->f_op->unlocked_ioctl(filp, cmd, arg)
+static const struct file_operations _ctl_fops
+.unlocked_ioctl	 = dm_ctl_ioctl
+static long dm_ctl_ioctl
+static int ctl_ioctl
+static ioctl_fn lookup_ioctl(unsigned int cmd, int *ioctl_flags)
+	{DM_DEV_CREATE_CMD, IOCTL_FLAGS_NO_PARAMS | IOCTL_FLAGS_ISSUE_GLOBAL_EVENT, dev_create},
+static int dev_create
+int dm_create
+dm.c -> static struct mapped_device *alloc_dev(int minor) -> 分配并初始化具有给定次要的空白设备
+	...
+	md->disk->fops = &dm_blk_dops
+	...
+
+
 .map = multipath_map_bio -> static int multipath_map_bio
 
 static void process_queued_bios
+
+
+static const struct blk_mq_ops dm_mq_ops = {
+	.queue_rq = dm_mq_queue_rq,
+	.complete = dm_softirq_done,
+	.init_request = dm_mq_init_request,
+};
+static blk_status_t dm_mq_queue_rq -> blk-mq 新的多队列块IO排队机制, struct request -> 尝试将引用的字段放在同一个缓存行中
+	dm_start_request(md, rq)
+		blk_mq_start_request -> 设备驱动程序使用的函数来通知块层现在将处理请求，因此 blk 层可以进行适当的初始化，例如启动超时计时器
+			trace_block_rq_issue(rq) -> 下发io到驱动, Linux下block层的监控工具blktrace, https://blog.csdn.net/hs794502825/article/details/8541235, linux跟踪系统, https://elinux.org/Kernel_Trace_Systems
+			test_bit(QUEUE_FLAG_STATS, &q->queue_flags) -> int test_bit(nr, void *addr) 原子的返回addr位所指对象nr位
+			blk_add_timer(rq) -> 启动单个请求超时计时器
+				mod_timer(&q->timeout, expiry)
+			WRITE_ONCE(rq->bio->bi_cookie, blk_rq_to_qc(rq)) -> Linux内核中的READ_ONCE和WRITE_ONCE宏, https://zhuanlan.zhihu.com/p/344256943, 缓存一致性: https://blog.csdn.net/zxp_cpinfo/article/details/53523697, 所以就出现了缓存一致性协议。最出名的就是Intel 的MESI协议，MESI协议保证了每个缓存中使用的共享变量的副本是一致的。它核心的思想是：当CPU写数据时，如果发现操作的变量是共享变量，即在其他CPU中也存在该变量的副本，会发出信号通知其他CPU将该变量的缓存行置为无效状态，因此当其他CPU需要读取这个变量时，发现自己缓存中缓存该变量的缓存行是无效的，那么它就会从内存重新读取
+		dm_get(md)
+	init_tio(tio, rq, md)
+	map_request(tio)
+		ti->type->clone_and_map_rq -> static int multipath_clone_and_map
+			clone = blk_mq_alloc_request
+			pgpath->pg->ps.type->start_io -> static int st_start_io -> 调用路径线算法的start_io函数, 如果成功则返回DM_MAPIO_REMAPPED，表明映射成功，通知DM框架重新投递请求
+				atomic_add(nr_bytes, &pi->in_flight_size)
+
 
 dm-mpath.c -> static int fail_path #路径故障
 	pgpath->pg->ps.type->fail_path(&pgpath->pg->ps, &pgpath->path)
@@ -64,8 +116,70 @@ dm-mpath.c -> static int fail_path #路径故障
 				kobject_uevent_net_broadcast -> 参考热拔插原理
 	queue_work
 	schedule_work
-static int __multipath_map_bio
 
+static int __multipath_map_bio
+	__map_bio(m, bio)
+	bio_set_dev(bio, pgpath->path.dev->bdev)
+	pgpath->pg->ps.type->start_io(&pgpath->pg->ps -> static int st_start_io
+
+
+bpftrace -e 'kprobe:st_start_io{ printf("bt:%s\n", kstack); }'
+st_start_io+1
+multipath_clone_and_map+373
+dm_mq_queue_rq+264
+blk_mq_dispatch_rq_list+291
+__blk_mq_do_dispatch_sched+356
+__blk_mq_sched_dispatch_requests+309
+blk_mq_sched_dispatch_requests+48
+__blk_mq_run_hw_queue+81
+__blk_mq_delay_run_hw_queue+321
+blk_mq_sched_insert_requests+106
+blk_mq_flush_plug_list+281
+blk_flush_plug_list+215
+blk_finish_plug+33
+ext4_writepages+769
+do_writepages+65
+__filemap_fdatawrite_range+199
+ext4_release_file+108
+__fput+155
+task_work_run+123
+exit_to_user_mode_prepare+335
+syscall_exit_to_user_mode+60
+entry_SYSCALL_64_after_hwframe+68
+
+
+
+static struct pgpath *__map_bio
+static struct pgpath *choose_pgpath
+choose_path_in_pg
+	pg->ps.type->select_path(&pg->ps, nr_bytes)
+
+
+
+#########################################
+tee<<EOF>write.c
+#include <stdio.h>
+#include <stdlib.h>
+
+int main() {
+    char sentence[1000] = "hello,world";
+    // creating file pointer to work with files
+    FILE *fptr;
+    // opening file in writing mode
+    fptr = fopen("write.txt", "w");
+    // exiting program 
+    if (fptr == NULL) {
+        printf("Error!");
+        exit(1);
+    }
+    fprintf(fptr, "%s", sentence);
+    fclose(fptr);
+    return 0;
+}
+EOF
+gcc -o write write.c && ./write
+
+#########################################
 
 热拔插: 热插拔：在不重启系统的情况下，增减硬件设备。本文主要介绍linux下的热插拔 https://www.cnblogs.com/tzj-kernel/p/15307231.html
 热插拔：实现了驱动向用户态通知设备插拔
@@ -103,24 +217,31 @@ event_fn
 dm_table_event
 trigger_event
 
-__map_bio
 
 io_path, io路径
 static const struct block_device_operations dm_blk_dops = {
 	.submit_bio = dm_submit_bio,  -> static void dm_submit_bio
 
+映射设备区分两种类型：基于通用块层请求的映射设备和基于块设备驱动层请求的映射设备, dm_request_based 函数判断映射设备是否是基于块设备驱动层请求的映射设备，如果是，则返回1；否则返回0。这种判断是根据映射设备的请求队列中是否设置了QUEUE_FLAG_STACKABLE标志作出的，而这个标志在创建映射设备时根据映射表的类型设定
+static void dm_submit_bio
+	dm_get_live_table_bio
+	DMF_BLOCK_IO_FOR_SUSPEND 设备挂起时,io入队
+	queue_io(md, bio)
+		queue_work(md->wq, &md->work)
+	dm_split_and_process_bio(md, map, bio) -> 分割io提交给目标设备
+
 dm_split_and_process_bio
 	__split_and_process_bio 选择正确的策略来处理非flush bio
 		dm_table_find_target
-		__map_bio
-			ti->type->map(ti, clone) -> .map = multipath_map_bio -> static int __multipath_map_bio -> bio_set_dev(bio, pgpath->path.dev->bdev) -> pgpath->pg->ps.type->start_io
+		__map_bio -> static void __map_bio -> 映射io
+			ti->type->map(ti, clone) -> .map = multipath_map_bio -> static int __multipath_map_bio -> bio_set_dev(bio, pgpath->path.dev->bdev) -> pgpath->pg->ps.type->start_io -> 查看DeviceMapper映射表 dmsetup table -> mpatha: 0 209715200 multipath 0 0 1 1 service-time 0 1 2 8:16 1 1 -> 根据路径的吞吐量以及未完成的字节数选择负荷较轻的路径 -> static struct path_selector_type st_ps
 	bio_trim
 	trace_block_split
 	bio_inc_remaining
 	submit_bio_noacct -> void submit_bio_noacct(struct bio *bio) ->  为 I/O 重新提交 bio 到块设备层 bio 描述内存和设备上的位置。 这是 submit_bio() 的一个版本，只能用于通过堆叠块驱动程序重新提交给较低级别驱动程序的 I/O。 块层的所有文件系统和其他上层用户应该使用 submit_bio() 代替, bio 在节流之前已经被检查过，所以在从节流队列中调度它之前不需要再次检查它。 为此目的添加 submit_bio_noacct_nocheck() 的助手
 		__submit_bio_noacct_mq
-		submit_bio_noacct_nocheck -> submit_bio() 确实可以通过递归调用 submit_bio_noacct 添加更多的 bios
-			__submit_bio
+		submit_bio_noacct_nocheck -> __submit_bio_noacct(bio) -> 确实可以通过递归调用 submit_bio_noacct 添加更多的 bios
+			__submit_bio(bio)
 				blk_mq_submit_bio -> void blk_mq_submit_bio -> 向块设备提交bio, 会执行调度,合并等操作
 					blk_mq_bio_to_request
 					blk_queue_bounce -> 弹跳
@@ -129,6 +250,12 @@ dm_split_and_process_bio
 					blk_mq_insert_request
 						blk_mq_request_bypass_insert
 					blk_mq_run_hw_queue
+				disk->fops->submit_bio(bio) -> static void dm_submit_bio -> device_mapper io
+
+
+
+
+
 
 blk_mq_plug_issue_direct
 blk_add_rq_to_plug
@@ -945,4 +1072,77 @@ static int multipath_ctr
 cp libdrm/linux-core/drm.ko /lib/modules/`uname -r`/updates/
 depmod
 /sbin/modinfo drm
+
+
+查看路径(multipath -l/-ll)
+
+清空全部路径(multipath -F) -> dm_flush_maps
+
+
+
+
+md(multi_disk多磁盘)模块初始化
+subsys_initcall(md_init) -> static int __init md_init(void)
+
+
+
+dm, 栈式块设备层，其本质原理, 就在于重定向请求方式, dmsetup, drivers/md, 线性映射规则, 条带映射规则, 
+映射设备: struct mapped_device
+目标设备: struct dm_target
+映射表: struct dm_table
+映射目标: struct dm_target
+
+dm(device_mapper 设备映射虚拟层)模块初始化 -> drivers/md/dm.c
+module_init(dm_init) -> static int __init dm_init
+	r = _inits[i]() -> static int (*_inits[])
+	local_init,
+	dm_target_init,
+	dm_linear_init,
+	dm_stripe_init,
+	dm_io_init,
+	dm_kcopyd_init,
+	dm_interface_init -> 映射设备的创建, Device Mapper控制设备的名字为device-mapper，文件操作表为_ctrl_fops，它的主设备号为MISC字符设备的主设备号（10），次设备号由系统自动分配，用户空间库函数将相应为Device Mapper控制设备创建一个设备节点，其路径名为/dev/mapper/control, 用户空间管理工具通过Device Mapper控制设备实现对映射设备的管理操作。具体来讲，用户空间以/dev/mapper/control为参数调用系统调用open，获得控制设备的文件句柄，之后针以该文件句柄为参数调用ioctl，调用时还传入代表操作类型的I/O控制码, man dmsetup, 
+		misc_register(&_dm_misc)
+			dev = MKDEV(MISC_MAJOR, misc->minor)
+	dm_statistics_init,
+
+
+#define DM_DEV_CREATE    _IOWR(DM_IOCTL, DM_DEV_CREATE_CMD, struct dm_ioctl) -> 创建dm设备
+
+The userspace code (dmsetup and libdevmapper) is now maintained alongside the LVM2 source available from http://sourceware.org/lvm2/. To build / install it without LVM2 use 'make device-mapper' / 'make install_device-mapper'.
+
+iopath_dm, 7.5 映射设备的请求执行, 
+dm_request -> drivers/md/dm.c
+dm_make_request
+
+
+static const struct block_device_operations dm_blk_dops = {
+	.submit_bio = dm_submit_bio,
+	.poll_bio = dm_poll_bio,
+	.open = dm_blk_open,
+	.release = dm_blk_close,
+	.ioctl = dm_blk_ioctl,
+	.getgeo = dm_blk_getgeo,
+	.report_zones = dm_blk_report_zones,
+	.pr_ops = &dm_pr_ops,
+	.owner = THIS_MODULE
+};
+
+
+dm_submit_bio+1
+submit_bio_noacct+251
+submit_bio+67
+submit_bio_wait+84
+blkdev_issue_flush+89
+xfs_file_fsync+461
+do_fsync+56
+__x64_sys_fdatasync+19
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68
+
+
+
+____cacheline_aligned_in_smp, 作用是：在对称多处理器系统中，结构体的起始地址和长度都是一级缓存行长度的整数倍, 独占cache line, 对于数据结构中频繁访问的成员我们可以设置它独占cache line。为啥要让它独占呢，还是cache伪缓存问题，这个成员可能导致互相干架，频繁导入导出cache line。例如zone->lock和zone->lru_lock这两个频繁的锁，有助于提高获取锁的效率。在SMP系统中，自旋锁的争用会导致严重的cache line颠簸现象, 正如这些宏的字面意思，可以简单理解为按高速缓存行对齐, 
+https://github.com/ssbandjl/linux/commit/320ae51feed5c2f13664aa05a76bec198967e04d, blk-mq：新的多队列块 IO 排队机制 Linux 目前有两种块设备模型： - 经典的基于 request_fn 的方法，其中驱动程序使用 struct request 单元进行 IO。 块层提供各种帮助器功能，让驱动程序共享代码，例如标签管理、超时处理、排队等。“堆叠”方法，驱动程序挤在块层和 IO 提交者之间。 由于这会绕过 IO 堆栈，因此驱动程序通常必须自己管理所有内容。随着为新的高 IOPS 设备编写驱动程序，基于经典 request_fn 的驱动程序工作得不够好。 该设计可以追溯到 SMP 和高 IOPS 都还很少见的时候。 它在扩展到更大的机器时存在问题，并且当每个设备具有数十万 IOPS 时，即使在较小的机器上也会遇到扩展问题。因此，通常选择堆栈方法作为驱动程序的模型。 但这意味着每个人都必须重新发明一切，随之而来的是我们再次遇到共享方法解决的所有问题。此提交引入了 blk-mq，块多队列支持。 该设计以用于排队 IO 的每 CPU 队列为中心，然后向下汇集到 x 个硬件提交队列。两者之间可能有 1:1 映射，也可能是 N:M 映射。 这一切都取决于硬件支持的内容。blk-mq 提供各种辅助功能，其中包括： - 对请求标记的可扩展支持。 大多数设备需要能够唯一地标识驱动程序和硬件中的请求。 标记使用每个 cpu 缓存来释放标记，以实现缓存热重用。 - 超时处理，无需跟踪每个设备的请求。 基本上，如果请求失败，驱动程序应该能够收到通知。- 可选支持问题和提交队列之间的非 1:1 映射。 blk-mq 可以将 IO 完成重定向到所需位置。- 支持每个请求的有效负载。 驱动程序几乎总是需要将请求结构与某些驱动程序私有命令结构相关联。 驱动程序可以在初始化时告诉 blk-mq，然后任何传递给驱动程序的请求都将具有与之关联的所需内存大小。- 支持合并 IO 和插入。 堆叠模型没有得到这些。 即使对于高 IOPS 设备，合并顺序 IO 也会减少每个命令的开销，从而增加带宽。目前，这是作为潜在的第三种排队模型提供的，希望随着它的成熟，它可以取代经典模型和堆栈模型。 这将使我们回到只有 1 个用于块设备的真实模型，而将堆叠方法留给 dm/mddevices（正如最初预期的那样）。以下人员在此补丁中做出的贡献：
+Linux 以与 TLB 非常相似的方式管理 CPU 缓存。CPU 高速缓存与 TLB 高速缓存一样，利用了程序往往表现出引用局部性的事实。为了避免每次引用时都必须从主内存中获取数据，CPU 会在 CPU 高速缓存中缓存非常少量的数据。通常，有两个级别，称为 1 级和 2 级 CPU 缓存。2 级 CPU 缓存比 L1 缓存更大但速度更慢，但 Linux 只关心 1 级或 L1 缓存。CPU 缓存被组织成行。每行通常很小，通常为 32 字节，并且每行与其边界大小对齐。换句话说，32 字节的高速缓存行将在 32 字节的地址上对齐。对于 Linux，行的大小L1_CACHE_BYTES由每个体系结构定义。地址映射到缓存行的方式因体系结构而异，但映射分为三个标题，直接映射、关联映射和集合关联映射。直接映射是最简单的方法，其中每个内存块仅映射到一个可能的缓存行。通过关联映射，任何内存块都可以映射到任何缓存行。集合关联映射是一种混合方法，其中任何内存块都可以映射到任何行，但仅限于可用行的子集内。不管映射方案如何，它们都有一个共同点，靠近并与缓存大小对齐的地址很可能使用不同的行。因此，Linux 使用简单的技巧来尝试最大化缓存的使用经常访问的结构字段位于结构的开头，以增加只需要一行来寻址公共字段的机会；结构中不相关的项应尽量分开至少缓存大小字节，以避免 CPU 之间的错误共享；通用缓存中的对象（例如 mm_struct 缓存）与 L1 CPU 缓存对齐，以避免错误共享。如果 CPU 引用不在高速缓存中的地址，则会发生高速缓存未命中并从主内存中获取数据。缓存未命中的成本非常高，因为对缓存的引用通常可以在不到 10ns 的时间内执行，而对主内存的引用通常将花费 100ns 到 200ns。基本目标是尽可能多的缓存命中和尽可能少的缓存未命中。正如某些架构不会自动管理其 TLB 一样，某些架构也不会自动管理其 CPU 缓存。挂钩被放置在虚拟到物理映射发生变化的位置，例如在页表更新期间。CPU 高速缓存刷新应始终首先进行，因为当从高速缓存刷新虚拟地址时，某些 CPU 需要存在虚拟到物理映射
 
