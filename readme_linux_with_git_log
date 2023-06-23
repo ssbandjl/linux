@@ -10,6 +10,13 @@ io路径: https://zhuanlan.zhihu.com/p/545906763
 bpftrace: 
 spec: 官方指南: https://rpm-packaging-guide.github.io/, 
 io路径分析: https://codeantenna.com/a/ADadbOp8tQ
+编译内核参考: https://wiki.centos.org/HowTos/Custom_Kernel
+spec文件: 构建rpm包和spec基础: https://www.cnblogs.com/michael-xiang/p/10480809.html, 官方指南: https://rpm-packaging-guide.github.io/, 
+kdir: https://stackoverflow.com/questions/59366772/what-does-the-kernel-compile-rule-exact-mean
+kernel makefile: https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
+Linux模块文件如何编译到内核和独立编译成模块: https://z.itpub.net/article/detail/090A31801416081BC9D0781C05AC91AA
+安装源码: https://wiki.centos.org/HowTos/I_need_the_Kernel_Source
+编译内核模块: https://wiki.centos.org/HowTos/BuildingKernelModules
 
 dm-verity简介 ——（1）: https://www.cnblogs.com/hellokitty2/p/12364836.html
 管理工具源码_lvm_dmsetup: https://sourceware.org/dm/
@@ -97,11 +104,11 @@ static blk_status_t dm_mq_queue_rq -> blk-mq 新的多队列块IO排队机制, s
 				mod_timer(&q->timeout, expiry)
 			WRITE_ONCE(rq->bio->bi_cookie, blk_rq_to_qc(rq)) -> Linux内核中的READ_ONCE和WRITE_ONCE宏, https://zhuanlan.zhihu.com/p/344256943, 缓存一致性: https://blog.csdn.net/zxp_cpinfo/article/details/53523697, 所以就出现了缓存一致性协议。最出名的就是Intel 的MESI协议，MESI协议保证了每个缓存中使用的共享变量的副本是一致的。它核心的思想是：当CPU写数据时，如果发现操作的变量是共享变量，即在其他CPU中也存在该变量的副本，会发出信号通知其他CPU将该变量的缓存行置为无效状态，因此当其他CPU需要读取这个变量时，发现自己缓存中缓存该变量的缓存行是无效的，那么它就会从内存重新读取
 		dm_get(md)
-	init_tio(tio, rq, md)
+	init_tio(tio, rq, md) -> target_io
 	map_request(tio)
 		ti->type->clone_and_map_rq -> static int multipath_clone_and_map
 			clone = blk_mq_alloc_request
-			pgpath->pg->ps.type->start_io -> static int st_start_io -> 调用路径线算法的start_io函数, 如果成功则返回DM_MAPIO_REMAPPED，表明映射成功，通知DM框架重新投递请求
+			pgpath->pg->ps.type->start_io -> static int st_start_io -> 调用路径线算法的 start_io 函数, 如果成功则返回 DM_MAPIO_REMAPPED, 表明映射成功，通知DM框架重新投递请求, dm mpath：添加服务时间负载均衡器，此补丁添加了一个面向服务时间的动态负载均衡器 dm-service-time，它为传入 I/O 选择估计服务时间最短的路径。 通过将进行中的 I/O 大小除以每条路径的性能值来估计服务时间。性能值可以在表加载时作为表参数给出。 如果未给出性能值，则所有路径均被视为相同
 				atomic_add(nr_bytes, &pi->in_flight_size)
 
 
