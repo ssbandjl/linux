@@ -361,8 +361,8 @@ int main()
 
 
 文件系统:
-SYSCALL_DEFINE3(read, ...) -> ksys_read -> vfs_read -> read_iter -> xfs_file_read_iter
-SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter ->write_iter -> xfs_file_write_iter
+读 -> SYSCALL_DEFINE3(read, ...) -> ksys_read -> vfs_read -> read_iter -> xfs_file_read_iter
+写 -> SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter ->write_iter -> xfs_file_write_iter
 
 磁盘(disk)的访问模式有三种 BUFFERED、DIRECT、DAX。前面提到的由于page cache存在可以避免耗时的磁盘通信就是BUFFERED访问模式的集中体现；但是如果我要求用户的write请求要实时存储到磁盘里，不能只在内存中更新，那么此时我便需要DIRECT模式；大家可能听说过flash分为两种nand flash和nor flash，nor flash可以像ram一样直接通过地址线和数据线访问，不需要整块整块的刷，对于这种场景我们采用DAX模式。所以file_operations的read_iter和write_iter回调函数首先就需要根据不同的标志判断采用哪种访问模式
 kernel在2020年12月的patch中提出了folio的概念，我们可以把folio简单理解为一段连续内存，一个或多个page的集合，他和page的关系如图
@@ -859,10 +859,18 @@ blk_request_module
 			ctrl->admin_q = blk_mq_init_queue(set) -> 添加通用助手来分配和拆除管理和 I/O 标记集，包括分配给它们的特殊队列
 				blk_mq_init_queue_data(set, NULL)
 					q = blk_alloc_queue(set->numa_node) -> 分配struct request_queue并初始化
-					ret = blk_mq_init_allocated_queue(set, q) -> 分配每个CPU专属的软件队列，分配硬件队列，对二者做初始化，并建立软件队列和硬件队列联系
+					ret = blk_mq_init_allocated_queue(set, q) -> 分配每个CPU专属的软件队列，分配硬件队列，对二者做初始化，并建立软件队列和硬件队列关系
+						INIT_DELAYED_WORK(&q->requeue_work, blk_mq_requeue_work) -> 2021-06-09 Linux INIT_DELAYED_WORK 延时队列使用学习: https://blog.csdn.net/qq_37858386/article/details/117733197, linux内核工作队列使用总结: https://www.cnblogs.com/Suzkfly/p/10334456.html, 调度执行: queue_delayed_work
 
 
-		
+
+static int worker_thread -> 工作线程函数。 所有worker都属于一个worker_pool——可以是每个CPU的worker_pool，也可以是动态的未绑定的worker_pool。 这些工作人员处理所有工作项目，无论其具体目标工作队列如何。 唯一的例外是属于具有救援程序的工作队列的工作项，这将在救援程序线程（）中进行解释
+	process_one_work
+		blk_mq_requeue_work
+
+
+
+
 
 spi, scsi并行接口, 
 
@@ -915,7 +923,8 @@ kthread+278
 ret_from_fork+34
 
 
-IO路径-文件系统-系统调用, iopath
+IO路径-文件系统-系统调用, iopath, IO子系统全流程介绍: https://zhuanlan.zhihu.com/p/545906763, linux内核block层Multi queue多队列核心点分析: https://blog.csdn.net/hu1610552336/article/details/111464548
+深入理解 Linux 内核---访问文件: https://blog.csdn.net/u012319493/article/details/85331567, https://blog.csdn.net/weixin_40535588/article/details/120040142
 int main()
 {
        char buff[128] = {0};
@@ -929,11 +938,12 @@ int main()
        return 0;
 }
 
-IO路径-块层
-SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter ->write_iter -> xfs_file_write_iter
-xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead -> xfs_buf_readahead_map -> xfs_buf_read_map -> xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> submit_bio -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __submit_bio_noacct_mq/ __submit_bio_noacct -> __submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
+IO路径-块层, linux v5.10, 
+SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter -> write_iter -> xfs_file_write_iter (.write_iter	= xfs_file_write_iter) -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead 预读 -> xfs_buf_readahead_map -> xfs_buf_read_map -> _xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> 由VFS -> 进入块层 -> submit_bio(bio) -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __submit_bio_noacct_mq / __submit_bio_noacct -> __submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
 request插入ctx：blk_mq_submit_bio -> blk_mq_sched_insert_request -> __ blk_mq_insert_request -> __ blk_mq_insert_req_list -> list_add(&rq->queuelist, &ctx->rq_lists[type])
 取出request：blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
+
+__submit_bio_noacct_mq -> 我们一次只希望一个 ->submit_bio 处于活动状态，否则堆栈设备的堆栈使用可能会出现问题。 使用 current->bio_list 收集 ->submit_bio 方法处于活动状态时提交的请求列表，然后在返回后处理它们
 
 IO路径, 块io, iscsi层, iopath, 
 bool blk_mq_dispatch_rq_list
@@ -1309,3 +1319,44 @@ xfs_buf_delwri_submit_buffers+524
 xfsaild+923
 kthread+278
 ret_from_fork+34
+
+
+filter: block, dm, md
+
+这个work队列，好像是 blk_mq_kick 或者 blk_mq_delay_kick 函数启动的
+static int map_request
+dm_requeue_original_request
+dm_mq_delay_requeue_request
+__dm_mq_kick_requeue_list
+scsi_mq_requeue_cmd
+blk_mq_delay_kick_requeue_list
+  kblockd_mod_delayed_work_on(WORK_CPU_UNBOUND, &q->requeue_work
+
+
+
+clear;strace -k -vvv ./write
+open("write.txt", O_RDWR|O_CREAT, 035060) = 3
+ > /usr/lib64/libc-2.17.so(__open_nocancel+0x7) [0xef980]
+ > /home/xb/project/linux/trace/strace/test/write(main+0x36) [0x5e8]
+ > /usr/lib64/libc-2.17.so(__libc_start_main+0xf5) [0x22625]
+ > /home/xb/project/linux/trace/strace/test/write(_start+0x29) [0x509]
+write(3, "pilgrimtao is cool\n", 19)    = 19
+ > /usr/lib64/libc-2.17.so(__write_nocancel+0x7) [0xefc20]
+addr2line -Cife /usr/lib64/libc-2.17.so 0xefc20
+
+write详解: https://blog.csdn.net/linuxheik/article/details/76131256
+write -> __write_nocancel __libc_write(glibc-2.11.2中的io/write.c) -> -> SYSCALL_DEFINE3(write
+#define __NR_write 4
+__SYSCALL(__NR_write, sys_write)
+ssize_t ksys_write
+	ret = vfs_write(f.file, buf, count, ppos)
+		file->f_op->write(file, buf, count, pos)
+
+
+
+struct blk_plug {
+blk_plug 允许通过短时间保存 I/O 片段来构建相关请求的队列。 这允许将顺序请求合并为单个较大的请求。 由于请求会批量从每个任务列表移至设备的 request_queue，因此可扩展性得到提高，因为 request_queue 锁的锁争用减少了。在尝试将请求添加到插入列表器时，可以不禁用抢占。 合并。 详情请参见schedule()，其中调用了blk_flush_plug()
+
+
+bio_alloc_bioset
+	punt_bios_to_rescuer
