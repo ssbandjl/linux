@@ -115,10 +115,21 @@ static blk_status_t dm_mq_queue_rq -> blk-mq 新的多队列块IO排队机制, s
 			pgpath->pg->ps.type->start_io -> static int st_start_io -> 调用路径线算法的 start_io 函数, 如果成功则返回 DM_MAPIO_REMAPPED, 表明映射成功，通知DM框架重新投递请求, dm mpath：添加服务时间负载均衡器，此补丁添加了一个面向服务时间的动态负载均衡器 dm-service-time，它为传入 I/O 选择估计服务时间最短的路径。 通过将进行中的 I/O 大小除以每条路径的性能值来估计服务时间。性能值可以在表加载时作为表参数给出。 如果未给出性能值，则所有路径均被视为相同, 参考流程: https://my.oschina.net/LastRitter/blog/1541330
 				atomic_add(nr_bytes, &pi->in_flight_size) -> 在 IO 开始与结束时，分别增减该路径正在处理的 IO 字节数 -> sz1 = atomic_read(&pi1->in_flight_size) <- static int st_compare_load
 		case DM_MAPIO_REMAPPED -> 映射成功
-		setup_clone -> dm：始终将请求分配推迟给 request_queue 的所有者, 如果底层设备是 blk-mq 设备，则 DM 已在底层设备的 request_queue 上调用 blk_mq_alloc_request。 但现在我们允许驱动程序分配额外的数据并提前初始化它，我们需要对所有驱动程序执行相同的操作。 这样做并在块层中使用新的 cmd_size 基础设施极大地简化了 dm-rq 和 mpath 代码，并且还应该使 SQ 和 MQ 设备与 SQ 或 MQ 设备映射器表的任意组合成为可能，作为进一步的步骤
+		setup_clone -> dm：始终将请求分配推迟给 request_queue 的所有者, 如果底层设备是 blk-mq 设备，则 DM 已在底层设备的 request_queue 上调用 blk_mq_alloc_request,  但现在我们允许驱动程序分配额外的数据并提前初始化它，我们需要对所有驱动程序执行相同的操作。 这样做并在块层中使用新的 cmd_size 基础设施极大地简化了 dm-rq 和 mpath 代码，并且还应该使 SQ 和 MQ 设备与 SQ 或 MQ 设备映射器表的任意组合成为可能，作为进一步的步骤
 			blk_rq_prep_clone dm_rq_bio_constructor
 			clone->end_io = end_clone_request
-			
+		trace_block_rq_remap 
+		blk_insert_cloned_request(clone) -> #ifdef CONFIG_BLK_MQ_STACKING -> blk-mq：使 blk-mq 堆栈代码可选，堆栈 blk-mq 驱动程序的代码仅由 dm-multipath 使用，并且最好保持这种方式。 使其可选并且仅由设备映射器选择，以便构建机器人更容易捕获滥用行为，例如在最后一个合并窗口中的 ufs 驱动程序中滑入的滥用行为。 另一个积极的副作用是，内核构建时没有设备映射器也会缩小一点
+			if (blk_rq_sectors(rq) > max_sectors) -> 如果实际支持 Write Same/Zero，SCSI 设备没有一个好的返回方法。 如果设备拒绝非读/写命令（丢弃、写入相同内容等），则低级设备驱动程序会将相关队列限制设置为 0，以防止 blk-lib 发出更多违规操作。 在重置队列限制之前排队的命令需要使用 BLK_STS_NOTSUPP 完成，以避免 I/O 错误传播到上层
+			blk_account_io_start(rq)
+				blk_do_io_stat
+				update_io_ticks
+			blk_mq_run_dispatch_ops -> blk_mq_request_issue_directly -> rcu -> 读文件过程, 禁用调度器: https://blog.csdn.net/jasonactions/article/details/109614350
+				if (blk_mq_hctx_stopped(hctx) || blk_queue_quiesced(rq->q)) -> 队列禁止
+				__blk_mq_issue_directly
+					ret = q->mq_ops->queue_rq(hctx, &bd) -> 内核block层Multi queue多队列的一次优化实践: https://blog.csdn.net/hu1610552336/article/details/121072592
+
+
 
 
 
@@ -276,6 +287,13 @@ dm_split_and_process_bio
 					blk_mq_insert_request
 						blk_mq_request_bypass_insert
 					blk_mq_run_hw_queue
+					blk_mq_try_issue_directly
+						blk_mq_run_hw_queue
+							blk_mq_delay_run_hw_queue
+							kblockd_mod_delayed_work_on
+						blk_mq_get_budget_and_tag
+						__blk_mq_issue_directly
+							ret = q->mq_ops->queue_rq(hctx, &bd)
 				disk->fops->submit_bio(bio) -> static void dm_submit_bio -> device_mapper io
 
 
@@ -621,10 +639,6 @@ netlink_kernel_create(&init_net, NETLINK_ISCSI, &cfg) -> netlink_kernel_create(s
 
 netlink_unicast
 	netlink_unicast_kernel
-
-
-Attaching 1 probe...
-bt:
         fail_path+1
         multipath_message+342 -> .message = multipath_message
         target_message+627
@@ -828,7 +842,27 @@ do_syscall_64+51
 entry_SYSCALL_64_after_hwframe+68
 
 blk_request_module
-	(*n)->probe(devt)
+	(*n)->probe(devt) -> static int nvme_probe
+		nvme_pci_alloc_dev
+		nvme_dev_map
+		nvme_setup_prp_pools
+		nvme_pci_alloc_iod_mempool
+		nvme_pci_enable
+		nvme_alloc_admin_tag_set
+			blk_mq_alloc_tag_set -> 设置多队列, 将cpu与硬件队列做映射: https://blog.csdn.net/hu1610552336/article/details/111464548
+				set->srcu = kmalloc(sizeof(*set->srcu), GFP_KERNEL)
+				ret = init_srcu_struct(set->srcu)
+				set->tags = kcalloc_node(set->nr_hw_queues
+				set->map[i].mq_map = kcalloc_node(nr_cpu_ids
+				blk_mq_update_queue_map(set)
+				ret = blk_mq_alloc_set_map_and_rqs(set)
+			ctrl->admin_q = blk_mq_init_queue(set) -> 添加通用助手来分配和拆除管理和 I/O 标记集，包括分配给它们的特殊队列
+				blk_mq_init_queue_data(set, NULL)
+					q = blk_alloc_queue(set->numa_node) -> 分配struct request_queue并初始化
+					ret = blk_mq_init_allocated_queue(set, q) -> 分配每个CPU专属的软件队列，分配硬件队列，对二者做初始化，并建立软件队列和硬件队列联系
+
+
+		
 
 spi, scsi并行接口, 
 
@@ -881,13 +915,7 @@ kthread+278
 ret_from_fork+34
 
 
-
-blk_mq_request_issue_directly
-	static blk_status_t __blk_mq_issue_directly
-
-
-
-IO路径-文件系统-系统调用
+IO路径-文件系统-系统调用, iopath
 int main()
 {
        char buff[128] = {0};
@@ -903,9 +931,9 @@ int main()
 
 IO路径-块层
 SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter ->write_iter -> xfs_file_write_iter
-xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead -> xfs_buf_readahead_map -> xfs_buf_read_map -> xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> submit_bio -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __ submit_bio_noacct_mq/ __ submit_bio_noacct -> __ submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
+xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead -> xfs_buf_readahead_map -> xfs_buf_read_map -> xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> submit_bio -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __submit_bio_noacct_mq/ __submit_bio_noacct -> __submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
 request插入ctx：blk_mq_submit_bio -> blk_mq_sched_insert_request -> __ blk_mq_insert_request -> __ blk_mq_insert_req_list -> list_add(&rq->queuelist, &ctx->rq_lists[type])
-取出request：blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __ blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
+取出request：blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
 
 IO路径, 块io, iscsi层, iopath, 
 bool blk_mq_dispatch_rq_list
@@ -1256,3 +1284,28 @@ vfs_write+388
 ksys_write+181
 do_syscall_64+51
 entry_SYSCALL_64_after_hwframe+68
+
+
+
+TRACE_EVENT, 跟踪事件, TRACE_EVENT(block_rq_remap, 
+
+
+nvme -> module_init(nvme_init) -> static int __init nvme_init(void)
+	pci_register_driver
+
+
+blk_mq_get_driver_tag+1
+blk_mq_dispatch_rq_list+178
+__blk_mq_do_dispatch_sched+356
+__blk_mq_sched_dispatch_requests+309
+blk_mq_sched_dispatch_requests+48
+__blk_mq_run_hw_queue+81
+__blk_mq_delay_run_hw_queue+321
+blk_mq_sched_insert_requests+106
+blk_mq_flush_plug_list+281
+blk_flush_plug_list+215
+blk_finish_plug+33
+xfs_buf_delwri_submit_buffers+524
+xfsaild+923
+kthread+278
+ret_from_fork+34
