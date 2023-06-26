@@ -143,15 +143,22 @@ choose_path_in_pg
 
 
 dm-mpath.c -> static int fail_path #路径故障
-	pgpath->pg->ps.type->fail_path(&pgpath->pg->ps, &pgpath->path)
+	pgpath->pg->ps.type->fail_path(&pgpath->pg->ps, &pgpath->path) -> .fail_path	= st_fail_path -> static void st_fail_path
+		list_move(&pi->list, &s->failed_paths)
+	DMWARN("%s: Failing path %s." ...
 	dm_path_uevent(DM_UEVENT_PATH_FAILED -> 此补丁添加了对失败路径和恢复路径的 dm_path_event 的调用 -> void dm_path_uevent
 		dm_build_path_uevent
 		dm_uevent_add -> void dm_uevent_add -> list_add(elist, &md->uevent_list) -> 挂链表
 		dm_send_uevents -> void dm_send_uevents
 			dm_copy_name_and_uuid
 			kobject_uevent_env 发送uevent, kobject_uevent这个函数原型如下，就是向用户空间发送uevent，可以理解为驱动（内核态）向用户（用户态）发送了一个KOBJ_ADD
-				kobject_uevent_net_broadcast -> 参考热拔插原理
+				kobject_uevent_net_broadcast -> 参考热拔插原理, todo...
 	queue_work
+	enable_nopath_timeout(m)
+		mod_timer(&m->nopath_timer
+
+
+
 	schedule_work
 
 static int __multipath_map_bio
@@ -726,7 +733,7 @@ static void iscsi_check_transport_timeouts
 		iscsi_if_transport_lookup(conn->transport)
 		alloc_skb
 		__nlmsg_put
-		ev->type = ISCSI_KEVENT_CONN_ERROR -> 给用户态发事件(连接超时错误)
+		ev->type = ISCSI_KEVENT_CONN_ERROR -> 给用户态发事件(连接超时错误) -> 转到用户态处理
 		iscsi_multicast_skb
 	iscsi_send_nopout
 
