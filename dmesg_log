@@ -78,13 +78,12 @@ ip set link xxx down (close 1 path) ->
 
 
 [root@node1 linux]# bpftrace -e 'kprobe:fail_path { printf("bt:%s\n", kstack); }'
-Attaching 1 probe...
-bt:
-        fail_path+1
-        multipath_message+342
-        target_message+627
-        ctl_ioctl+431
-        dm_ctl_ioctl+10
-        __x64_sys_ioctl+132
-        do_syscall_64+51
-        entry_SYSCALL_64_after_hwframe+68
+fail_path+1
+multipath_message+342
+target_message+627
+ctl_ioctl+431
+dm_ctl_ioctl+10
+__x64_sys_ioctl+132
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68
+

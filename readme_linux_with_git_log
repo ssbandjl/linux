@@ -17,9 +17,9 @@ kernel makefile: https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
 Linux模块文件如何编译到内核和独立编译成模块: https://z.itpub.net/article/detail/090A31801416081BC9D0781C05AC91AA
 安装源码: https://wiki.centos.org/HowTos/I_need_the_Kernel_Source
 编译内核模块: https://wiki.centos.org/HowTos/BuildingKernelModules
-
 dm-verity简介 ——（1）: https://www.cnblogs.com/hellokitty2/p/12364836.html
 管理工具源码_lvm_dmsetup: https://sourceware.org/dm/
+多路径参考: https://www.cnblogs.com/D-Tec/archive/2013/03/01/2938969.html
 
 
 监听ring_buffer日志: dmesg -w
@@ -276,6 +276,7 @@ dm_split_and_process_bio
 	trace_block_split
 	bio_inc_remaining
 	submit_bio_noacct -> void submit_bio_noacct(struct bio *bio) ->  为 I/O 重新提交 bio 到块设备层 bio 描述内存和设备上的位置。 这是 submit_bio() 的一个版本，只能用于通过堆叠块驱动程序重新提交给较低级别驱动程序的 I/O。 块层的所有文件系统和其他上层用户应该使用 submit_bio() 代替, bio 在节流之前已经被检查过，所以在从节流队列中调度它之前不需要再次检查它。 为此目的添加 submit_bio_noacct_nocheck() 的助手
+		bio_list_add -> kernel会将同一进程的bio统一放到current->bio_list暂时存储，submit bio时从bio_list中一个一个取出进行submit
 		__submit_bio_noacct_mq
 		submit_bio_noacct_nocheck -> __submit_bio_noacct(bio) -> 确实可以通过递归调用 submit_bio_noacct 添加更多的 bios
 			__submit_bio(bio)
@@ -283,20 +284,29 @@ dm_split_and_process_bio
 					blk_mq_bio_to_request
 					blk_queue_bounce -> 弹跳
 					__bio_split_to_limits
-					blk_mq_bio_to_request -> request
-					blk_mq_insert_request
+					blk_mq_bio_to_request(rq, bio, nr_segs) -> request
+					blk_mq_insert_request(rq, 0)
 						blk_mq_request_bypass_insert
-					blk_mq_run_hw_queue
+						list_add(&rq->queuelist, &ctx->rq_lists[hctx->type])
+						q->elevator->type->ops.insert_requests(hctx, &list, flags)
+					blk_mq_run_hw_queue(hctx, true) -> void blk_mq_run_hw_queue
 					blk_mq_try_issue_directly
 						blk_mq_run_hw_queue
-							blk_mq_delay_run_hw_queue
-							kblockd_mod_delayed_work_on
+							blk_mq_delay_run_hw_queue -> 异步延迟执行, 内核支持同步和异步两种方式发送request，在hctx中维护了一个delayed_work，用于异步方式往disk发送request，避免进程由于磁盘性能问题阻塞
+								kblockd_mod_delayed_work_on(blk_mq_hctx_next_cpu(hctx), &hctx->run_work -> blk_mq_run_work_fn -> static void blk_mq_run_work_fn
+								...
 						blk_mq_get_budget_and_tag
 						__blk_mq_issue_directly
 							ret = q->mq_ops->queue_rq(hctx, &bd)
 				disk->fops->submit_bio(bio) -> static void dm_submit_bio -> device_mapper io
 
 
+static void blk_mq_run_work_fn
+	blk_mq_run_dispatch_ops(hctx->queue, blk_mq_sched_dispatch_requests(hctx)) -> 返回 -EAGAIN 表明 hctx->dispatch 不为空，我们必须再次运行以避免刷新不足
+		if (__blk_mq_sched_dispatch_requests(hctx) == -EAGAIN) -> 如果调度列表中没有剩余请求，则仅向调度程序询问请求。 这是为了避免由于设备队列深度较低而导致我们只调度一部分可用请求的情况。 一旦我们从 IOscheduler 中取出请求，我们就无法再对它们进行合并或排序。 因此，最好尽可能长时间地将它们留在那里。 将硬件队列标记为在这种情况下需要重新启动。如果调度列表上没有任何内容或者我们能够从调度列表中调度，我们希望从调度程序进行调度
+			blk_mq_flush_busy_ctxs(hctx, &rq_list)
+			blk_mq_dispatch_rq_list(hctx, &rq_list, 0) -> 发送给磁盘 -> stap -l 'kernel.function("blk_mq_dispatch_rq_list")'
+				ret = q->mq_ops->queue_rq(hctx, &bd) -> .queue_rq
 
 
 
@@ -651,7 +661,7 @@ netlink_unicast
 int dm_register_target(struct target_type *tt)
 
 static ioctl_fn lookup_ioctl
-{DM_TARGET_MSG_CMD, 0, target_message} -> static int target_message
+{DM_TARGET_MSG_CMD, 0, target_message} -> static int target_message -> 由lvm发送给内核态 -> libdm/libdevmapper.h -> DM_DEVICE_TARGET_MSG -> 17
 	ti->type->message(ti, argc, argv, result, maxlen) -> static int multipath_message
 		action = fail_path;
 		action_dev(m, dev, action) -> static int action_dev
@@ -701,7 +711,7 @@ bpftrace -e 't:syscalls:sys_enter_execve { printf("%s called %s\n", comm, str(ar
 
 故障处理
 ip set link xxx down (close 1 path) -> iscsi_check_transport_timeouts <- iscsi_conn_setup
-[12291.650194]  connection3:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4306948309, last ping 4306953344, now 4306958848
+[12291.650194]  connection3:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4306948309, last ping 4306953344, now 4306958848 <- iscsi_conn_printk(KERN_ERR, conn, "ping timeout of
 [12291.650313]  connection3:0: detected conn error (1022) <- void iscsi_conn_error_event
 [12296.770199]  session3: session recovery timed out after 5 secs
 [12297.554572] device-mapper: multipath: 253:3: Failing path 8:16. <- static int fail_path
@@ -716,7 +726,7 @@ static void iscsi_check_transport_timeouts
 		iscsi_if_transport_lookup(conn->transport)
 		alloc_skb
 		__nlmsg_put
-		ev->type = ISCSI_KEVENT_CONN_ERROR -> 给用户态发事件
+		ev->type = ISCSI_KEVENT_CONN_ERROR -> 给用户态发事件(连接超时错误)
 		iscsi_multicast_skb
 	iscsi_send_nopout
 
@@ -940,7 +950,7 @@ int main()
 
 IO路径-块层, linux v5.10, 
 SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter -> write_iter -> xfs_file_write_iter (.write_iter	= xfs_file_write_iter) -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead 预读 -> xfs_buf_readahead_map -> xfs_buf_read_map -> _xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> 由VFS -> 进入块层 -> submit_bio(bio) -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __submit_bio_noacct_mq / __submit_bio_noacct -> __submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
-request插入ctx：blk_mq_submit_bio -> blk_mq_sched_insert_request -> __ blk_mq_insert_request -> __ blk_mq_insert_req_list -> list_add(&rq->queuelist, &ctx->rq_lists[type])
+request插入ctx：blk_mq_submit_bio -> blk_mq_sched_insert_request (blk_mq_insert_request) -> __blk_mq_insert_request -> __blk_mq_insert_req_list -> list_add(&rq->queuelist, &ctx->rq_lists[type])
 取出request：blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
 
 __submit_bio_noacct_mq -> 我们一次只希望一个 ->submit_bio 处于活动状态，否则堆栈设备的堆栈使用可能会出现问题。 使用 current->bio_list 收集 ->submit_bio 方法处于活动状态时提交的请求列表，然后在返回后处理它们
@@ -1360,3 +1370,112 @@ blk_plug 允许通过短时间保存 I/O 片段来构建相关请求的队列。
 
 bio_alloc_bioset
 	punt_bios_to_rescuer
+
+
+
+ctx申请代码参考：__scsi_scan_target -> scsi_report_lun_scan -> scsi_alloc_sdev -> blk_mq_init_queue -> blk_mq_init_queue_data -> blk_mq_init_allocated_queue -> blk_mq_alloc_ctxs/blk_mq_realloc_hw_ctxs
+
+io调度器:
+插入：blk_mq_sched_insert_request -> ops.insert_requests
+取出：__ blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_sched -> __ blk_mq_do_dispatch_sched -> ops.dispatch_request
+将request发送给disk：__ blk_mq_do_dispatch_sched -> blk_mq_dispatch_rq_list -> .queue_rq
+
+
+
+per disk per channel的数据结构 -> struct blk_mq_hw_ctx {
+
+
+
+
+
+
+blk_mq_run_hw_queue+1
+__blk_mq_free_request+113
+blk_flush_complete_seq+227
+flush_end_io+469
+scsi_end_request+143
+scsi_io_completion+342
+blk_done_softirq+185
+__softirqentry_text_start+268
+asm_call_sysvec_on_stack+18
+do_softirq_own_stack+55
+irq_exit_rcu+243
+sysvec_call_function_single+52
+asm_sysvec_call_function_single+18
+native_safe_halt+14
+acpi_idle_do_entry+75
+acpi_idle_enter+90
+cpuidle_enter_state+145
+cpuidle_enter+41
+do_idle+636
+cpu_startup_entry+25
+start_secondary+280
+secondary_startup_64_no_verify+176
+
+
+
+blk_mq_run_hw_queue+1
+blk_mq_submit_bio+1067
+submit_bio_noacct+748
+dm_wq_work+68
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+
+blk_mq_run_hw_queue+1
+blk_mq_run_hw_queues+52
+blk_mq_requeue_work+350
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+blk_mq_run_hw_queue+1
+blk_mq_sched_insert_request+240
+blk_mq_submit_bio+985
+submit_bio_noacct+748
+submit_bio+67
+iomap_submit_ioend.isra.45+74
+xfs_vm_writepages+100
+do_writepages+65
+__filemap_fdatawrite_range+199
+file_write_and_wait_range+94
+xfs_file_fsync+99
+do_fsync+56
+__x64_sys_fsync+16
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68 -> SYM_INNER_LABEL(entry_SYSCALL_64_after_hwframe, SYM_L_GLOBAL) -> call	do_syscall_64		/* returns with IRQs disabled */ -> 深入理解Linux系统调用: https://www.cnblogs.com/lm273/p/12964220.html
+
+
+
+
+查看行号:
+rpm -ql kernel-debug-debuginfo | grep vmlinux
+gdb `rpm -ql kernel-debug-debuginfo | grep vmlinux`
+(gdb) list *(blk_mq_submit_bio+985)
+
+
+blk_mq_do_dispatch_sched
+	void blk_mq_delay_run_hw_queue
+		kblockd_mod_delayed_work_on(blk_mq_hctx_next_cpu(hctx), &hctx->run_work
+			mod_delayed_work_on
+				__queue_delayed_work
+				...
+		异步处理request -> INIT_DELAYED_WORK(&hctx->run_work, blk_mq_run_work_fn)
+
+
+
+
+tee<<EOF>test.bt
+#include <linux/blk-mq.h>
+kprobe:blk_mq_dispatch_rq_list
+{
+    printf("blk_mq_dispatch_rq_list a3:%d\n", arg3); // str(((path *)arg0)->dentry->d_name.name)
+}
+EOF
+bpftrace test.bt
+
+
+系统调用表: arch/x86/entry/syscalls/syscall_64.tbl
