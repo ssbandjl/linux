@@ -87,3 +87,39 @@ __x64_sys_ioctl+132
 do_syscall_64+51
 entry_SYSCALL_64_after_hwframe+68
 
+
+
+
+
+one_path_down:
+[55535.946465] scsi host14: iSCSI Initiator over TCP/IP
+[55535.972123] scsi 14:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+[55535.973967] scsi 14:0:0:0: Attached scsi generic sg1 type 12
+[55535.974214] scsi 14:0:0:0: Power-on or device reset occurred
+[55535.975080] scsi 14:0:0:1: Direct-Access     IET      VIRTUAL-DISK     0001 PQ: 0 ANSI: 5
+[55535.977615] sd 14:0:0:1: [sdb] 209715200 512-byte logical blocks: (107 GB/100 GiB)
+[55535.977818] sd 14:0:0:1: [sdb] Write Protect is off
+[55535.977819] sd 14:0:0:1: [sdb] Mode Sense: 69 00 10 08
+[55535.978237] sd 14:0:0:1: [sdb] Write cache: disabled, read cache: enabled, supports DPO and FUA
+[55536.004433] sd 14:0:0:1: [sdb] Attached SCSI disk
+[55536.004505] sd 14:0:0:1: Attached scsi generic sg2 type 0
+[55539.782615] scsi host15: iSCSI Initiator over TCP/IP
+[55539.810210] scsi 15:0:0:0: RAID              IET      Controller       0001 PQ: 0 ANSI: 5
+[55539.810795] scsi 15:0:0:0: Attached scsi generic sg3 type 12
+[55539.810992] scsi 15:0:0:0: Power-on or device reset occurred
+[55539.811622] scsi 15:0:0:1: Direct-Access     IET      VIRTUAL-DISK     0001 PQ: 0 ANSI: 5
+[55539.812888] sd 15:0:0:1: [sdc] 209715200 512-byte logical blocks: (107 GB/100 GiB)
+[55539.813003] sd 15:0:0:1: [sdc] Write Protect is off
+[55539.813004] sd 15:0:0:1: [sdc] Mode Sense: 69 00 10 08
+[55539.813222] sd 15:0:0:1: [sdc] Write cache: disabled, read cache: enabled, supports DPO and FUA
+[55539.842500] sd 15:0:0:1: [sdc] Attached SCSI disk
+[55539.842614] sd 15:0:0:1: Attached scsi generic sg4 type 0
+[55594.566142]  connection5:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4350251378, last ping 4350256384, now 4350261760
+[55594.566220]  connection5:0: detected conn error (1022)
+[55599.686158]  session5: session recovery timed out after 5 secs
+[55599.690158] sd 14:0:0:1: rejecting I/O to offline device
+[55599.690218] blk_update_request: I/O error, dev sdb, sector 0 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+[55599.823226] device-mapper: multipath: 253:3: Failing path 8:16.
+
+
+
