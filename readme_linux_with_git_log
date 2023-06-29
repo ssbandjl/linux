@@ -20,6 +20,14 @@ Linux模块文件如何编译到内核和独立编译成模块: https://z.itpub.
 dm-verity简介 ——（1）: https://www.cnblogs.com/hellokitty2/p/12364836.html
 管理工具源码_lvm_dmsetup: https://sourceware.org/dm/
 多路径参考: https://www.cnblogs.com/D-Tec/archive/2013/03/01/2938969.html
+uevent:
+https://www.cnblogs.com/arnoldlu/p/11246204.html
+device_mapper_uevent: https://docs.kernel.org/admin-guide/device-mapper/dm-uevent.html
+用udev动态管理内核设备: https://documentation.suse.com/sles/12-SP5/html/SLES-all/cha-udev.html
+linux设备模型: https://linux-kernel-labs.github.io/refs/pull/183/merge/labs/device_model.html
+
+
+
 
 
 监听ring_buffer日志: dmesg -w
@@ -729,14 +737,18 @@ static int fail_path
 
 
 static void iscsi_check_transport_timeouts
-	iscsi_has_ping_timed_out
-	iscsi_conn_failure(conn, ISCSI_ERR_NOP_TIMEDOUT) -> 连接超时
+	struct iscsi_conn *conn = from_timer(conn, t, transport_timer) -> from_timer, 新版本内核对于void (*function)(struct timer_list *)处理函数的参数发生了变化，struct timer_list *定时器地址可以通过from_timer也就是container_of计算出传参进来的结构体首地址，这样来达到传参的目标
+	iscsi_has_ping_timed_out(conn)
+	iscsi_conn_failure(conn, ISCSI_ERR_NOP_TIMEDOUT) -> 连接超时, 故障处理, initiator -> tgt的ping超时
 		iscsi_set_conn_failed
 			set_bit(ISCSI_CONN_FLAG_SUSPEND_TX, &conn->flags) -> 挂起发送和接收
 			set_bit(ISCSI_CONN_FLAG_SUSPEND_RX, &conn->flags)
 		iscsi_conn_error_event(conn->cls_conn, err) -> 控制平面(上行)调用
-			queue_work(iscsi_conn_cleanup_workq -> static void iscsi_cleanup_conn_work_fn
+			case ISCSI_CONN_UP -> 连接状态为up(0)
+			test_and_set_bit ISCSI_CLS_CONN_BIT_CLEANUP
+			queue_work(iscsi_conn_cleanup_workq -> static void iscsi_cleanup_conn_work_fn -> 清理连接
 				iscsi_ep_disconnect(conn, false)
+					WRITE_ONCE(conn->state, ISCSI_CONN_FAILED) -> 将连接状态置为失败
 					session->transport->unbind_conn(conn, is_active) -> void iscsi_conn_unbind
 						iscsi_suspend_queue(conn)
 						void iscsi_suspend_tx
@@ -762,7 +774,7 @@ static void iscsi_check_transport_timeouts
 										session_recovery_timedout
 											scsi_target_unblock(&session->dev, SDEV_TRANSPORT_OFFLINE)
 											session->transport->session_recovery_timedout(session) -> void iscsi_session_recovery_timedout
-												wake_up(&session->ehwait) -> 会话状态: ISCSI_STATE_IN_RECOVERY -> wait_event_interruptible(session->ehwait -> sleep until a condition gets true: https://linuxtv.org/downloads/v4l-dvb-internals/device-drivers/API-wait-event-interruptible.html
+												wake_up(&session->ehwait) -> 会话状态: ISCSI_STATE_IN_RECOVERY -> wait_event_interruptible(session->ehwait -> sleep until a condition gets true: https://linuxtv.org/downloads/v4l-dvb-internals/device-drivers/API-wait-event-interruptible.html, 等待队列（Wait Queue）
 												int iscsi_eh_session_reset
 												...
 			iscsi_if_transport_lookup(conn->transport)
@@ -793,7 +805,7 @@ iscsi_sw_tcp_conn_create
 	iscsi_tcp_conn_setup
 		iscsi_conn_setup(struct iscsi_cls_session *cls_session
 			iscsi_alloc_conn
-			timer_setup(&conn->transport_timer, iscsi_check_transport_timeouts, 0) -> 作为 timer_setup 的 callback, 超时的时候执行回调
+			timer_setup(&conn->transport_timer, iscsi_check_transport_timeouts, 0) -> 作为 timer_setup 的 callback, 超时的时候执行回调, CONFIG_HZ=1000, jiffies=1/1000=1ms, jiffies回绕周期为：4294967295*5(ms)=248.5513480902778(天), mod_timer(&conn->transport_timer, 用于修改定时值，如果定时器还没有被激活，该函数可以激活定时器
 				void iscsi_conn_error_event
 				...
 			INIT_LIST_HEAD(&conn->mgmtqueue)
@@ -848,6 +860,7 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
 		case ISCSI_UEVENT_START_CONN
 		ev->r.retcode = transport->start_conn(conn)
 			启动连接 -> iscsi_conn_start
+				mod_timer(&conn->transport_timer -> 启动定时器
 			bpftrace -e 'kprobe:iscsi_conn_start { printf("bt:%s\n", kstack); }'
 			iscsi_conn_start+1
 			iscsi_if_recv_msg+3789
@@ -1645,6 +1658,28 @@ bpftrace iscsi_session_recovery_timedout.bt
 session_state:5 -> ISCSI_STATE_IN_RECOVERY
 
 
+tee<<EOF>test.bt
+#include <rdma/rdma_cm.h>
+kprobe:nvme_rdma_cm_handler
+{
+	printf("event: %d\n", ((struct rdma_cm_event *)arg1)->event);
+}
+EOF
+bpftrace test.bt
+
+
+tee<<EOF>test.bt
+#include <scsi/libiscsi.h>
+#include <scsi/scsi_transport_iscsi.h>
+kprobe:iscsi_conn_error_event
+{
+	printf("conn_state:%lu\n",((struct iscsi_cls_conn *)arg0)->state);
+	printf("flags:%lu\n",((struct iscsi_cls_conn *)arg0)->flags);
+	// printf("flags:%#lx\n", (&((struct iscsi_cls_conn *)arg0))->flags);
+}
+EOF
+bpftrace test.bt
+
 
 scsi_ioctl_reset
 scsi_abort_eh_cmnd
@@ -1676,7 +1711,128 @@ initiator_tgt, iscsi, kernel, task
 (3) 解决方案
 疑问: 
 1) 之前的IO如何处理, retry?
-2) 
+2) 继续深入细节?
+
+
+使用 perf 实用程序跟踪
+perf list 'iscsi:*'
+/usr/bin/perf trace --no-syscalls --event="iscsi:iscsi_dbg_trans_conn"
+
+
+[root@node1 ~]# /usr/bin/perf trace --event="iscsi:iscsi_dbg_trans_session"
+     0.000 iscsi:iscsi_dbg_trans_session:session5: __iscsi_block_session Blocking session
+
+    29.082 iscsi:iscsi_dbg_trans_session:session5: __iscsi_block_session Completed SCSI target blocking
+
+  5114.112 iscsi:iscsi_dbg_trans_session:session5: session_recovery_timedout Unblocking SCSI target
+
+  5114.136 iscsi:iscsi_dbg_trans_session:session5: session_recovery_timedout Completed unblocking SCSI target
+
+
+iscsi_conn_error_event+1
+call_timer_fn+41
+run_timer_softirq+474
+__softirqentry_text_start+268
+asm_call_on_stack+18
+do_softirq_own_stack+55
+irq_exit_rcu+243
+sysvec_apic_timer_interrupt+52
+asm_sysvec_apic_timer_interrupt+18
+native_safe_halt+14
+acpi_idle_do_entry+75
+acpi_idle_enter+90
+cpuidle_enter_state+145
+cpuidle_enter+41
+do_idle+636
+cpu_startup_entry+25
+start_secondary+280
+secondary_startup_64_no_verify+176
 
 
 
+补丁: https://github.com/torvalds/linux/commit/23d6fefbb3f6b1cc29794427588b470ed06ff64e
+scsi：iscsi：修复内核 conn 故障处理
+提交 0ab710458da1（“scsi：iscsi：完全在内核空间中执行连接失败”）具有此补丁修复的以下回归/错误：
+1. 它可以将命令返回到上层，例如 dm-multipath，在那里可以重试它们。 成功后，fs/app 可以将新的 I/O 发送到相同的扇区，但我们让命令在固件或网络层中运行。 如果用户空间未启动，我们需要调用 ep_disconnect。 此补丁仅修复卸载驱动程序的问题。 iscsi_tcp 将在单独的提交中修复，因为它没有 ep_disconnect 调用。
+2. 实现 ep_disconnect 的驱动程序期望在 conn_stop 之前调用它。 除了崩溃之外，如果在 ep_disconnect 之前调用 cleanup_task 调用，它可能会为 session1 释放驱动程序/卡资源，然后可以将它们分配给 session2。 但由于驱动程序的 ep_disconnect 未被调用，因此它尚未清理固件，因此该卡仍在使用原始 cmd 的资源。
+3. stop_conn_work_fn 可以在用户空间完成恢复后运行，并且我们正在愉快地使用会话。 然后，根据当时发生的情况，我们最终会遇到各种错误。
+我们也可以在用户空间调用 stop_conn 和 ep_disconnect 之后运行 stop_conn_work_fn ，现在将调用 start/bind conn 。 如果 stop_conn_work_fn 在绑定之后但启动之前运行，我们将使 conn 处于未绑定但有点启动的状态，即使驱动程序已设置为不再期望 I/O 的状态，也可能允许 IO。
+4. 如果我们尚未运行内核 stop_conn 函数，则在 iscsi_if_destroy_conn 中返回 -EAGAIN 会破坏用户空间。 我们应该为来电者这样做
+
+https://github.com/torvalds/linux/commit/0ab710458da113a71c461c4df27e7f1353d9f864
+scsi：iscsi：完全在内核空间中执行连接失败连接失败处理取决于存在的守护程序（至少）停止连接并开始恢复。 这是多路径场景中的一个问题，如果守护进程由于某种原因失败，SCSI 路径永远不会被标记为关闭，多路径不会执行故障转移，并且设备的 IO 将永远等待该连接恢复。
+该补丁完全在内核内部执行连接故障。 这样，即使守护进程已终止，也可以进行故障转移并且挂起的 IO 可以继续。 一旦守护进程再次激活，它可以执行恢复过程（如果适用）
+
+
+
+内核收到iscsid从用户态发来的netlink消息: ISCSI_UEVENT_STOP_CONN
+err = iscsi_if_transport_conn(transport, nlh) -> static int iscsi_if_transport_conn
+	conn = iscsi_conn_lookup(ev->u.stop_conn.sid
+	return iscsi_if_stop_conn(conn, ev->u.stop_conn.flag) -> static int iscsi_if_stop_conn
+		... h内核简单关闭连接
+
+
+
+用户态 -> 
+static int dev_status
+	__dev_status(md, param)
+	...
+
+
+tgt原理懂了，感觉要实现不难。内核应该就是发个uevent然后sched，等待唤醒
+
+
+uevent原理: 
+uevent_net_init
+/sys/kernel/uevent_helper
+
+reboot, call_usermodehelper, 执行用户态可执行程序
+static int run_cmd(const char *cmd)
+struct thermal_cooling_device
+echo "my_event" > /dev/uevent
+
+
+
+nvmeof, rdma
+nvme_mpath_init_ctrl
+
+
+
+nvme_rdma_cm_handler
+case RDMA_CM_EVENT_TIMEWAIT_EXIT
+nvme_rdma_error_recovery(queue->ctrl)
+static void nvme_rdma_error_recovery
+	dev_warn(ctrl->ctrl.device, "starting error recovery\n") -> starting error recovery
+	queue_work(nvme_reset_wq, &ctrl->err_work) -> nvme_rdma_error_recovery_work <- INIT_WORK(&ctrl->err_work, nvme_rdma_error_recovery_work)
+		nvme_stop_keep_alive
+
+
+
+
+
+nvme_rdma_error_recovery+1
+nvme_rdma_cm_handler+269
+cma_cm_event_handler+37
+cma_ib_handler+167
+cm_process_work+34
+cm_work_handler+1839
+process_one_work+423
+worker_thread+48
+kthread+274
+ret_from_fork+31
+
+
+nvme_rdma_error_recovery+1
+nvme_rdma_recv_done+726
+__ib_process_cq+127
+ib_poll_handler+44
+irq_poll_softirq+118
+__softirqentry_text_start+227
+irq_exit+256
+do_IRQ+127
+ret_from_intr+0
+mwait_idle+127
+do_idle+497
+cpu_startup_entry+111
+start_secondary+423
+secondary_startup_64+183
