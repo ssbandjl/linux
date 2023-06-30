@@ -339,6 +339,7 @@ blk_mq_submit_bio
 blk_mq_run_hw_queue
 __blk_mq_sched_dispatch_requests
 
+
 static const struct blk_mq_ops nvme_rdma_mq_ops = {
 	.queue_rq	= nvme_rdma_queue_rq,
 	.complete	= nvme_rdma_complete_rq,
@@ -349,9 +350,20 @@ static const struct blk_mq_ops nvme_rdma_mq_ops = {
 	.map_queues	= nvme_rdma_map_queues,
 	.poll		= nvme_rdma_poll,
 };
-nvme_rdma_queue_rq
-drivers/nvme/host/rdma.c -> static int nvme_rdma_post_send
-	ib_post_send
+static blk_status_t nvme_rdma_queue_rq
+	nvme_check_ready -> 对于我们无法发送到设备的状态，默认操作是使其忙碌并在控制器状态恢复后重试。 但是，如果控制器正在删除，或者任何内容被标记为快速故障或 nvme 多路径，则会立即失败。 注意：用于初始化控制器的命令将被标记为快速故障。 注意：nvme cli/ioctl 命令被标记为故障快速
+	req->sqe.dma = ib_dma_map_single(dev, req->sqe.data
+	ib_dma_mapping_error
+	ib_dma_sync_single_for_cpu
+	nvme_setup_cmd
+	nvme_start_request(rq)
+	nvme_rdma_map_data
+	ib_dma_sync_single_for_device
+	nvme_rdma_post_send <- drivers/nvme/host/rdma.c
+		ib_post_send
+
+
+
 
 
 三条链：current->bio_list存储在当前线程的所有bio; plug->mq_list使能plug/unplug机制时存放在缓存池的bio；若定义IO调度层，IO请求会发送到scheduler list中；若没有定义IO调度层，IO请求会发送到ctx->rq_lists
@@ -1836,3 +1848,12 @@ do_idle+497
 cpu_startup_entry+111
 start_secondary+423
 secondary_startup_64+183
+
+
+打开所有调试: echo -n '-p' > /mnt/dbg/dynamic_debug/control
+echo -n '+p' > /mnt/dbg/dynamic_debug/control
+echo -n '+mf' > /mnt/dbg/dynamic_debug/control
+
+
+动态调试文档: lib/Kconfig.debug
+
