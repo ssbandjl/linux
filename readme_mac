@@ -1,0 +1,4 @@
+内核block层Multi queue多队列的一次优化实践: https://blog.csdn.net/hu1610552336/article/details/121072592?spm=1001.2014.3001.5502
+
+
+drivers/mmc/card/block.c -> static int mmc_blk_probe
