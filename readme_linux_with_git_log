@@ -1857,3 +1857,14 @@ echo -n '+mf' > /mnt/dbg/dynamic_debug/control
 
 动态调试文档: lib/Kconfig.debug
 
+
+
+nvmeof -> cli write -> PATH_NVME_FABRICS	"/dev/nvme-fabrics"
+drivers/nvme/host/fabrics.c
+static int __init nvmf_init
+  nvmf_class = class_create("nvme-fabrics")
+	nvmf_device device_create(nvmf_class, NULL, MKDEV(0, 0), NULL, "ctl")
+  // /sys/class/nvme-fabrics/ctl
+  // /sys/class/misc/nvme-fabrics
+  // /dev/nvme-fabrics
+  ret = misc_register(&nvmf_misc)
