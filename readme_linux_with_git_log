@@ -747,7 +747,7 @@ ip set link xxx down (close 1 path) -> iscsi_check_transport_timeouts <- iscsi_c
 static int fail_path
 
 
-
+drivers/scsi/libiscsi.c
 static void iscsi_check_transport_timeouts
 	struct iscsi_conn *conn = from_timer(conn, t, transport_timer) -> from_timer, 新版本内核对于void (*function)(struct timer_list *)处理函数的参数发生了变化，struct timer_list *定时器地址可以通过from_timer也就是container_of计算出传参进来的结构体首地址，这样来达到传参的目标
 	iscsi_has_ping_timed_out(conn)
@@ -1857,3 +1857,14 @@ echo -n '+mf' > /mnt/dbg/dynamic_debug/control
 
 动态调试文档: lib/Kconfig.debug
 
+
+
+nvmeof -> cli write -> PATH_NVME_FABRICS	"/dev/nvme-fabrics"
+drivers/nvme/host/fabrics.c
+static int __init nvmf_init
+  nvmf_class = class_create("nvme-fabrics")
+	nvmf_device device_create(nvmf_class, NULL, MKDEV(0, 0), NULL, "ctl")
+  // /sys/class/nvme-fabrics/ctl
+  // /sys/class/misc/nvme-fabrics
+  // /dev/nvme-fabrics
+  ret = misc_register(&nvmf_misc)
