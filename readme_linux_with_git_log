@@ -26,6 +26,9 @@ device_mapper_uevent: https://docs.kernel.org/admin-guide/device-mapper/dm-ueven
 用udev动态管理内核设备: https://documentation.suse.com/sles/12-SP5/html/SLES-all/cha-udev.html
 linux设备模型: https://linux-kernel-labs.github.io/refs/pull/183/merge/labs/device_model.html
 
+nvmeof设备实现: https://runsisi.com/2021/10/17/nvme-of/
+
+
 
 
 
@@ -1810,7 +1813,7 @@ nvme_mpath_init_ctrl
 
 
 
-nvme_rdma_cm_handler
+static int nvme_rdma_cm_handler
 case RDMA_CM_EVENT_TIMEWAIT_EXIT
 nvme_rdma_error_recovery(queue->ctrl)
 static void nvme_rdma_error_recovery
@@ -1868,3 +1871,101 @@ static int __init nvmf_init
   // /sys/class/misc/nvme-fabrics
   // /dev/nvme-fabrics
   ret = misc_register(&nvmf_misc)
+
+
+
+
+nvme_alloc_ns
+  nvme_init_ns_head
+    nvme_alloc_ns_head
+      nvme_mpath_alloc_disk
+        if (!(ctrl->subsys->cmic & NVME_CTRL_CMIC_MULTI_CTRL) || !multipath)
+          return 0;
+        head->disk = alloc_disk(0)
+        sprintf(head->disk->disk_name, "nvme%dn%d",
+                ctrl->subsys->instance, head->instance);
+  nvme_set_disk_name(disk_name, ns, ctrl, &flags)
+    if (!multipath) {
+      sprintf(disk_name, "nvme%dn%d", ctrl->instance, ns->head->instance);
+    } else if (ns->head->disk) {
+      sprintf(disk_name, "nvme%dc%dn%d", ctrl->subsys->instance,
+              ctrl->instance, ns->head->instance);
+      *flags = GENHD_FL_HIDDEN;
+    } else {
+      sprintf(disk_name, "nvme%dn%d", ctrl->subsys->instance,
+              ns->head->instance);
+    }
+  disk = alloc_disk_node(0, node)
+  memcpy(disk->disk_name, disk_name, DISK_NAME_LEN)
+  ns->disk = disk
+  // /sys/class/nvme-fabrics/ctl/nvmeA/nvmeXcYnZ
+  // /dev/nvmeXcYnZ -- hidden if multipathing enabled
+  device_add_disk(ctrl->device, ns->disk)
+  sysfs_create_group(&disk_to_dev(ns->disk)->kobj,
+          &nvme_ns_id_attr_group)
+  nvme_mpath_add_disk(ns, id)
+    nvme_mpath_set_live
+      // /sys/class/nvme-subsystem/nvme-subsysA/nvmeXnY
+      // /dev/nvmeXnY
+      device_add_disk(&head->subsys->dev, head->disk)
+      sysfs_create_group(&disk_to_dev(head->disk)->kobj,
+              &nvme_ns_id_attr_group)
+
+nvmf_init
+  nvmf_class = class_create(THIS_MODULE, "nvme-fabrics")
+  // /sys/class/nvme-fabrics/ctl
+  nvmf_device =	device_create(nvmf_class)
+  // /sys/class/misc/nvme-fabrics
+  // /dev/nvme-fabrics
+  misc_register(&nvmf_misc)
+
+
+nvme_core_init
+  alloc_chrdev_region(&nvme_chr_devt, 0, NVME_MINORS, "nvme")
+  nvme_class = class_create(THIS_MODULE, "nvme")
+  nvme_subsys_class = class_create(THIS_MODULE, "nvme-subsystem")
+
+
+
+nvmf_create_ctrl(nvmf_device)
+  nvme_tcp_create_ctrl
+    nvme_init_ctrl
+      ctrl->dev = dev
+      ctrl->device->class = nvme_class
+      ctrl->device->parent = ctrl->dev
+      dev_set_name(ctrl->device, "nvme%d", ctrl->instance)
+      // /sys/class/nvme-fabrics/ctl/nvmeX
+      // /sys/class/nvme/nvmeX
+      // /dev/nvmeX
+      cdev_device_add(&ctrl->cdev, ctrl->device)
+    nvme_tcp_setup_ctrl
+
+
+
+nvme_init_subsystem
+  subsys->dev.class = nvme_subsys_class
+  dev_set_name(&subsys->dev, "nvme-subsys%d", ctrl->instance)
+  // /sys/class/nvme-subsystem/nvme-subsysA
+  device_add(&subsys->dev)
+  // /sys/calss/nvme-fabrics/ctl/nvmeX ->
+  // /sys/class/nvme-subsystem/nvme-subsysA/nvmeX
+  sysfs_create_link(&subsys->dev.kobj, &ctrl->device->kobj,
+          dev_name(ctrl->device))
+
+
+
+常见问题:
+错误: no handler found for transport 
+
+
+
+static const struct file_operations nvmf_dev_fops = {
+	.owner		= THIS_MODULE,
+	.write		= nvmf_dev_write,
+	.read		= seq_read,
+	.open		= nvmf_dev_open,
+	.release	= nvmf_dev_release,
+};
+static ssize_t nvmf_dev_write
+	nvmf_create_ctrl(struct device *dev, const char *buf)
+		pr_info("no handler found for transport %s.\n"
