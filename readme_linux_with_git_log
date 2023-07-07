@@ -924,6 +924,9 @@ __sys_sendmsg+87
 do_syscall_64+51
 entry_SYSCALL_64_after_hwframe+68
 
+
+blkdev_get_by_dev
+blkdev_get_no_open
 blk_request_module
 	(*n)->probe(devt) -> static int nvme_probe
 		nvme_pci_alloc_dev
@@ -1864,9 +1867,15 @@ echo -n '+mf' > /mnt/dbg/dynamic_debug/control
 
 nvmeof -> cli write -> PATH_NVME_FABRICS	"/dev/nvme-fabrics"
 drivers/nvme/host/fabrics.c
+static struct miscdevice nvmf_misc = {
+	.minor		= MISC_DYNAMIC_MINOR,
+	.name           = "nvme-fabrics",
+	.fops		= &nvmf_dev_fops,
+};
+
 static int __init nvmf_init
-  nvmf_class = class_create("nvme-fabrics")
-	nvmf_device device_create(nvmf_class, NULL, MKDEV(0, 0), NULL, "ctl")
+  nvmf_class = class_create("nvme-fabrics") -> /sys/class/nvme-fabrics
+	nvmf_device device_create(nvmf_class, NULL, MKDEV(0, 0), NULL, "ctl") -> ctl -> ../../devices/virtual/nvme-fabrics/ctl
   // /sys/class/nvme-fabrics/ctl
   // /sys/class/misc/nvme-fabrics
   // /dev/nvme-fabrics
@@ -1967,5 +1976,188 @@ static const struct file_operations nvmf_dev_fops = {
 	.release	= nvmf_dev_release,
 };
 static ssize_t nvmf_dev_write
-	nvmf_create_ctrl(struct device *dev, const char *buf)
+	buf = memdup_user_nul(ubuf, count) -> 内存拷贝 -> duplicate memory region from user space and NUL-terminate
+	nvmf_create_ctrl(struct device *dev, const char *buf) -> 参考, kernel-nvmf: https://blog.csdn.net/u013565071/article/details/124190259
+		struct nvmf_ctrl_options *opts -> 关键数据结构体 -> nvme-fabrics：添加通用 NVMe over Fabrics 库，NVMe over Fabrics 库为传输和 nvme 核心提供接口，以处理独立于底层传输的特定于结构的命令和属性，此外，fabrics 库添加了一个杂项设备 允许实际创建结构控制器的接口，因为我们不能像 PCI 情况那样自动发现它。 nvme-cli 实用程序已得到增强，可以使用此接口来支持结构连接和发现
+		nvmf_parse_options
+		request_module("nvme-%s", opts->transport) -> nvme-rdma.ko
+		nvmf_check_required_opts
+		down_read(&nvmf_transports_rwsem) -> nvme-fabrics：将 nvmf_transports_mutex 转换为 rwsem 互斥体可防止在创建控制器时更改传输列表，但使用普通的旧互斥体意味着它还会序列化控制器创建。 这不必要地减慢了创建多个控制器的速度 - 例如，对于 RDMA 传输，创建控制器涉及为每个 IO 队列建立一个连接，这涉及更多的网络/软件往返，因此延迟可能会变得很严重。解决此问题的最简单方法是 将互斥量更改为 rwsem，并仅在列表发生变化时保留它以进行写入。 由于我们可以在创建控制器时读取rwsem，因此我们可以并行创建多个控制器
+		nvmf_lookup_transport
+		try_module_get
+		up_read(&nvmf_transports_rwsem);
+		nvmf_check_required_opts
+		nvmf_check_allowed_opts
+		ctrl = ops->create_ctrl -> .create_ctrl	= nvme_rdma_create_ctrl -> static struct nvme_ctrl *nvme_rdma_create_ctrl
+			...
+			INIT_DELAYED_WORK(&ctrl->reconnect_work nvme_rdma_reconnect_ctrl_work
+			INIT_WORK(&ctrl->err_work, nvme_rdma_error_recovery_work)
+			INIT_WORK(&ctrl->ctrl.reset_work, nvme_rdma_reset_ctrl_work)
+			nvme_init_ctrl -> 初始化nvme控制器
+				INIT_WORK(&ctrl->scan_work, nvme_scan_work)
+				INIT_WORK(&ctrl->async_event_work, nvme_async_event_work)
+				...
+
+			changed = nvme_change_ctrl_state
+			nvme_rdma_setup_ctrl
+				nvme_rdma_configure_admin_queue
+					nvme_rdma_alloc_queue -> ...
+					nvme_rdma_alloc_qe
+					nvme_alloc_admin_tag_set
+				nvme_rdma_configure_io_queues
+					nvme_rdma_alloc_io_queues -> ...
+					nvme_rdma_alloc_tag_set
+					nvme_rdma_start_io_queues
+					blk_mq_update_nr_hw_queues
+				nvme_change_ctrl_state
+				nvme_start_ctrl(&ctrl->ctrl)
+					nvme_start_keep_alive
+						nvme_queue_keep_alive_work(ctrl)
+							queue_delayed_work(nvme_wq, &ctrl->ka_work, ctrl->kato * HZ / 2) -> kato: nvme：添加保持活动支持定期保持活动是 NVMe over Fabrics 中的强制功能，在 PCIe 的 NVMe 1.2.1 中是可选功能。 此补丁添加了从主机定期发送的保持活动状态，以验证控制器是否仍然响应，反之亦然。 keep-alive 超时是用户定义的（使用 keep_alive_tmo 连接参数），默认为 5 秒。为了避免主机发送 keep-alive 与目标端 keep-alive 超时过期竞争的竞争条件，主机添加了一个宽限 向目标发布保持活动超时时，时间为 10 秒。如果保持活动失败（或超时），则会启动传输特定的错误恢复。目前仅连接 NVMe over Fabrics 以支持保持活动，但我们可以 一旦实际支持 PCIe 的控制器可用，即可轻松添加 PCIe 支持, nvme：清理 KATO 设置，根据 NVMe 基本规范，KATO 命令应以 KATO 间隔的一半发送，以正确考虑往返时间。 由于我们现在每个连接只发送一个 KATO 命令，因此我们可以轻松使用推荐值。 这还修复了 KATO 命令的请求超时与连接命令中的值不匹配的潜在问题，这可能会导致目标的虚假连接丢失
+					nvme_enable_aen(ctrl) -> nvme：启用aen，无论是否存在I/O队列AEN通常与I/O队列的存在无关，因此无论是否存在都启用它们。 请注意，唯一的例外是发现控制器不支持任何请求的 AEN，并且 nvme_enable_aen 将尊重该请求并返回，因此无论如何启用它仍然是安全的。请注意，即使在初始命名空间扫描之前启用 AEN 也是安全的，因为我们在 工作队列上下文
+					nvme_queue_scan -> 参考: https://blog.csdn.net/tiantao2012/article/details/72236113
+					nvme_unquiesce_io_queues(ctrl)
+					nvme_mpath_update(ctrl)
+					nvme_change_uevent(ctrl, "NVME_EVENT=connected")
+			nvmf_ctrl_subsysnqn
+		module_put(ops->module)
+		...
 		pr_info("no handler found for transport %s.\n"
+	seq_file->private = ctrl
+
+
+
+##ini 初始化
+nvmf_dev_write
+ nvmf_create_ctrl :  ops->create_ctrl(dev, opts)
+  nvme_rdma_create_ctrl
+   reconnect_work   : nvme_rdma_reconnect_ctrl_work   // 初始化这些work
+   err_work         ：nvme_rdma_error_recovery_work   // 初始化这些work
+   reset_work       ：nvme_rdma_reset_ctrl_work       // 初始化这些work
+   nvme_init_ctrl      #### ctrl状态为NVME_CTRL_NEW
+    scan_work        ： nvme_scan_work
+	async_event_work ：nvme_async_event_work
+	fw_act_work      ：nvme_fw_act_work
+	delete_work      ：nvme_delete_ctrl_work
+	ka_work          ： nvme_keep_alive_work
+   #### ctrl状态变为 NVME_CTRL_CONNECTING
+   nvme_rdma_setup_ctrlr
+    nvme_rdma_configure_admin_queue   
+    nvme_rdma_configure_io_queues
+	#### ctrl状态变为  NVME_CTRL_LIVE
+	nvme_start_ctrl
+	 nvme_start_keep_alive
+	 nvme_queue_scan   :  ctrl->scan_work
+	 nvme_enable_aen   :  nvme_set_features, NVME_FEAT_ASYNC_EVENT
+	 queue_work        : async_event_work
+	 nvme_start_queues
+
+host删除一个设备的流程 
+nvme_sysfs_delete
+ nvme_delete_ctrl_sync
+  nvme_delete_ctrl
+    ### ctrlr状态变为 NVME_CTRL_DELETING
+    queue_work   : ctrl->delete_work  : nvme_delete_ctrl_work
+	 nvme_stop_ctrl
+	  nvme_mpath_stop
+	  nvme_stop_keep_alive
+	 nvme_remove_namespaces
+	 传输层删除ctrl    --会写cc寄存器 reg_write32,是否是这里引起tgt进行相应反应
+     nvme_put_ctrl
+
+tgt ns_change异步事件触发
+此为configfs的基本框架，当用户态修改该属性时，会调用store方法。
+nvmet_subsystems_group_ops
+nvmet_subsys_make
+ nvmet_namespaces_type
+  nvmet_namespaces_group_ops
+   nvmet_ns_make
+    nvmet_ns_type
+	 nvmet_ns_attrs
+	  nvmet_ns_attr_revalidate_size
+ 
+nvmet_ns_revalidate_size_store
+ nvmet_ns_revalidate   -- 里面区分了block_device和VFS 再进行size的比较判断是否有更改
+  nvmet_ns_changed      -- 获取ns之前大小和现在大小比较不同则进行更新
+   nvmet_ns_changed
+    nvmet_add_async_event
+     schedule_work     ：ctrl->async_event_work ：nvmet_async_event_work
+ 
+nvmet_async_event_work
+ nvmet_async_events_process
+  nvmet_set_result ：nvmet_async_event_result 将异步事件类型、信息填给req的rsp?
+  nvmet_req_complete
+   __nvmet_req_complete
+    nvmet_tcp_queue_response                     
+	  queue_work_on  ： nvmet_tcp_io_work    回复给host,内核的io流程处理还需要仔细看
+	  
+	 
+ctrl->nr_async_event_cmds  这个东西不太理解是不是可以理解为 aer_req ?
+
+
+
+void nvme_complete_rq
+	switch (nvme_decide_disposition(req))
+
+
+static struct config_group *nvmet_ports_make
+	config_group_init_type_name(&port->subsys_group,
+				"subsystems", &nvmet_port_subsys_type);
+
+
+strace -vvv ln -s /sys/kernel/config/nvmet/subsystems/nvme-subsystem-name /sys/kernel/config/nvmet/ports/1/subsystems/nvme-subsystem-name
+gdb --args ln -s /sys/kernel/config/nvmet/subsystems/nvme-subsystem-name /sys/kernel/config/nvmet/ports/1/subsystems/nvme-subsystem-name
+coreutils-8.22-24.el7_9.2.x86_64
+src/ln.c -> https://github.com/ssbandjl/coreutils/blob/master/src/ln.c
+main -> do_link -> symlink
+do_link (file[0], file[1])
+ok = ((symbolic_link ? symlink (source, dest)
+symlink("/sys/kernel/config/nvmet/subsystems/nvme-subsystem-name", "/sys/kernel/config/nvmet/ports/1/subsystems/nvme-subsystem-name")
+.symlink	= configfs_symlink -> int configfs_symlink
+ret = type->ct_item_ops->allow_link(parent_item, target_item)
+allow_link | drop_link
+static int nvmet_port_subsys_allow_link -> 软连接, 该补丁引入了 NVMe 子系统、控制器和发现服务的实现，允许跨结构（例如以太网、FC 等）导出 NVMe 命名空间。该实现符合 NVMe 1.2.1 规范，并与 NVMe over Fabrics 主机实现进行互操作。 配置使用 configfs 进行，最好使用 http://git.infradead.org/users/hch/nvmetcli.git 中的 nvmetcli 工具执行，该工具在 README 文件中还提供了所需步骤的详细说明
+	int nvmet_enable_port
+		ret = ops->add_port(port)
+		static const struct nvmet_fabrics_ops nvmet_rdma_ops
+		.add_port		= nvmet_rdma_add_port
+		static int nvmet_rdma_add_port
+			nvmet_rdma_enable_port
+				cm_id = rdma_create_id(&init_net, nvmet_rdma_cm_handler, port
+				rdma_set_afonly
+				rdma_bind_addr
+				ret = rdma_listen(cm_id, 128)
+	list_add_tail
+	nvmet_port_disc_changed	-> aens: Asynchronous Event Notifications
+		__nvmet_disc_changed
+			nvmet_add_async_event NVME_AER_NOTICE_DISC_CHANGED
+				queue_work(nvmet_wq, &ctrl->async_event_work) -> tgt -> host -> 异步通知
+		discovery_chg -> rdma未实现
+
+
+
+
+
+
+
+nvme_rdma_setup_ctrl
+nvme_rdma_configure_admin_queue
+	nvme_rdma_configure_io_queues
+		nvme_rdma_alloc_io_queues
+			nvme_rdma_alloc_queue
+
+
+
+
+static int nvme_rdma_alloc_queue
+rdma_resolve_addr RDMA_CM_EVENT_ADDR_RESOLVED
+nvme_rdma_addr_resolved
+	nvme_rdma_create_queue_ib
+	rdma_resolve_route
+static int nvme_rdma_cm_handler
+case RDMA_CM_EVENT_ROUTE_RESOLVED static int nvme_rdma_route_resolved
+	rdma_connect_locked -> LU-14488 o2ib：如果定义了 rdma_connect_locked，请使用 rdma_connect_locked，上游内核 5.10 和 MOFED-5.2-2 中添加了 rdma_connect_locked()。 此后，不允许在 RDMA CM 事件处理程序中调用 rdma_connect()； 必须使用 rdma_connect_locked() ，此提交添加配置检查以检测 rdma_connect_locked() 是否可用并更新事件处理程序以调用正确的函数, https://git.whamcloud.com/?p=fs/lustre-release.git;a=commit;h=d43375868aba4edcf0bc637256a9fb102709f14f
+
+	
+
+
