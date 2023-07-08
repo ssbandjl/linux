@@ -27,3 +27,5 @@ nvmet_register_transport -> int nvmet_register_transport
 	up_write
 
 EXPORT_SYMBOL(ib_register_client) 导出符号表
+
+
