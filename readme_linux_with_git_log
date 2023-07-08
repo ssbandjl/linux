@@ -1980,20 +1980,31 @@ static ssize_t nvmf_dev_write
 	nvmf_create_ctrl(struct device *dev, const char *buf) -> 参考, kernel-nvmf: https://blog.csdn.net/u013565071/article/details/124190259
 		struct nvmf_ctrl_options *opts -> 关键数据结构体 -> nvme-fabrics：添加通用 NVMe over Fabrics 库，NVMe over Fabrics 库为传输和 nvme 核心提供接口，以处理独立于底层传输的特定于结构的命令和属性，此外，fabrics 库添加了一个杂项设备 允许实际创建结构控制器的接口，因为我们不能像 PCI 情况那样自动发现它。 nvme-cli 实用程序已得到增强，可以使用此接口来支持结构连接和发现
 		nvmf_parse_options
-		request_module("nvme-%s", opts->transport) -> nvme-rdma.ko
+		request_module("nvme-%s", opts->transport) -> nvme-rdma.ko -> 当内核发现一个需要的module不在内核中时，会调用request_module去用户空间创建进程去加载这个缺失的module, Linux内核模块的自动加载及request_module系统调用: https://blog.csdn.net/weixin_40710708/article/details/106525247
 		nvmf_check_required_opts
-		down_read(&nvmf_transports_rwsem) -> nvme-fabrics：将 nvmf_transports_mutex 转换为 rwsem 互斥体可防止在创建控制器时更改传输列表，但使用普通的旧互斥体意味着它还会序列化控制器创建。 这不必要地减慢了创建多个控制器的速度 - 例如，对于 RDMA 传输，创建控制器涉及为每个 IO 队列建立一个连接，这涉及更多的网络/软件往返，因此延迟可能会变得很严重。解决此问题的最简单方法是 将互斥量更改为 rwsem，并仅在列表发生变化时保留它以进行写入。 由于我们可以在创建控制器时读取rwsem，因此我们可以并行创建多个控制器
+		down_read(&nvmf_transports_rwsem) -> nvme-fabrics：将 nvmf_transports_mutex 转换为 rwsem 互斥体可防止在创建控制器时更改传输列表，但使用普通的旧互斥体意味着它还会序列化控制器创建。 这不必要地减慢了创建多个控制器的速度 - 例如，对于 RDMA 传输，创建控制器涉及为每个 IO 队列建立一个连接，这涉及更多的网络/软件往返，因此延迟可能会变得很严重。解决此问题的最简单方法是 将互斥量更改为 rwsem，并仅在列表发生变化时保留它以进行写入。 由于我们可以在创建控制器时读取rwsem，因此我们可以并行创建多个控制器, rw_semaphore,对于无竞争的 rwsem，计数和所有者是任务在获取 rwsem 时需要接触的唯一字段。 因此，它们被放置在彼此旁边，以增加它们共享相同缓存行的机会。 在竞争的 rwsem 中，所有者可能是结构中最常访问的字段，因为持有 osq 锁的乐观等待者将在所有者上旋转。 对于嵌入式 rwsem，包含结构中的其他热字段应远离 rwsem，以减少它们共享相同缓存行而导致缓存行弹跳问题的机会, down_read()是读者用来得到读写信号量sem时调用的，如果该信号量在被写者所持有，则对该函数的调用会导致调用者的睡眠。通过该操作，多个读者可以获得读写信号量, https://deepinout.com/linux-kernel-api/linux-kernel-api-synchronization-mechanism/linux-kernel-api-down_read.html
 		nvmf_lookup_transport
 		try_module_get
 		up_read(&nvmf_transports_rwsem);
 		nvmf_check_required_opts
 		nvmf_check_allowed_opts
-		ctrl = ops->create_ctrl -> .create_ctrl	= nvme_rdma_create_ctrl -> static struct nvme_ctrl *nvme_rdma_create_ctrl
+		ctrl = ops->create_ctrl -> .create_ctrl	= nvme_rdma_create_ctrl -> static struct nvme_ctrl *nvme_rdma_create_ctrl -> 创建控制器
 			...
-			INIT_DELAYED_WORK(&ctrl->reconnect_work nvme_rdma_reconnect_ctrl_work
+			nvme_rdma_existing_controller -> 比较6元组: <Host NQN, Host ID, local address, remote address, remote port, SUBSYS NQN>
+				nvmf_ip_options_match
+			INIT_DELAYED_WORK(&ctrl->reconnect_work nvme_rdma_reconnect_ctrl_work -> nvme-rdma：集中控制器设置序列，将控制器序列集中到单个例程，该例程在故障后正确清理，而不是在多个流程中具有多个外观（创建、重置、重新连接）。我们在这里还获得的一件事是理智/边界 连接回动态控制器时也会检查
 			INIT_WORK(&ctrl->err_work, nvme_rdma_error_recovery_work)
+				nvme_stop_keep_alive
+					cancel_delayed_work_sync(&ctrl->ka_work)
+				flush_work
+				nvme_rdma_teardown_io_queues(ctrl, false);
+				nvme_unquiesce_io_queues(&ctrl->ctrl);
+				nvme_rdma_teardown_admin_queue(ctrl, false);
+				nvme_unquiesce_admin_queue(&ctrl->ctrl);
+				nvme_auth_stop(&ctrl->ctrl);
+				nvme_rdma_reconnect_or_remove
 			INIT_WORK(&ctrl->ctrl.reset_work, nvme_rdma_reset_ctrl_work)
-			nvme_init_ctrl -> 初始化nvme控制器
+			nvme_init_ctrl -> 初始化nvme控制器, 初始化 NVMe 控制器结构。 这需要在最早的初始化期间调用，以便我们在探测期间拥有初始化的结构
 				INIT_WORK(&ctrl->scan_work, nvme_scan_work)
 				INIT_WORK(&ctrl->async_event_work, nvme_async_event_work)
 				...
@@ -2020,7 +2031,7 @@ static ssize_t nvmf_dev_write
 					nvme_mpath_update(ctrl)
 					nvme_change_uevent(ctrl, "NVME_EVENT=connected")
 			nvmf_ctrl_subsysnqn
-		module_put(ops->module)
+		module_put(ops->module) -> module_put函数功能描述：该函数的功能是将一个特定模块module的引用计数减一，这样当一个模块的引用计数因为不为0而不能从内核中卸载时，可以调用此函数一次或多次，实现对模块计数的清零，从而实现模块卸载
 		...
 		pr_info("no handler found for transport %s.\n"
 	seq_file->private = ctrl
@@ -2117,16 +2128,22 @@ symlink("/sys/kernel/config/nvmet/subsystems/nvme-subsystem-name", "/sys/kernel/
 ret = type->ct_item_ops->allow_link(parent_item, target_item)
 allow_link | drop_link
 static int nvmet_port_subsys_allow_link -> 软连接, 该补丁引入了 NVMe 子系统、控制器和发现服务的实现，允许跨结构（例如以太网、FC 等）导出 NVMe 命名空间。该实现符合 NVMe 1.2.1 规范，并与 NVMe over Fabrics 主机实现进行互操作。 配置使用 configfs 进行，最好使用 http://git.infradead.org/users/hch/nvmetcli.git 中的 nvmetcli 工具执行，该工具在 README 文件中还提供了所需步骤的详细说明
+一个 config_item 可以提供 ct_item_ops->allow_link() 和 ct_item_ops->drop_link() 方法。如果 ->allow_link() 方法存在，就可以调用 symlink(2)，将 config_item 作为链接的来源。这些链接只允许在 configfs 的 config_items 之间进行，任何在 configfs 文件系统之外的 symlink(2) 调用都会被拒绝, configfs-用户空间控制的内核对象配置, https://www.cnblogs.com/sctb/p/13901054.html
 	int nvmet_enable_port
 		ret = ops->add_port(port)
+		echo 1 > /config/nvmet/subsystems/${NAME}/attr_pi_enable
+		echo 1 > /config/nvmet/ports/${PORT_NUM}/param_pi_enable
 		static const struct nvmet_fabrics_ops nvmet_rdma_ops
 		.add_port		= nvmet_rdma_add_port
 		static int nvmet_rdma_add_port
+			INIT_DELAYED_WORK(&port->repair_work, nvmet_rdma_repair_port_work)
+			inet_pton_with_scope -> 将ipv4/v6转换为socket
 			nvmet_rdma_enable_port
-				cm_id = rdma_create_id(&init_net, nvmet_rdma_cm_handler, port
+				cm_id = rdma_create_id(&init_net, nvmet_rdma_cm_handler, port -> rdma_id中有事件时触发事件回调
 				rdma_set_afonly
-				rdma_bind_addr
-				ret = rdma_listen(cm_id, 128)
+				rdma_bind_addr(cm_id, addr)
+				ret = rdma_listen(cm_id, 128) -> 等待host连接触发 RDMA_CM_EVENT_CONNECT_REQUEST 事件
+				port->cm_id = cm_id
 	list_add_tail
 	nvmet_port_disc_changed	-> aens: Asynchronous Event Notifications
 		__nvmet_disc_changed
