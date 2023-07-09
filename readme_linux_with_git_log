@@ -2047,7 +2047,7 @@ static ssize_t nvmf_dev_write
 					ctrl->max_fr_pages = nvme_rdma_get_max_fr_pages
 						return min_t(u32, NVME_RDMA_MAX_SEGMENTS, max_page_list_len - 1) -> 两数取其小
 					nvme_rdma_alloc_qe
-					nvme_alloc_admin_tag_set
+					nvme_alloc_admin_tag_set -> 参考: 驱动 | Linux | NVMe | 2. nvme_probe, https://blog.csdn.net/MissMango0820/article/details/129050219
 				nvme_rdma_configure_io_queues
 					nvme_rdma_alloc_io_queues -> ...
 					nvme_rdma_alloc_tag_set
@@ -2225,3 +2225,5 @@ nvme驱动源码: https://developer.aliyun.com/article/609295
 static struct pci_driver nvme_driver
 int driver_register(struct device_driver *drv)
 
+
+NVMe设备, #define PCI_CLASS_STORAGE_EXPRESS	0x010802
