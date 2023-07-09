@@ -1860,6 +1860,15 @@ secondary_startup_64+183
 echo -n '+p' > /mnt/dbg/dynamic_debug/control
 echo -n '+mf' > /mnt/dbg/dynamic_debug/control
 
+动态调试:
+mkdir /mnt/dbg
+mount -t debugfs none /mnt/dbg
+echo "module nvme_fabrics +p" > /mnt/dbg/dynamic_debug/control
+echo "module nvme_rdma +p" > /mnt/dbg/dynamic_debug/control
+echo "module nvmet +p" > /mnt/dbg/dynamic_debug/control
+
+
+
 
 动态调试文档: lib/Kconfig.debug
 
@@ -2004,15 +2013,39 @@ static ssize_t nvmf_dev_write
 				nvme_auth_stop(&ctrl->ctrl);
 				nvme_rdma_reconnect_or_remove
 			INIT_WORK(&ctrl->ctrl.reset_work, nvme_rdma_reset_ctrl_work)
-			nvme_init_ctrl -> 初始化nvme控制器, 初始化 NVMe 控制器结构。 这需要在最早的初始化期间调用，以便我们在探测期间拥有初始化的结构
+			nvme_init_ctrl -> 初始化nvme控制器, 初始化 NVMe 控制器结构。 这需要在最早的初始化期间调用，以便我们在探测期间拥有初始化的结构, nvme：将 chardev 和 sysfs 接口移至通用代码为此，我们需要添加适当的控制器初始化例程和除 PCIe 控制器列表之外的所有控制器列表，该列表保留在 pci.c 中。 请注意，当对控制器的最后一个引用被删除时，我们会删除 sysfs 设备 - 旧代码会将其保留更长时间，这没有多大意义。这需要一个新的 ->reset_ctrl 操作来实现控制器重置，并需要一个新的 ->reset_ctrl 操作来实现控制器重置。 ->write_reg32 实现子系统重置所需的操作。 现在，我们还存储 NVMe 合规版本的缓存副本以及控制器是否连接到子系统或不在通用控制器结构中的标志
+				INIT_LIST_HEAD(&ctrl->namespaces) -> 初始命名空间链表
+				init_rwsem(&ctrl->namespaces_rwsem)
 				INIT_WORK(&ctrl->scan_work, nvme_scan_work)
+					nvme_init_non_mdts_limits
+					nvme_scan_ns_list -> 扫描命名空间列表: https://blog.csdn.net/tiantao2012/article/details/72236113, 驱动架构分析: https://zhuanlan.zhihu.com/p/590851852, nvme_reset_work, 这个函数初始化nvme盘的admin和io队列（struct nvme_queue），同时初始化nvme盘的管理队列和请求队列对应的硬件队列描述结构blk_mq_tag_set，注意：这里的请求队列结构是struct request_queue，并不是nvme盘收发命令的admin和io队列，每个nvme逻辑盘只有一个请求队列，一个该请求队列对应多个nvme盘硬件io队列。nvme逻辑盘用struct nvme_ns结构表示，该结构包含通用盘设备结构：struct gendisk, blk_mq_tag_set结构包含一个物理nvme盘硬件队列数、队列深度、io请求及处理等信息，该结构包含物理块设备所有描述信息，是块设备软件请求队列和硬件物理存储设备队列之间的纽带，建立了系统软件层面的io请求队列和物理存储设备硬件队列的映射关系。通过该结构文件系统读写操作发送的io请求最终到达物理存储设备
 				INIT_WORK(&ctrl->async_event_work, nvme_async_event_work)
-				...
-
-			changed = nvme_change_ctrl_state
-			nvme_rdma_setup_ctrl
+				INIT_WORK(&ctrl->fw_act_work, nvme_fw_act_work)
+				INIT_WORK(&ctrl->delete_work, nvme_delete_ctrl_work)
+				INIT_DELAYED_WORK(&ctrl->ka_work, nvme_keep_alive_work)
+				INIT_DELAYED_WORK(&ctrl->failfast_work, nvme_failfast_work)
+				ctrl->ka_cmd.common.opcode = nvme_admin_keep_alive
+				ida_alloc -> idr, ida内核id机制: https://developer.aliyun.com/article/609295
+				device_initialize(&ctrl->ctrl_device)
+				nvme：将控制器引用计数切换为使用结构设备而不是为字符设备句柄分配单独的结构设备，而是将其嵌入到结构 nvme_ctrl 中并将其用于主控制器引用计数。 这消除了双重引用计数，并为我们提供了字符设备操作的自动引用。 我们暂时将 ctrl->device 保留为指针，以避免到处更改 printks，但将来我们可以研究采用与其他子系统类似的控制器结构的消息打印助手。请注意，delete_ctrl 操作始终已经有一个引用（或者通过 sysfs 由于此更改，或者因为 /dev/nvme-fabrics 节点上的每个打开文件现在输入时都有一个引用，所以我们不需要在那里执行 except_zero 变体
+					kobject_init
+					device_pm_init
+				dev_set_name
+				nvme_get_ctrl
+				cdev_init
+				cdev_device_add -> 添加字符设备
+					device_add
+				nvme_fault_inject_init
+				nvme_mpath_init_ctrl -> 多路径
+				nvme_auth_init_ctrl
+			changed = nvme_change_ctrl_state NVME_CTRL_CONNECTING
+			ret = nvme_rdma_setup_ctrl(ctrl, true) -> 变更: nvme-rdma：集中控制器设置序列将控制器序列集中到单个例程，该例程在故障后正确清理，而不是在多个流程中具有多个外观（创建、重置、重新连接）。 我们在这里还获得的一件事是在连接回动态控制器时进行健全性/边界检查
 				nvme_rdma_configure_admin_queue
-					nvme_rdma_alloc_queue -> ...
+					nvme_rdma_alloc_queue(ctrl, 0, NVME_AQ_DEPTH)  -> 队列深度32 -> ...
+					ctrl->ctrl.numa_node = ibdev_to_node(ctrl->device->dev) -> 获取ib设备numa节点
+					T10-PI support -> nvme-rdma：添加元数据/T10-PI 支持，对于有能力的 HCA（例如 ConnectX-5/ConnectX-6），这将允许端到端保护信息直通和 NVMe over RDMA 传输验证。 元数据卸载支持是通过新的 RDMA 签名动词 API 实现的，并且为有能力的控制器启用
+					ctrl->max_fr_pages = nvme_rdma_get_max_fr_pages
+						return min_t(u32, NVME_RDMA_MAX_SEGMENTS, max_page_list_len - 1) -> 两数取其小
 					nvme_rdma_alloc_qe
 					nvme_alloc_admin_tag_set
 				nvme_rdma_configure_io_queues
@@ -2030,7 +2063,7 @@ static ssize_t nvmf_dev_write
 					nvme_unquiesce_io_queues(ctrl)
 					nvme_mpath_update(ctrl)
 					nvme_change_uevent(ctrl, "NVME_EVENT=connected")
-			nvmf_ctrl_subsysnqn
+			dev_info nvmf_ctrl_subsysnqn -> 打印info级别的调试信息
 		module_put(ops->module) -> module_put函数功能描述：该函数的功能是将一个特定模块module的引用计数减一，这样当一个模块的引用计数因为不为0而不能从内核中卸载时，可以调用此函数一次或多次，实现对模块计数的清零，从而实现模块卸载
 		...
 		pr_info("no handler found for transport %s.\n"
@@ -2177,4 +2210,18 @@ case RDMA_CM_EVENT_ROUTE_RESOLVED static int nvme_rdma_route_resolved
 
 	
 
+
+nvme_io_path:
+static struct blk_mq_ops nvme_mq_ops = {
+	.queue_rq         = nvme_queue_rq, //请求处理接口，该接口获取请求队列中的请求和物理盘进行数据交互
+
+...
+disk = alloc_disk_node(0, node)
+//设置盘控制操作接口，通过该操作可以直接向盘发送读写命令，不经过io块设备管理系统
+disk->fops = &nvme_fops
+
+
+nvme驱动源码: https://developer.aliyun.com/article/609295
+static struct pci_driver nvme_driver
+int driver_register(struct device_driver *drv)
 
