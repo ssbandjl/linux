@@ -2081,6 +2081,13 @@ static ssize_t nvmf_dev_write
 											nvmet_rdma_post_recv
 									nvmet_rdma_cm_accept(cm_id, queue, &event->param.conn)
 										rdma_accept(cm_id, &param) -> 在host和tgt端触发cm事件: RDMA_CM_EVENT_ESTABLISHED
+											host: -> queue->cm_error = nvme_rdma_conn_established(queue)
+												nvme_rdma_post_recv
+												complete(&queue->cm_done) -> 唤醒等待的函数: nvme_rdma_wait_for_cm
+											-------------------------------------------------
+											tgt: -> nvmet_rdma_queue_established(queue)
+												nvmet_rdma_handle_command(queue, cmd)
+													nvmet_rdma_map_sgl
 									list_add_tail(&queue->queue_list, &nvmet_rdma_queue_list)
 						nvme_rdma_wait_for_cm(queue)
 						set_bit(NVME_RDMA_Q_ALLOCATED, &queue->flags)
