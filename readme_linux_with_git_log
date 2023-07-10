@@ -2042,6 +2042,49 @@ static ssize_t nvmf_dev_write
 			ret = nvme_rdma_setup_ctrl(ctrl, true) -> 变更: nvme-rdma：集中控制器设置序列将控制器序列集中到单个例程，该例程在故障后正确清理，而不是在多个流程中具有多个外观（创建、重置、重新连接）。 我们在这里还获得的一件事是在连接回动态控制器时进行健全性/边界检查
 				nvme_rdma_configure_admin_queue
 					nvme_rdma_alloc_queue(ctrl, 0, NVME_AQ_DEPTH)  -> 队列深度32 -> ...
+						queue->cm_id = rdma_create_id(&init_net, nvme_rdma_cm_handler
+						rdma_resolve_addr(queue->cm_id, src_addr -> 触发cm事件: RDMA_CM_EVENT_ADDR_RESOLVED -> cm_error = nvme_rdma_addr_resolved(queue)
+							nvme_rdma_create_queue_ib -> nvme-rdma：使 nvme_rdma_[create|destroy]_queue_ib 对称，我们将引用放在销毁例程中的设备上，因此我们应该在创建例程中查找并获取引用
+								queue->device = nvme_rdma_find_get_device(queue->cm_id)
+								nvme_rdma_create_cq(ibdev, queue)
+									ib_alloc_cq
+								nvme_rdma_create_qp(queue, send_wr_factor)
+									init_attr.event_handler = nvme_rdma_qp_event
+									init_attr.sq_sig_type = IB_SIGNAL_REQ_WR
+									init_attr.qp_type = IB_QPT_RC
+									rdma_create_qp(queue->cm_id, dev->pd, &init_attr)
+								queue->rsp_ring = nvme_rdma_alloc_ring(ibdev, queue->queue_size
+									ring = kcalloc(ib_queue_size
+									nvme_rdma_alloc_qe
+										ib_dma_map_single -> 将内核虚拟地址映射为 -> DMA地址
+											dma_map_single
+								pages_per_mr = nvme_rdma_get_max_fr_pages
+								ib_mr_pool_init ?
+								NVME_RDMA_Q_TR_READY
+							rdma_set_service_type -> 设置服务类型, Setting Type of Service (ToS), https://github.com/ssbandjl/linux/commit/e63440d6a3134f7ae74bfb00bfc01db3efb8d3aa, nvme-rdma：为 rdma 传输添加 TOS 对于 RDMA 传输，TOS 是 IB QoS 的扩展，为客户端提供隔离不同类型数据的流量的能力。 RDMA CM 使用 rdma_set_service_type() 将其抽象为 ULP。 在内部，每个流量流都由一个连接来表示，该连接具有与普通连接一样的所有独立资源，并按服务类型进行区分。 换句话说，IP 对之间可以有多个 qp 连接，并且每个连接都支持唯一的服务类型。 TOS 用途之一是带宽管理，它允许为 QoS 类别设置带宽限制，例如 80% 带宽分配给 QoS 类别 A 的控制器，20% 分配给 QoS 类别 B 的控制器。 注意：除了 TOS 配置之外，还必须在目标（发送 RDMA 命令）和发起方的相关 HCA 上配置 QOS，以影响流量, 用法: nvme connect --tos=0 --transport=rdma --traddr=10.0.1.1 --nqn=test-nvme
+							rdma_resolve_route -> 触发cm事件: RDMA_CM_EVENT_ROUTE_RESOLVED -> cm_error = nvme_rdma_route_resolved(queue)
+								param.retry_count = 7 -> 设置连接参数, 最大重试7次
+								param.rnr_retry_count = 7
+								ret = rdma_connect_locked(queue->cm_id, &param) -> 连接服务端, 在服务端tgt, 触发cm事件: RDMA_CM_EVENT_CONNECT_REQUEST -> nvmet_rdma_queue_connect(cm_id, event)
+									nvmet_rdma_find_get_device(cm_id)
+										nline_page_count = num_pages
+										ndev->pd = ib_alloc_pd(ndev->device, 0) -> 分配保护域
+										nvmet_rdma_init_srqs(ndev) ?
+									queue = nvmet_rdma_alloc_queue(ndev, cm_id, event)
+										ret = nvmet_sq_init(&queue->nvme_sq)
+										nvmet_rdma_parse_cm_connect_req
+										INIT_WORK(&queue->release_work, nvmet_rdma_release_queue_work)
+										nvmet_rdma_alloc_rsps
+										nvmet_rdma_alloc_cmds ?
+										nvmet_rdma_create_queue_ib
+											rdma_create_qp
+											nvmet_rdma_post_recv
+									nvmet_rdma_cm_accept(cm_id, queue, &event->param.conn)
+										rdma_accept(cm_id, &param) -> 在host和tgt端触发cm事件: RDMA_CM_EVENT_ESTABLISHED
+									list_add_tail(&queue->queue_list, &nvmet_rdma_queue_list)
+						nvme_rdma_wait_for_cm(queue)
+						set_bit(NVME_RDMA_Q_ALLOCATED, &queue->flags)
+						...
 					ctrl->ctrl.numa_node = ibdev_to_node(ctrl->device->dev) -> 获取ib设备numa节点
 					T10-PI support -> nvme-rdma：添加元数据/T10-PI 支持，对于有能力的 HCA（例如 ConnectX-5/ConnectX-6），这将允许端到端保护信息直通和 NVMe over RDMA 传输验证。 元数据卸载支持是通过新的 RDMA 签名动词 API 实现的，并且为有能力的控制器启用
 					ctrl->max_fr_pages = nvme_rdma_get_max_fr_pages
@@ -2227,3 +2270,26 @@ int driver_register(struct device_driver *drv)
 
 
 NVMe设备, #define PCI_CLASS_STORAGE_EXPRESS	0x010802
+
+commit:
+https://github.com/ssbandjl/linux/commit/62f99b62e5e3b88d23b6ced4380199e8386965af
+Call Trace:
+ blk_mq_exit_hctx+0x5c/0xf0
+ blk_mq_exit_queue+0xd4/0x100
+ blk_cleanup_queue+0x9a/0xc0
+ nvme_rdma_destroy_io_queues+0x52/0x60 [nvme_rdma]
+ nvme_rdma_shutdown_ctrl+0x3e/0x80 [nvme_rdma]
+ nvme_do_delete_ctrl+0x53/0x80 [nvme_core]
+ nvme_sysfs_delete+0x45/0x60 [nvme_core]
+ kernfs_fop_write+0x105/0x180
+ vfs_write+0xad/0x1a0
+ ksys_write+0x5a/0xd0
+ do_syscall_64+0x55/0x110
+ entry_SYSCALL_64_after_hwframe+0x44/0xa9
+RIP: 0033:0x7fa215417154
+此崩溃的原因是访问已释放的 ib_device 以在 exit_request 命令期间执行 dma_unmap。 其根本原因是，在重新连接期间，所有队列都被销毁并重新创建（并且 ib_device 由队列进行引用计数并被释放），但标记集保持活动状态并且所有 DMA 映射（我们在 init_request）保存在请求上下文中。 原始提交修复了在绑定（又名 nic teaming）测试期间引入的另一个错误，该错误在某些情况下会更改底层 ib_device 并导致内存泄漏和可能的分段错误。 此提交是一个补充提交，它还更改了保存在请求上下文中的错误 DMA 映射，并使请求 sqe dma 映射随命令生命周期动态化（即在 .queue_rq 中映射并在 .complete 中取消映射）。 它还修复了上述在销毁标记集期间访问释放的 ib_device 时发生的崩溃问题
+
+
+
+
+
