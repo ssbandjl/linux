@@ -28,6 +28,9 @@ linux设备模型: https://linux-kernel-labs.github.io/refs/pull/183/merge/labs/
 
 nvmeof设备实现: https://runsisi.com/2021/10/17/nvme-of/
 
+io路径_多队列: https://blog.csdn.net/hu1610552336/article/details/111464548
+
+
 
 
 
@@ -343,6 +346,7 @@ blk_mq_run_hw_queue
 __blk_mq_sched_dispatch_requests
 
 
+nvme落盘io流程, iopath
 static const struct blk_mq_ops nvme_rdma_mq_ops = {
 	.queue_rq	= nvme_rdma_queue_rq,
 	.complete	= nvme_rdma_complete_rq,
@@ -1027,7 +1031,7 @@ int main()
 IO路径-块层, linux v5.10, 
 SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter -> write_iter -> xfs_file_write_iter (.write_iter	= xfs_file_write_iter) -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead 预读 -> xfs_buf_readahead_map -> xfs_buf_read_map -> _xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> 由VFS -> 进入块层 -> submit_bio(bio) -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __submit_bio_noacct_mq / __submit_bio_noacct -> __submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
 request插入ctx：blk_mq_submit_bio -> blk_mq_sched_insert_request (blk_mq_insert_request) -> __blk_mq_insert_request -> __blk_mq_insert_req_list -> list_add(&rq->queuelist, &ctx->rq_lists[type])
-取出request：blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
+取出request: blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
 
 __submit_bio_noacct_mq -> 我们一次只希望一个 ->submit_bio 处于活动状态，否则堆栈设备的堆栈使用可能会出现问题。 使用 current->bio_list 收集 ->submit_bio 方法处于活动状态时提交的请求列表，然后在返回后处理它们
 
@@ -1977,6 +1981,12 @@ nvme_init_subsystem
 
 
 
+nvmf_dev_open
+seq_open() 设置@file，将其与@op 描述的序列关联起来。 @op->start() 设置迭代器并返回序列的第一个元素。 @op->stop() 将其关闭。 @op->next() 返回序列的下一个元素。 @op->show() 将元素打印到缓冲区中。 如果出现错误 ->start() 和 ->next() 返回 ERR_PTR(错误)。 在序列末尾，它们返回 %NULL。 ->show() 如果成功则返回 0，如果出错则返回负数。 返回 SEQ_SKIP 意味着“丢弃该元素并继续”。 注意：seq_open()将分配一个struct seq_file并将其指针存储在@file->private_data中。 该指针不应被修改
+nvmf_dev_show
+	seq_printf(seq_file, "instance=%d,cntlid=%d\n"
+
+
 static const struct file_operations nvmf_dev_fops = {
 	.owner		= THIS_MODULE,
 	.write		= nvmf_dev_write,
@@ -1986,24 +1996,24 @@ static const struct file_operations nvmf_dev_fops = {
 };
 static ssize_t nvmf_dev_write
 	buf = memdup_user_nul(ubuf, count) -> 内存拷贝 -> duplicate memory region from user space and NUL-terminate
-	nvmf_create_ctrl(struct device *dev, const char *buf) -> 参考, kernel-nvmf: https://blog.csdn.net/u013565071/article/details/124190259
+	nvmf_create_ctrl(struct device *dev, const char *buf) -> /sys/class/nvme-fabrics ->  参考, kernel-nvmf: https://blog.csdn.net/u013565071/article/details/124190259
 		struct nvmf_ctrl_options *opts -> 关键数据结构体 -> nvme-fabrics：添加通用 NVMe over Fabrics 库，NVMe over Fabrics 库为传输和 nvme 核心提供接口，以处理独立于底层传输的特定于结构的命令和属性，此外，fabrics 库添加了一个杂项设备 允许实际创建结构控制器的接口，因为我们不能像 PCI 情况那样自动发现它。 nvme-cli 实用程序已得到增强，可以使用此接口来支持结构连接和发现
 		nvmf_parse_options
 		request_module("nvme-%s", opts->transport) -> nvme-rdma.ko -> 当内核发现一个需要的module不在内核中时，会调用request_module去用户空间创建进程去加载这个缺失的module, Linux内核模块的自动加载及request_module系统调用: https://blog.csdn.net/weixin_40710708/article/details/106525247
 		nvmf_check_required_opts
 		down_read(&nvmf_transports_rwsem) -> nvme-fabrics：将 nvmf_transports_mutex 转换为 rwsem 互斥体可防止在创建控制器时更改传输列表，但使用普通的旧互斥体意味着它还会序列化控制器创建。 这不必要地减慢了创建多个控制器的速度 - 例如，对于 RDMA 传输，创建控制器涉及为每个 IO 队列建立一个连接，这涉及更多的网络/软件往返，因此延迟可能会变得很严重。解决此问题的最简单方法是 将互斥量更改为 rwsem，并仅在列表发生变化时保留它以进行写入。 由于我们可以在创建控制器时读取rwsem，因此我们可以并行创建多个控制器, rw_semaphore,对于无竞争的 rwsem，计数和所有者是任务在获取 rwsem 时需要接触的唯一字段。 因此，它们被放置在彼此旁边，以增加它们共享相同缓存行的机会。 在竞争的 rwsem 中，所有者可能是结构中最常访问的字段，因为持有 osq 锁的乐观等待者将在所有者上旋转。 对于嵌入式 rwsem，包含结构中的其他热字段应远离 rwsem，以减少它们共享相同缓存行而导致缓存行弹跳问题的机会, down_read()是读者用来得到读写信号量sem时调用的，如果该信号量在被写者所持有，则对该函数的调用会导致调用者的睡眠。通过该操作，多个读者可以获得读写信号量, https://deepinout.com/linux-kernel-api/linux-kernel-api-synchronization-mechanism/linux-kernel-api-down_read.html
 		nvmf_lookup_transport
-		try_module_get
+		try_module_get -> 首先判断模块module是否处于活动状态，然后通过local_inc()宏操作将模块module的引用计数加1
 		up_read(&nvmf_transports_rwsem);
 		nvmf_check_required_opts
-		nvmf_check_allowed_opts
+		nvmf_check_allowed_opts -> 检查选项
 		ctrl = ops->create_ctrl -> .create_ctrl	= nvme_rdma_create_ctrl -> static struct nvme_ctrl *nvme_rdma_create_ctrl -> 创建控制器
-			...
+			inet_pton_with_scope -> 将tgt地址和端口转为socket地址
 			nvme_rdma_existing_controller -> 比较6元组: <Host NQN, Host ID, local address, remote address, remote port, SUBSYS NQN>
 				nvmf_ip_options_match
 			INIT_DELAYED_WORK(&ctrl->reconnect_work nvme_rdma_reconnect_ctrl_work -> nvme-rdma：集中控制器设置序列，将控制器序列集中到单个例程，该例程在故障后正确清理，而不是在多个流程中具有多个外观（创建、重置、重新连接）。我们在这里还获得的一件事是理智/边界 连接回动态控制器时也会检查
 			INIT_WORK(&ctrl->err_work, nvme_rdma_error_recovery_work)
-				nvme_stop_keep_alive
+				nvme_stop_keep_alive -> nvme-rdma：在错误恢复中不要完全停止控制器，通过在已经发生故障的控制器上调用 nvme_stop_ctrl 将等待扫描工作完成（仅通过识别超时到期时间，即 60 秒）。 当我们已经知道控制器发生故障时，这是不必要的
 					cancel_delayed_work_sync(&ctrl->ka_work)
 				flush_work
 				nvme_rdma_teardown_io_queues(ctrl, false);
@@ -2011,7 +2021,10 @@ static ssize_t nvmf_dev_write
 				nvme_rdma_teardown_admin_queue(ctrl, false);
 				nvme_unquiesce_admin_queue(&ctrl->ctrl);
 				nvme_auth_stop(&ctrl->ctrl);
-				nvme_rdma_reconnect_or_remove
+				nvme_rdma_reconnect_or_remove -> 重连或移除
+					queue_delayed_work(nvme_wq, &ctrl->reconnect_work -> nvme_rdma_reconnect_ctrl_work
+						nvme_rdma_setup_ctrl
+						...
 			INIT_WORK(&ctrl->ctrl.reset_work, nvme_rdma_reset_ctrl_work)
 			nvme_init_ctrl -> 初始化nvme控制器, 初始化 NVMe 控制器结构。 这需要在最早的初始化期间调用，以便我们在探测期间拥有初始化的结构, nvme：将 chardev 和 sysfs 接口移至通用代码为此，我们需要添加适当的控制器初始化例程和除 PCIe 控制器列表之外的所有控制器列表，该列表保留在 pci.c 中。 请注意，当对控制器的最后一个引用被删除时，我们会删除 sysfs 设备 - 旧代码会将其保留更长时间，这没有多大意义。这需要一个新的 ->reset_ctrl 操作来实现控制器重置，并需要一个新的 ->reset_ctrl 操作来实现控制器重置。 ->write_reg32 实现子系统重置所需的操作。 现在，我们还存储 NVMe 合规版本的缓存副本以及控制器是否连接到子系统或不在通用控制器结构中的标志
 				INIT_LIST_HEAD(&ctrl->namespaces) -> 初始命名空间链表
@@ -2030,13 +2043,16 @@ static ssize_t nvmf_dev_write
 				nvme：将控制器引用计数切换为使用结构设备而不是为字符设备句柄分配单独的结构设备，而是将其嵌入到结构 nvme_ctrl 中并将其用于主控制器引用计数。 这消除了双重引用计数，并为我们提供了字符设备操作的自动引用。 我们暂时将 ctrl->device 保留为指针，以避免到处更改 printks，但将来我们可以研究采用与其他子系统类似的控制器结构的消息打印助手。请注意，delete_ctrl 操作始终已经有一个引用（或者通过 sysfs 由于此更改，或者因为 /dev/nvme-fabrics 节点上的每个打开文件现在输入时都有一个引用，所以我们不需要在那里执行 except_zero 变体
 					kobject_init
 					device_pm_init
-				dev_set_name
+				ctrl->device->devt = MKDEV(MAJOR(nvme_ctrl_base_chr_devt) -> 创建设备主编号, MKDEV 用于将给定的主设备号和次设备号的值组合成 dev_t 类型的设备号, 创建/dev中的设备, alloc_chrdev_region函数，来让内核自动给我们分配设备号
+				dev_set_drvdata -> 函数用来设置device 的私有数据, 设置控制器指针
+				dev_set_name -> 设置设备名, 如: /dev/nvme2
 				nvme_get_ctrl
-				cdev_init
+				cdev_init(&ctrl->cdev, &nvme_dev_fops) -> 函数操作表为: static const struct file_operations nvme_dev_fops
 				cdev_device_add -> 添加字符设备
 					device_add
 				nvme_fault_inject_init
-				nvme_mpath_init_ctrl -> 多路径
+				nvme_mpath_init_ctrl -> 多路径, nvme-multipath：修复 ANA 状态 nvme_init_identify 的双重初始化，因此 nvme_mpath_init 可以被多次调用，因此不得覆盖可能已初始化或正在使用的字段。 当控制器初始化时，分离出一个用于基本初始化的助手，并确保 init_identify 路径不会盲目地更改正在使用的数据结构
+					INIT_WORK(&ctrl->ana_work, nvme_ana_work)
 				nvme_auth_init_ctrl
 			changed = nvme_change_ctrl_state NVME_CTRL_CONNECTING
 			ret = nvme_rdma_setup_ctrl(ctrl, true) -> 变更: nvme-rdma：集中控制器设置序列将控制器序列集中到单个例程，该例程在故障后正确清理，而不是在多个流程中具有多个外观（创建、重置、重新连接）。 我们在这里还获得的一件事是在连接回动态控制器时进行健全性/边界检查
@@ -2063,8 +2079,8 @@ static ssize_t nvmf_dev_write
 								NVME_RDMA_Q_TR_READY
 							rdma_set_service_type -> 设置服务类型, Setting Type of Service (ToS), https://github.com/ssbandjl/linux/commit/e63440d6a3134f7ae74bfb00bfc01db3efb8d3aa, nvme-rdma：为 rdma 传输添加 TOS 对于 RDMA 传输，TOS 是 IB QoS 的扩展，为客户端提供隔离不同类型数据的流量的能力。 RDMA CM 使用 rdma_set_service_type() 将其抽象为 ULP。 在内部，每个流量流都由一个连接来表示，该连接具有与普通连接一样的所有独立资源，并按服务类型进行区分。 换句话说，IP 对之间可以有多个 qp 连接，并且每个连接都支持唯一的服务类型。 TOS 用途之一是带宽管理，它允许为 QoS 类别设置带宽限制，例如 80% 带宽分配给 QoS 类别 A 的控制器，20% 分配给 QoS 类别 B 的控制器。 注意：除了 TOS 配置之外，还必须在目标（发送 RDMA 命令）和发起方的相关 HCA 上配置 QOS，以影响流量, 用法: nvme connect --tos=0 --transport=rdma --traddr=10.0.1.1 --nqn=test-nvme
 							rdma_resolve_route -> 触发cm事件: RDMA_CM_EVENT_ROUTE_RESOLVED -> cm_error = nvme_rdma_route_resolved(queue)
-								param.retry_count = 7 -> 设置连接参数, 最大重试7次
-								param.rnr_retry_count = 7
+								param.retry_count = 7 -> 发生错误时应在连接上重试数据传输操作的最大次数。 此设置控制发生超时时重试发送、RDMA 和原子操作的次数。 仅适用于 RDMA_PS_TCP, 
+								param.rnr_retry_count = 7 -> 设置连接参数, 最大重试7次, 收到接收器未就绪 (RNR) 错误后应在连接上重试远程对等方发送操作的最大次数。 当发送请求在缓冲区已发布以接收传入数据之前到达时，会生成 RNR 错误。 仅适用于 RDMA_PS_TCP, 提供可靠、面向连接的 QP 通信，与 TCP 不同，RDMA 端口空间提供基于消息而不是流的通信
 								ret = rdma_connect_locked(queue->cm_id, &param) -> 连接服务端, 在服务端tgt, 触发cm事件: RDMA_CM_EVENT_CONNECT_REQUEST -> nvmet_rdma_queue_connect(cm_id, event)
 									nvmet_rdma_find_get_device(cm_id)
 										nline_page_count = num_pages
@@ -2104,14 +2120,20 @@ static ssize_t nvmf_dev_write
 					nvme_rdma_start_io_queues
 					blk_mq_update_nr_hw_queues
 				nvme_change_ctrl_state
-				nvme_start_ctrl(&ctrl->ctrl)
-					nvme_start_keep_alive
+				nvme_start_ctrl(&ctrl->ctrl) -> 启动nvme控制器, struct nvme_ctrl 抽象 NVMe 设备中和 NVMe 协议相关的部分
+					nvme_start_keep_alive -> 启动保活
 						nvme_queue_keep_alive_work(ctrl)
 							queue_delayed_work(nvme_wq, &ctrl->ka_work, ctrl->kato * HZ / 2) -> kato: nvme：添加保持活动支持定期保持活动是 NVMe over Fabrics 中的强制功能，在 PCIe 的 NVMe 1.2.1 中是可选功能。 此补丁添加了从主机定期发送的保持活动状态，以验证控制器是否仍然响应，反之亦然。 keep-alive 超时是用户定义的（使用 keep_alive_tmo 连接参数），默认为 5 秒。为了避免主机发送 keep-alive 与目标端 keep-alive 超时过期竞争的竞争条件，主机添加了一个宽限 向目标发布保持活动超时时，时间为 10 秒。如果保持活动失败（或超时），则会启动传输特定的错误恢复。目前仅连接 NVMe over Fabrics 以支持保持活动，但我们可以 一旦实际支持 PCIe 的控制器可用，即可轻松添加 PCIe 支持, nvme：清理 KATO 设置，根据 NVMe 基本规范，KATO 命令应以 KATO 间隔的一半发送，以正确考虑往返时间。 由于我们现在每个连接只发送一个 KATO 命令，因此我们可以轻松使用推荐值。 这还修复了 KATO 命令的请求超时与连接命令中的值不匹配的潜在问题，这可能会导致目标的虚假连接丢失
+							static void nvme_keep_alive_work
+								NVME_CRTL_ARRT_TBKAS , I/O completion seen, 看见IO完成 -> io完成时 nvme_complete_rq, 设置看见IO完成标记位 -> 基于流量的保持活动 (TBKAS) 允许主机和控制器在存在管理或 I/O 命令处理的情况下重新启动基于流量的保持活动计时器。 控制器对 TBKAS 位的支持在识别控制器数据结构的控制器属性中指示（参见图 275）。 如果控制器不支持基于流量的保活（TBKAS 清除为“0”），则保活功能的操作将在第 3.9.1 节中描述。 如果在保持活动超时间隔期间未处理管理命令或 I/O 命令而保持已建立的连接，则会出现基于流量的保持活动超时。 如果在保持活动超时间隔内处理管理命令或 I/O 命令，则在保持活动定时器到期时，应重新启动保持活动定时器。 如果在保持活动超时间隔内没有向控制器提交管理命令或 I/O 命令（如第 3.4.4 节中定义），则控制器可能会认为发生了保持活动超时。 如果管理命令或 I/O 命令在保持活动超时间隔内传输到控制器，则在保持活动定时器到期时，控制器应重新启动保持活动定时器。 如果主机在保持活动超时间隔内未收到任何管理命令或任何 I/O 命令的完成，则主机可能会认为发生了基于流量的保持活动超时。 如果管理命令或 I/O 命令在保持活动超时间隔内完成，则在保持活动定时器到期时，主机应重新启动保持活动定时器。 主机应在保持活动超时的一半时检查任何管理命令和 I/O 命令的命令完成队列条目，考虑到传输往返时间、传输延迟、命令处理时间和保持活动计时器粒度。 为了防止控制器检测到保持活动超时，如果在保持活动超时间隔的一半时间内没有管理命令和 I/O 命令发送到控制器，主机应发送保持活动命令,https://www.spinics.net/lists/stable-commits/msg304229.html, Keep Alive命令（参考第5.27.1.12节）和相关功能被主机用来确定控制器是否在运行，并被控制器用来确定主机是否在运行。当主机和控制器都可以访问并能够发出或处理命令时，它们就可以运行。控制器在Identify Controller data structure 中的KAS字段中指出Keep Alive Timer的粒度（参考Figure 275
+								blk_mq_alloc_request(ctrl->admin_q, nvme_req_op(&ctrl->ka_cmd) -> 分配KA管理命令
+								nvme_init_request(rq, &ctrl->ka_cmd)
+								blk_execute_rq_nowait(rq, false) -> 在队列尾部插入IO
 					nvme_enable_aen(ctrl) -> nvme：启用aen，无论是否存在I/O队列AEN通常与I/O队列的存在无关，因此无论是否存在都启用它们。 请注意，唯一的例外是发现控制器不支持任何请求的 AEN，并且 nvme_enable_aen 将尊重该请求并返回，因此无论如何启用它仍然是安全的。请注意，即使在初始命名空间扫描之前启用 AEN 也是安全的，因为我们在 工作队列上下文
 					nvme_queue_scan -> 参考: https://blog.csdn.net/tiantao2012/article/details/72236113
 					nvme_unquiesce_io_queues(ctrl)
-					nvme_mpath_update(ctrl)
+					nvme_mpath_update(ctrl) -> 更新nvme多路径, 从 nvme_init_identify() 调用的 nvme_mpath_init_identify() 从 ctrl 获取新的 ANA 日志。 这对于现有命名空间以及 ctrl 启动后可能发现的那些 scan_work 拥有最新的路径状态至关重要
+						nvme_parse_ana_log nvme_update_ana_state
 					nvme_change_uevent(ctrl, "NVME_EVENT=connected")
 			dev_info nvmf_ctrl_subsysnqn -> 打印info级别的调试信息
 		module_put(ops->module) -> module_put函数功能描述：该函数的功能是将一个特定模块module的引用计数减一，这样当一个模块的引用计数因为不为0而不能从内核中卸载时，可以调用此函数一次或多次，实现对模块计数的清零，从而实现模块卸载
@@ -2263,7 +2285,8 @@ case RDMA_CM_EVENT_ROUTE_RESOLVED static int nvme_rdma_route_resolved
 
 nvme_io_path:
 static struct blk_mq_ops nvme_mq_ops = {
-	.queue_rq         = nvme_queue_rq, //请求处理接口，该接口获取请求队列中的请求和物理盘进行数据交互
+	.queue_rq         = nvme_queue_rq, //请求处理接口，该接口获取请求队列中的请求和物理盘进行数据交互 -> static blk_status_t nvme_queue_rq
+
 
 ...
 disk = alloc_disk_node(0, node)
@@ -2298,5 +2321,205 @@ RIP: 0033:0x7fa215417154
 
 
 
+
+	struct ibv_qp_attr qp_attr;
+	struct ibv_qp_init_attr init_attr;
+	ibv_query_qp(rqpair->rdma_qp->qp, &qp_attr, IBV_QP_STATE, &init_attr);
+	SPDK_ERRLOG("SSSS qp timeout:%d, retry_cnt:%d, rnr_retry:%d\n",  qp_attr.timeout, qp_attr.retry_cnt, qp_attr.rnr_retry);
+ibv_query_qp(event->id->qp, &qp_attr, IBV_QP_STATE, &init_attr);
+
+			ibv_query_qp(event->id->qp, &qp_attr, IBV_QP_STATE, &init_attr);
+			SPDK_ERRLOG("SSSS qp timeout:%d, retry_cnt:%d, rnr_retry:%d\n",  qp_attr.timeout, qp_attr.retry_cnt, qp_attr.rnr_retry);
+
+tee<<EOF>test.bt
+#include <linux/path.h>
+
+kprobe:nvme_rdma_cm_handler
+{
+    printf("ev: %p\n", ev->id->qp);
+}
+EOF
+bpftrace test.bt
+
+
+
+static int cm_init_qp_rts_attr(struct cm_id_private *cm_id_priv,
+
+
+https://blog.csdn.net/qq_38158479/article/details/129959432: rdma ack包 Syndrome字段含义总结,该字段占一个字节，最高位(7bit)是保留的 5，6bit为11表示这是一个NAK包，01表示RNR NAK包，00是正常情况，代表正确的收到了一个ack包
+rxe_comp.c -> static inline enum comp_state check_ack
+
+
+
+nvme connect --reconnect-delay=30 --transport=rdma --traddr=10.0.1.14 --nqn=test-nvme
+nvme connect -r 30 -t rdma -a 10.0.1.14 -n test-nvme
+
+Jul 11 15:15:01 192-169-26-64 systemd: Started Session 6580 of user root.
+Jul 11 15:16:01 192-169-26-64 systemd: Started Session 6581 of user root.
+Jul 11 15:16:08 192-169-26-64 kernel: nvme nvme3: starting error recovery
+Jul 11 15:16:11 192-169-26-64 kernel: nvme nvme3: I/O 0 QID 0 timeout
+Jul 11 15:16:11 192-169-26-64 kernel: nvme nvme3: failed nvme_keep_alive_end_io error=10
+Jul 11 15:16:12 192-169-26-64 kernel: nvme nvme3: Reconnecting in 2 seconds...   -> reconnect_delay, opts->reconnect_delay = NVMF_DEF_RECONNECT_DELAY 10
+Jul 11 15:17:01 192-169-26-64 systemd: Started Session 6582 of user root.
+Jul 11 15:17:10 192-169-26-64 Keepalived_vrrp[24300]: Kernel is reporting: interface ib17-0 DOWN
+Jul 11 15:17:10 192-169-26-64 Keepalived_vrrp[24300]: VRRP_Instance(VI_1) Entering FAULT STATE
+Jul 11 15:17:10 192-169-26-64 Keepalived_vrrp[24300]: VRRP_Instance(VI_1) removing protocol VIPs.
+Jul 11 15:17:10 192-169-26-64 Keepalived_vrrp[24300]: VRRP_Instance(VI_1) Now in FAULT state
+Jul 11 15:17:17 192-169-26-64 kernel: nvme nvme2: I/O 0 QID 0 timeout
+Jul 11 15:17:17 192-169-26-64 kernel: nvme nvme2: starting error recovery
+
+
+        opts->max_reconnects = DIV_ROUND_UP(ctrl_loss_tmo,
+                        opts->reconnect_delay); 
+默认是600s 
+次数 =  600s / 每次重连的时间间隔  向上取整
+600s是可配置的
+重连的时间间隔也是可配置的
+
+
+nvme-cli, 用户态发现target, nvme discovery
+...
+add_ctrl -> static int add_ctrl(const char *argstr)
+	open(PATH_NVME_FABRICS, O_RDWR)
+	write(fd, argstr, len) -> 写设备, 触发内核驱动处理 -> nqn=nqn.2014-08.org.nvmexpress.discovery,transport=rdma,traddr=175.17.53.73,trsvcid=4420,hostnqn=nqn.2014-08.org.nvmexpress:uuid:a8dce057-b5a2-492e-8da3-9cf328f401c7,hostid=a20d3ab6-2c0a-4335-8552-305 ->
+		Jul 12 11:13:56 s63 kernel: nvme nvme0: new ctrl: NQN "nqn.2014-08.org.nvmexpress.discovery", addr 172.17.29.65:4420   # 内核打印
+		Jul 12 11:14:01 s63 systemd: Started Session 3337 of user root.
+
+
+
+
+ctrl = ops->create_ctrl(dev, opts);
+modinfo nvme_rdma
+nm -a /lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-core.ko|grep nvme_rdma_create_ctrl
+drivers/nvme/host/rdma.c
+static struct nvme_ctrl *nvme_rdma_create_ctrl
+	dev_info(ctrl->ctrl.device, "new ctrl: NQN \"%s\", addr %pISpcs\n"
+
+
+
+bpftrace -e 'kprobe:nvme_rdma_create_ctrl{ printf("%s", kstack); }'
+stap -l 'process("/lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").function("nvme_rdma_create_ctrl")'
+stap -ve 'probe kernel.function("nvme_rdma_create_ctrl") { print_backtrace() printf("\n") }'
+stap -ve 'probe process("lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").function("nvme_rdma_create_ctrl")'
+stap -ve 'probe process("lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").statement("nvme_rdma_create_ctrl@drivers/nvme/host/rdma.c")'
+probe process("/workspace/test/gdb/test").statement("main@/workspace/test/gdb/main.c:24")
+stap -ve 'probe process("/usr/lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").function("nvme_rdma_create_ctrl") { print_backtrace() printf("\n") }'
+
+
+内核驱动调试需要安装debuginfo:
+[root@s64 stap]# stap -ve 'probe process("/usr/lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").function("nvme_rdma_create_ctrl") { print_backtrace() printf("\n") }'
+Pass 1: parsed user script and 482 library scripts using 282980virt/83340res/7028shr/76644data kb, in 460usr/30sys/486real ms.
+WARNING: cannot find module /usr/lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko debuginfo: Callbacks missing for ET_REL file [man warning::debuginfo]
+Pass 2: analyzed script: 1 probe, 1 function, 0 embeds, 0 globals using 287140virt/89692res/11348shr/78708data kb, in 30usr/0sys/36real ms.
+Missing separate debuginfos, use: debuginfo-install mlnx-nvme-5.7-OFED.5.7.1.0.2.1.kver.5.10.38_21.hl10.el7.x86_64.x86_64 
+
+https://forums.developer.nvidia.com/t/how-to-enable-the-debuginfo-for-the-libraries-of-ofed/207063
+find|grep debuginfo
+rpm -ivh ./MLNX_OFED_LINUX-5.7-1.0.2.0-5.10.38-21.hl10.el7.x86_64/mlnx_iso.7012/MLNX_OFED_SRC-5.7-1.0.2.0/RPMS/centos-release-7-9.2009.1.el7.centos/x86_64/mlnx-ofa_kernel-debuginfo-5.7-OFED.5.7.1.0.2.1.rhel7u9.x86_64.rpm
+
+
+重新编译rdma驱动:
+rpm2cio -id
+tar xf
+cd
+./autogen.sh ( if necessary)
+./configure --prefix= --enable-debug
+make -j install
+export LD_LIBRARY_PATH=/lib (or lib64)
+
+
+nvmf_get_log_page_discovery -> static int nvmf_get_log_page_discovery -> /dev/nvme0
+	nvme_discovery_log -> int nvme_get_log -> nvme_get_log13 -> .opcode		= nvme_admin_get_log_page -> return ioctl(fd, ioctl_cmd, cmd) -> 管理命令: nvme_admin_get_log_page		= 0x02
+	enum nvme_admin_opcode nvme管理命令 -> linux/nvme.h
+	nvme_submit_admin_passthru
+		ioctl(fd, NVME_IOCTL_ADMIN_CMD, cmd) -> 转到内核驱动处理 -> nvme_ctrl_ioctl
+
+...
+文件系统fs:
+.unlocked_ioctl	= nvme_dev_ioctl
+nvme_user_cmd
+	copy_from_user
+	nvme_validate_passthru_nsid
+	c.common.opcode = cmd.opcode;
+	...
+	nvme_cmd_allowed
+	status = nvme_submit_user_cmd
+		nvme_alloc_user_request
+			blk_mq_alloc_request
+			nvme_init_request
+			nvme_req(req)->flags |= NVME_REQ_USERCMD
+		nvme_map_user_request -> nvme_alloc_request 需要大量参数。 将其分成两个函数以减少参数数量。 第一个保留名称 nvme_alloc_request, 而第二个名为 nvme_map_user_request
+		bio = req->bio
+		ctrl = nvme_req(req)->ctrl
+		nvme_passthru_start
+			nvme_command_effects
+			nvme_mpath_start_freeze
+			nvme_start_freeze
+		et = nvme_execute_rq(req, false)
+			status = blk_execute_rq(rq, at_head)
+				blk_mq_insert_request -> ... -> nvme_rdma_queue_rq
+				blk_mq_run_hw_queue
+				blk_rq_is_poll -> false HCTX_TYPE_DEFAULT
+				wait_for_completion_io
+		blk_rq_unmap_user(bio)
+		blk_mq_free_request(req)
+		nvme_passthru_end(ctrl, effects, cmd, ret)
+
+
+tee<<EOF>test.bt
+#include <linux/blk-mq.h>
+kprobe:blk_execute_rq
+{
+    printf("%d\n", (((struct request *)arg0)->mq_hctx->type));
+    // printf("%lu\n", hang_check);
+}
+EOF
+bpftrace test.bt
+
+
+
+nvme控制文件:
+[root@s64 ctl]# pwd
+/sys/class/nvme-fabrics/ctl
+[root@s64 ctl]# tree -L 5
+.
+├── power
+│   ├── async
+│   ├── autosuspend_delay_ms
+│   ├── control
+│   ├── runtime_active_kids
+│   ├── runtime_active_time
+│   ├── runtime_enabled
+│   ├── runtime_status
+│   ├── runtime_suspended_time
+│   └── runtime_usage
+├── subsystem -> ../../../../class/nvme-fabrics
+└── uevent
+
+2 directories, 10 files
+
+控制器和子系统为何是嵌套的?
+[root@s64 ctl]# pwd
+/sys/class/nvme-fabrics/ctl/subsystem/ctl/subsystem/ctl/subsystem/ctl/subsystem/ctl/subsystem/ctl/subsystem/ctl
+
+
+
+blk_complete_reqs
+	rq->q->mq_ops->complete(rq)
+nvme_host_path_error | nvme_rdma_complete_rq
+
+nvme_complete_rq
+nvme_decide_disposition
+	nvme_is_path_error
+nvme_complete_rq
+case FAILOVER
+nvme_failover_req
+	nvme_mpath_clear_current_path
+		rcu_assign_pointer(head->current_path[node], NULL)
+
+
+
+nvme_ns_head_submit_bio
+nvme_find_path
 
 

@@ -1,0 +1,121 @@
+[root@s64 dev]# strace -vvv nvme list-subsys
+execve("/sbin/nvme", ["nvme", "list-subsys"], ["XDG_SESSION_ID=6590", "HOSTNAME=s64", "TERM=xterm", "SHELL=/bin/bash", "HISTSIZE=1000", "SSH_CLIENT=182.200.29.29 12128 2"..., "SSH_TTY=/dev/pts/4", "http_proxy=http://s30893:Qwer%40"..., "USER=root", "LS_COLORS=rs=0:di=01;34:ln=01;36"..., "TMOUT=0", "MAIL=/var/spool/mail/root", "PATH=/usr/local/sbin:/usr/local/"..., "PWD=/dev", "LANG=en_US.UTF-8", "https_proxy=http://s30893:Qwer%4"..., "HISTCONTROL=ignoredups", "SHLVL=1", "HOME=/root", "NSS_SDB_USE_CACHE=yes", "LOGNAME=root", "SSH_CONNECTION=182.200.29.29 121"..., "LESSOPEN=||/usr/bin/lesspipe.sh "..., "XDG_RUNTIME_DIR=/run/user/0", "_=/bin/strace", "OLDPWD=/root"]) = 0
+brk(NULL)                               = 0x1e79000
+mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f9ee49ba000
+access("/etc/ld.so.preload", R_OK)      = -1 ENOENT (No such file or directory)
+open("/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+fstat(3, {st_dev=makedev(253, 0), st_ino=235807293, st_mode=S_IFREG|0644, st_nlink=1, st_uid=0, st_gid=0, st_blksize=4096, st_blocks=88, st_size=43255, st_atime=1689144901 /* 2023-07-12T14:55:01.794595768+0800 */, st_atime_nsec=794595768, st_mtime=1689058462 /* 2023-07-11T14:54:22.883531049+0800 */, st_mtime_nsec=883531049, st_ctime=1689058462 /* 2023-07-11T14:54:22.883531049+0800 */, st_ctime_nsec=883531049}) = 0
+mmap(NULL, 43255, PROT_READ, MAP_PRIVATE, 3, 0) = 0x7f9ee49af000
+close(3)                                = 0
+open("/lib64/libuuid.so.1", O_RDONLY|O_CLOEXEC) = 3
+read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0>\0\1\0\0\0\340\24\0\0\0\0\0\0"..., 832) = 832
+fstat(3, {st_dev=makedev(253, 0), st_ino=134220422, st_mode=S_IFREG|0755, st_nlink=1, st_uid=0, st_gid=0, st_blksize=4096, st_blocks=40, st_size=20064, st_atime=1689132080 /* 2023-07-12T11:21:20.572882823+0800 */, st_atime_nsec=572882823, st_mtime=1612283513 /* 2021-02-03T00:31:53+0800 */, st_mtime_nsec=0, st_ctime=1688709798 /* 2023-07-07T14:03:18.176995742+0800 */, st_ctime_nsec=176995742}) = 0
+mmap(NULL, 2113920, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f9ee4595000
+mprotect(0x7f9ee4599000, 2093056, PROT_NONE) = 0
+mmap(0x7f9ee4798000, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x3000) = 0x7f9ee4798000
+close(3)                                = 0
+open("/lib64/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+read(3, "\177ELF\2\1\1\3\0\0\0\0\0\0\0\0\3\0>\0\1\0\0\0000'\2\0\0\0\0\0"..., 832) = 832
+fstat(3, {st_dev=makedev(253, 0), st_ino=134218098, st_mode=S_IFREG|0755, st_nlink=1, st_uid=0, st_gid=0, st_blksize=4096, st_blocks=4216, st_size=2156408, st_atime=1689141841 /* 2023-07-12T14:04:01.882664277+0800 */, st_atime_nsec=882664277, st_mtime=1615285706 /* 2021-03-09T18:28:26+0800 */, st_mtime_nsec=0, st_ctime=1688709794 /* 2023-07-07T14:03:14.710995783+0800 */, st_ctime_nsec=710995783}) = 0
+mmap(NULL, 3985984, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f9ee41c7000
+mprotect(0x7f9ee438b000, 2093056, PROT_NONE) = 0
+mmap(0x7f9ee458a000, 24576, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x1c3000) = 0x7f9ee458a000
+mmap(0x7f9ee4590000, 16960, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS, -1, 0) = 0x7f9ee4590000
+close(3)                                = 0
+mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f9ee49ae000
+mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f9ee49ac000
+arch_prctl(ARCH_SET_FS, 0x7f9ee49ac780) = 0
+mprotect(0x7f9ee458a000, 16384, PROT_READ) = 0
+mprotect(0x7f9ee4798000, 4096, PROT_READ) = 0
+mprotect(0x652000, 4096, PROT_READ)     = 0
+mprotect(0x7f9ee49bb000, 4096, PROT_READ) = 0
+munmap(0x7f9ee49af000, 43255)           = 0
+brk(NULL)                               = 0x1e79000
+brk(0x1e9a000)                          = 0x1e9a000
+brk(NULL)                               = 0x1e9a000
+open("/usr/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = 3
+fstat(3, {st_dev=makedev(253, 0), st_ino=167776647, st_mode=S_IFREG|0644, st_nlink=1, st_uid=0, st_gid=0, st_blksize=4096, st_blocks=207312, st_size=106172832, st_atime=1689142501 /* 2023-07-12T14:15:01.096649517+0800 */, st_atime_nsec=96649517, st_mtime=1688709796 /* 2023-07-07T14:03:16.417995763+0800 */, st_mtime_nsec=417995763, st_ctime=1688709796 /* 2023-07-07T14:03:16.417995763+0800 */, st_ctime_nsec=417995763}) = 0
+mmap(NULL, 106172832, PROT_READ, MAP_PRIVATE, 3, 0) = 0x7f9eddc85000
+close(3)                                = 0
+openat(AT_FDCWD, "/sys/class/nvme-subsystem/", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+getdents(3, [{d_ino=83586, d_off=1, d_reclen=24, d_name=".", d_type=DT_DIR}, {d_ino=10, d_off=868240258, d_reclen=24, d_name="..", d_type=DT_DIR}, {d_ino=84574, d_off=1838980090, d_reclen=32, d_name="nvme-subsys1", d_type=DT_LNK}, {d_ino=135508, d_off=2044984073, d_reclen=32, d_name="nvme-subsys2", d_type=DT_LNK}, {d_ino=83967, d_off=2147483647, d_reclen=32, d_name="nvme-subsys0", d_type=DT_LNK}], 32768) = 144
+stat("/etc/sysconfig/64bit_strstr_via_64bit_strstr_sse2_unaligned", 0x7ffe31007430) = -1 ENOENT (No such file or directory)
+stat("/sys/class/nvme-subsystem/nvme-subsys1", {st_dev=makedev(0, 21), st_ino=84571, st_mode=S_IFDIR|0755, st_nlink=3, st_uid=0, st_gid=0, st_blksize=4096, st_blocks=0, st_size=0, st_atime=1689132138 /* 2023-07-12T11:22:18.299881530+0800 */, st_atime_nsec=299881530, st_mtime=1688712548 /* 2023-07-07T14:49:08.693275720+0800 */, st_mtime_nsec=693275720, st_ctime=1688712548 /* 2023-07-07T14:49:08.693275720+0800 */, st_ctime_nsec=693275720}) = 0
+stat("/sys/class/nvme-subsystem/nvme-subsys2", {st_dev=makedev(0, 21), st_ino=135505, st_mode=S_IFDIR|0755, st_nlink=3, st_uid=0, st_gid=0, st_blksize=4096, st_blocks=0, st_size=0, st_atime=1689214723 /* 2023-07-13T10:18:43.095032539+0800 */, st_atime_nsec=95032539, st_mtime=1689214701 /* 2023-07-13T10:18:21.223033029+0800 */, st_mtime_nsec=223033029, st_ctime=1689214701 /* 2023-07-13T10:18:21.223033029+0800 */, st_ctime_nsec=223033029}) = 0
+stat("/sys/class/nvme-subsystem/nvme-subsys0", {st_dev=makedev(0, 21), st_ino=83964, st_mode=S_IFDIR|0755, st_nlink=3, st_uid=0, st_gid=0, st_blksize=4096, st_blocks=0, st_size=0, st_atime=1689132138 /* 2023-07-12T11:22:18.299881530+0800 */, st_atime_nsec=299881530, st_mtime=1688712548 /* 2023-07-07T14:49:08.693275720+0800 */, st_mtime_nsec=693275720, st_ctime=1688712548 /* 2023-07-07T14:49:08.693275720+0800 */, st_ctime_nsec=693275720}) = 0
+getdents(3, [], 32768)                  = 0
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys0/subsysnqn", O_RDONLY) = 3
+read(3, "nqn.2014.08.org.nvmexpress:80868"..., 256) = 96
+close(3)                                = 0
+openat(AT_FDCWD, "/sys/class/nvme-subsystem/nvme-subsys0", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+getdents(3, [{d_ino=83964, d_off=1, d_reclen=24, d_name=".", d_type=DT_DIR}, {d_ino=83963, d_off=45078383, d_reclen=24, d_name="..", d_type=DT_DIR}, {d_ino=83965, d_off=538520940, d_reclen=32, d_name="uevent", d_type=DT_REG}, {d_ino=83971, d_off=608164118, d_reclen=32, d_name="subsysnqn", d_type=DT_REG}, {d_ino=83974, d_off=743804854, d_reclen=32, d_name="power", d_type=DT_DIR}, {d_ino=83973, d_off=755716715, d_reclen=32, d_name="iopolicy", d_type=DT_REG}, {d_ino=83968, d_off=1015525233, d_reclen=32, d_name="model", d_type=DT_REG}, {d_ino=83972, d_off=1081105167, d_reclen=32, d_name="subsystype", d_type=DT_REG}, {d_ino=83970, d_off=1429880257, d_reclen=32, d_name="firmware_rev", d_type=DT_REG}, {d_ino=83966, d_off=1759782585, d_reclen=32, d_name="subsystem", d_type=DT_LNK}, {d_ino=83969, d_off=1918618040, d_reclen=32, d_name="serial", d_type=DT_REG}, {d_ino=83984, d_off=2147483647, d_reclen=32, d_name="nvme0", d_type=DT_LNK}], 32768) = 368
+getdents(3, [], 32768)                  = 0
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys0/nvme0/address", O_RDONLY) = 3
+read(3, "0000:e5:00.0\n", 1024)         = 13
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys0/nvme0/transport", O_RDONLY) = 3
+read(3, "pcie\n", 1024)                 = 5
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys0/nvme0/state", O_RDONLY) = 3
+read(3, "live\n", 1024)                 = 5
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys1/subsysnqn", O_RDONLY) = 3
+read(3, "nqn.2014.08.org.nvmexpress:80868"..., 256) = 96
+close(3)                                = 0
+openat(AT_FDCWD, "/sys/class/nvme-subsystem/nvme-subsys1", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+getdents(3, [{d_ino=84571, d_off=1, d_reclen=24, d_name=".", d_type=DT_DIR}, {d_ino=83963, d_off=45078383, d_reclen=24, d_name="..", d_type=DT_DIR}, {d_ino=84572, d_off=538520940, d_reclen=32, d_name="uevent", d_type=DT_REG}, {d_ino=84578, d_off=608164118, d_reclen=32, d_name="subsysnqn", d_type=DT_REG}, {d_ino=84581, d_off=741874224, d_reclen=32, d_name="power", d_type=DT_DIR}, {d_ino=84591, d_off=743804854, d_reclen=32, d_name="nvme1", d_type=DT_LNK}, {d_ino=84580, d_off=755716715, d_reclen=32, d_name="iopolicy", d_type=DT_REG}, {d_ino=84575, d_off=1015525233, d_reclen=32, d_name="model", d_type=DT_REG}, {d_ino=84579, d_off=1081105167, d_reclen=32, d_name="subsystype", d_type=DT_REG}, {d_ino=84577, d_off=1429880257, d_reclen=32, d_name="firmware_rev", d_type=DT_REG}, {d_ino=84573, d_off=1759782585, d_reclen=32, d_name="subsystem", d_type=DT_LNK}, {d_ino=84576, d_off=2147483647, d_reclen=32, d_name="serial", d_type=DT_REG}], 32768) = 368
+getdents(3, [], 32768)                  = 0
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys1/nvme1/address", O_RDONLY) = 3
+read(3, "0000:e6:00.0\n", 1024)         = 13
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys1/nvme1/transport", O_RDONLY) = 3
+read(3, "pcie\n", 1024)                 = 5
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys1/nvme1/state", O_RDONLY) = 3
+read(3, "live\n", 1024)                 = 5
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys2/subsysnqn", O_RDONLY) = 3
+read(3, "nqn.2022-06.io.spdk:cnode216\n", 256) = 29
+close(3)                                = 0
+openat(AT_FDCWD, "/sys/class/nvme-subsystem/nvme-subsys2", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+getdents(3, [{d_ino=135505, d_off=1, d_reclen=24, d_name=".", d_type=DT_DIR}, {d_ino=83963, d_off=45078383, d_reclen=24, d_name="..", d_type=DT_DIR}, {d_ino=135506, d_off=538520940, d_reclen=32, d_name="uevent", d_type=DT_REG}, {d_ino=135512, d_off=608164118, d_reclen=32, d_name="subsysnqn", d_type=DT_REG}, {d_ino=135515, d_off=743804854, d_reclen=32, d_name="power", d_type=DT_DIR}, {d_ino=135514, d_off=755716715, d_reclen=32, d_name="iopolicy", d_type=DT_REG}, {d_ino=135509, d_off=1015525233, d_reclen=32, d_name="model", d_type=DT_REG}, {d_ino=135513, d_off=1081105167, d_reclen=32, d_name="subsystype", d_type=DT_REG}, {d_ino=135511, d_off=1429880257, d_reclen=32, d_name="firmware_rev", d_type=DT_REG}, {d_ino=135507, d_off=1712614057, d_reclen=32, d_name="subsystem", d_type=DT_LNK}, {d_ino=135525, d_off=1759782585, d_reclen=32, d_name="nvme2", d_type=DT_LNK}, {d_ino=135510, d_off=2147483647, d_reclen=32, d_name="serial", d_type=DT_REG}], 32768) = 368
+getdents(3, [], 32768)                  = 0
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys2/nvme2/address", O_RDONLY) = 3
+read(3, "traddr=172.17.29.63,trsvcid=4420"..., 1024) = 33
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys2/nvme2/transport", O_RDONLY) = 3
+read(3, "rdma\n", 1024)                 = 5
+close(3)                                = 0
+open("/sys/class/nvme-subsystem/nvme-subsys2/nvme2/state", O_RDONLY) = 3
+read(3, "live\n", 1024)                 = 5
+close(3)                                = 0
+fstat(1, {st_dev=makedev(0, 24), st_ino=7, st_mode=S_IFCHR|0620, st_nlink=1, st_uid=0, st_gid=5, st_blksize=1024, st_blocks=0, st_rdev=makedev(136, 4), st_atime=1689214968 /* 2023-07-13T10:22:48.915492248+0800 */, st_atime_nsec=915492248, st_mtime=1689214968 /* 2023-07-13T10:22:48.915492248+0800 */, st_mtime_nsec=915492248, st_ctime=1689060195 /* 2023-07-11T15:23:15.915492248+0800 */, st_ctime_nsec=915492248}) = 0
+mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f9ee49b9000
+write(1, "nvme-subsys0 - NQN=nqn.2014.08.o"..., 115nvme-subsys0 - NQN=nqn.2014.08.org.nvmexpress:80868086PHLN220100K71P6AGN  INTEL SSDPE2KE016T8                     
+) = 115
+write(1, "\\\n", 2\
+)                     = 2
+write(1, " +- nvme0 pcie 0000:e5:00.0 live"..., 34 +- nvme0 pcie 0000:e5:00.0 live 
+) = 34
+write(1, "nvme-subsys1 - NQN=nqn.2014.08.o"..., 115nvme-subsys1 - NQN=nqn.2014.08.org.nvmexpress:80868086PHLN223300Y01P6AGN  INTEL SSDPE2KE016T8                     
+) = 115
+write(1, "\\\n", 2\
+)                     = 2
+write(1, " +- nvme1 pcie 0000:e6:00.0 live"..., 34 +- nvme1 pcie 0000:e6:00.0 live 
+) = 34
+write(1, "nvme-subsys2 - NQN=nqn.2022-06.i"..., 48nvme-subsys2 - NQN=nqn.2022-06.io.spdk:cnode216
+) = 48
+write(1, "\\\n", 2\
+)                     = 2
+write(1, " +- nvme2 rdma traddr=172.17.29."..., 54 +- nvme2 rdma traddr=172.17.29.63 trsvcid=4420 live 
+) = 54
+exit_group(0)                           = ?
++++ exited with 0 +++
+
+
+
+
