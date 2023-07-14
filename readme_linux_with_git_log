@@ -1896,7 +1896,7 @@ static int __init nvmf_init
 
 
 
-
+分配命名空间, 也就是块设备, 指定符号操作表: disk->fops = &nvme_bdev_ops;, 
 nvme_alloc_ns
   nvme_init_ns_head
     nvme_alloc_ns_head
@@ -1929,7 +1929,7 @@ nvme_alloc_ns
     nvme_mpath_set_live
       // /sys/class/nvme-subsystem/nvme-subsysA/nvmeXnY
       // /dev/nvmeXnY
-      device_add_disk(&head->subsys->dev, head->disk)
+      device_add_disk(&head->subsys->dev, head->disk)  -> 添加磁盘, 一个块设备就是一个ns
       sysfs_create_group(&disk_to_dev(head->disk)->kobj,
               &nvme_ns_id_attr_group)
 
@@ -2098,7 +2098,7 @@ static ssize_t nvmf_dev_write
 									nvmet_rdma_cm_accept(cm_id, queue, &event->param.conn)
 										rdma_accept(cm_id, &param) -> 在host和tgt端触发cm事件: RDMA_CM_EVENT_ESTABLISHED
 											host: -> queue->cm_error = nvme_rdma_conn_established(queue)
-												nvme_rdma_post_recv
+												nvme_rdma_post_recv -> nvme_rdma_recv_done
 												complete(&queue->cm_done) -> 唤醒等待的函数: nvme_rdma_wait_for_cm
 											-------------------------------------------------
 											tgt: -> nvmet_rdma_queue_established(queue)
@@ -2521,5 +2521,22 @@ nvme_failover_req
 
 nvme_ns_head_submit_bio
 nvme_find_path
+
+
+struct nvme_command
+nvme_rw_command, 当命令完成不论成功还是失败，controller都应该发送一个表明命令状态的CQE到关联的I/O CQ完成队列
+nvme write /dev/nvme0n1 -d test.log -z 10
+nvme read /dev/nvme0n1 -d test.log -z 10
+
+
+
+发送,或接收完成
+nvme_rdma_recv_done
+	nvme_rdma_process_nvme_rsp
+		nvme_rdma_end_request(req)
+			nvme_complete_rq
+				nvme_find_rq
+					u8 genctr = nvme_genctr_from_cid(command_id)
+					u16 tag = nvme_tag_from_cid(command_id)
 
 
