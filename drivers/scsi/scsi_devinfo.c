@@ -856,7 +856,7 @@ int __init scsi_init_devinfo(void)
 	error = scsi_dev_info_add_list(SCSI_DEVINFO_GLOBAL, NULL);
 	if (error)
 		return error;
-
+	
 	error = scsi_dev_info_list_add_str(scsi_dev_flags);
 	if (error)
 		goto out;

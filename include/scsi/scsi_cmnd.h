@@ -95,7 +95,7 @@ struct scsi_cmnd {
 	unsigned short cmd_len;
 	enum dma_data_direction sc_data_direction;
 
-	unsigned char cmnd[32]; /* SCSI CDB */
+	`
 
 	/* These elements define the operation we ultimately want to perform */
 	struct scsi_data_buffer sdb;
