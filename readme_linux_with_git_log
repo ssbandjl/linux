@@ -2080,7 +2080,7 @@ static ssize_t nvmf_dev_write
 							rdma_set_service_type -> 设置服务类型, Setting Type of Service (ToS), https://github.com/ssbandjl/linux/commit/e63440d6a3134f7ae74bfb00bfc01db3efb8d3aa, nvme-rdma：为 rdma 传输添加 TOS 对于 RDMA 传输，TOS 是 IB QoS 的扩展，为客户端提供隔离不同类型数据的流量的能力。 RDMA CM 使用 rdma_set_service_type() 将其抽象为 ULP。 在内部，每个流量流都由一个连接来表示，该连接具有与普通连接一样的所有独立资源，并按服务类型进行区分。 换句话说，IP 对之间可以有多个 qp 连接，并且每个连接都支持唯一的服务类型。 TOS 用途之一是带宽管理，它允许为 QoS 类别设置带宽限制，例如 80% 带宽分配给 QoS 类别 A 的控制器，20% 分配给 QoS 类别 B 的控制器。 注意：除了 TOS 配置之外，还必须在目标（发送 RDMA 命令）和发起方的相关 HCA 上配置 QOS，以影响流量, 用法: nvme connect --tos=0 --transport=rdma --traddr=10.0.1.1 --nqn=test-nvme
 							rdma_resolve_route -> 触发cm事件: RDMA_CM_EVENT_ROUTE_RESOLVED -> cm_error = nvme_rdma_route_resolved(queue)
 								param.retry_count = 7 -> 发生错误时应在连接上重试数据传输操作的最大次数。 此设置控制发生超时时重试发送、RDMA 和原子操作的次数。 仅适用于 RDMA_PS_TCP, 
-								param.rnr_retry_count = 7 -> 设置连接参数, 最大重试7次, 收到接收器未就绪 (RNR) 错误后应在连接上重试远程对等方发送操作的最大次数。 当发送请求在缓冲区已发布以接收传入数据之前到达时，会生成 RNR 错误。 仅适用于 RDMA_PS_TCP, 提供可靠、面向连接的 QP 通信，与 TCP 不同，RDMA 端口空间提供基于消息而不是流的通信
+								param.rnr_retry_count = 7 (规范中的特殊值) -> 设置连接参数, 最大重试无限次, 收到接收器未就绪 (RNR) 错误后应在连接上重试远程对等方发送操作的最大次数。 当发送请求在缓冲区已发布以接收传入数据之前到达时，会生成 RNR 错误。 仅适用于 RDMA_PS_TCP, 提供可靠、面向连接的 QP 通信，与 TCP 不同，RDMA 端口空间提供基于消息而不是流的通信
 								ret = rdma_connect_locked(queue->cm_id, &param) -> 连接服务端, 在服务端tgt, 触发cm事件: RDMA_CM_EVENT_CONNECT_REQUEST -> nvmet_rdma_queue_connect(cm_id, event)
 									nvmet_rdma_find_get_device(cm_id)
 										nline_page_count = num_pages
