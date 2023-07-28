@@ -367,7 +367,8 @@ static blk_status_t nvme_rdma_queue_rq
 	nvme_rdma_map_data
 	ib_dma_sync_single_for_device
 	nvme_rdma_post_send <- drivers/nvme/host/rdma.c
-		ib_post_send
+		wr.opcode     = IB_WR_SEND -> 发送端产生发送完成事件: IBV_WC_SEND, 接收端产生接收完成事件: IBV_WC_RECV, 在spdk_tgt端产生 RDMA_WR_TYPE_SEND 的类型 -> rdma_wr = (struct spdk_nvmf_rdma_wr *)wc[i].wr_id -> IBV_WC_RECV
+		ib_post_send -> nvme_host驱动提交工作请求WR到队列, cpu敲门铃, DMA硬件拷贝和传输数据到tgt端, host生成发送完成事件(...), tgt端生成接收完成事件(...)
 
 
 
@@ -2539,4 +2540,37 @@ nvme_rdma_recv_done
 					u8 genctr = nvme_genctr_from_cid(command_id)
 					u16 tag = nvme_tag_from_cid(command_id)
 
+
+$2 = {
+  opcode = 1 '\001', 
+  flags = 0 '\000', 
+  control = 0, 
+  nblocks = 1, 
+  rsvd = 0, 
+  metadata = 0, 
+  addr = 6635520, 
+  slba = 0, 
+  dsmgmt = 0, 
+  reftag = 0, 
+  apptag = 0, 
+  appmask = 0
+}
+NVME_IOCTL_ADMIN_CMD：用于向NVMe设备发送管理命令，例如格式化磁盘、获取设备信息、查询SMART信息等等
+NVME_IOCTL_SUBMIT_IO：用于向NVMe设备提交I/O请求，例如读写数据、擦除块等等
+NVME_IOCTL_IO_CMD：用于向NVMe设备发送I/O命令，可以通过该命令发送NVMe特定的I/O命令，例如读取控制器寄存器、读取命名空间属性等等
+NVME_IOCTL_RESET：用于重置NVMe设备，该命令会将设备恢复到出厂默认状态
+static int nvme_ns_ioctl -> switch (cmd)
+nvme write -> NVME_IOCTL_SUBMIT_IO -> ioctl解密: https://www.cnblogs.com/mmmmmmmelody/p/10500263.html
+nvme_submit_io(ns, argp)
+	copy_from_user(&io, uio, sizeof(io))
+	length = (io.nblocks + 1) << ns->lba_shift
+	c.rw.nsid = cpu_to_le32(ns->head->ns_id)
+	nvme_submit_user_cmd(ns->queue, &c, io.addr, length, metadata, meta_len, lower_32_bits(io.slba), NULL, 0, 0)
+		nvme_alloc_user_request
+		nvme_map_user_request -> 有用户数据
+		ctrl = nvme_req(req)->ctrl
+		nvme_passthru_start
+		nvme_execute_rq
+		...
+		ib_post_send
 
