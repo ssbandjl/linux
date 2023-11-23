@@ -1,9 +1,9 @@
-https://docs.kernel.org/driver-api/scsi.html
-https://github.com/ssbandjl/linux.git
+SCSI: https://docs.kernel.org/driver-api/scsi.html
+Linux仓库: https://github.com/ssbandjl/linux.git
 bio下发流程: https://blog.csdn.net/flyingnosky/article/details/121362813
 io路径: https://zhuanlan.zhihu.com/p/545906763
 用户态与内核态通信netlink: https://gist.github.com/lflish/15e85da8bb9200794255439d0563b195
-实现rfc3720: https://github.com/ssbandjl/linux/commit/39e84790d3b65a4af1ea1fb0d8f06c3ad75304b3
+实现rfc3720(iscsi): https://github.com/ssbandjl/linux/commit/39e84790d3b65a4af1ea1fb0d8f06c3ad75304b3
 管理内核模块,红帽: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/managing_monitoring_and_updating_the_kernel/managing-kernel-modules_managing-monitoring-and-updating-the-kernel
 存储技术原理: file:///D:/xb/project/c/%E5%AD%98%E5%82%A8%E6%8A%80%E6%9C%AF%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90_%E5%9F%BA%E4%BA%8ELinux%202.6%E5%86%85%E6%A0%B8%E6%BA%90%E4%BB%A3%E7%A0%81.pdf
 内核定时器: 
@@ -103,7 +103,7 @@ dm.c -> static struct mapped_device *alloc_dev(int minor) -> 分配并初始化�
 
 static void process_queued_bios
 
-
+drivers/md/dm-rq.c -> md=multiple_device 多路径设备, md=device_mapper 设备映射
 static const struct blk_mq_ops dm_mq_ops = {
 	.queue_rq = dm_mq_queue_rq,
 	.complete = dm_softirq_done,
@@ -119,7 +119,7 @@ static blk_status_t dm_mq_queue_rq -> blk-mq 新的多队列块IO排队机制, s
 			WRITE_ONCE(rq->bio->bi_cookie, blk_rq_to_qc(rq)) -> Linux内核中的READ_ONCE和WRITE_ONCE宏, https://zhuanlan.zhihu.com/p/344256943, 缓存一致性: https://blog.csdn.net/zxp_cpinfo/article/details/53523697, 所以就出现了缓存一致性协议。最出名的就是Intel 的MESI协议，MESI协议保证了每个缓存中使用的共享变量的副本是一致的。它核心的思想是：当CPU写数据时，如果发现操作的变量是共享变量，即在其他CPU中也存在该变量的副本，会发出信号通知其他CPU将该变量的缓存行置为无效状态，因此当其他CPU需要读取这个变量时，发现自己缓存中缓存该变量的缓存行是无效的，那么它就会从内存重新读取
 		dm_get(md)
 	init_tio(tio, rq, md) -> target_io
-	map_request(tio)
+	map_request(tio) -> 映射请求 -> static int map_request(struct dm_rq_target_io *tio)
 		ti->type->clone_and_map_rq -> static int multipath_clone_and_map
 			Do we need to select a new pgpath? 我们是否需要选择一个新的优先级组路径?
 			pgpath = choose_pgpath(m, nr_bytes) -> Switchgroup消息传递到内核，会修改内核multipath对象的current_pgpath=NULL和nextpg，failback消息传递到内核，会调用 fail_path 方法修改内核multipath对象的 current_pgpath=NULL，之后的读写请求到multipath_target的map_io时就会选择的新的路径
@@ -821,7 +821,7 @@ iscsi_if_transport_conn
 			conn = transport->create_conn(session, ev->u.c_conn.cid)
 static struct iscsi_transport iscsi_sw_tcp_transport
 .create_conn		= iscsi_sw_tcp_conn_create, <- conn = transport->create_conn(session, ev->u.c_conn.cid)
-iscsi_sw_tcp_conn_create
+iscsi_sw_tcp_conn_create -> 创建TCP连接
 	iscsi_tcp_conn_setup
 		iscsi_conn_setup(struct iscsi_cls_session *cls_session
 			iscsi_alloc_conn
@@ -1030,7 +1030,16 @@ int main()
 }
 
 IO路径-块层, linux v5.10, 
-SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter -> write_iter -> xfs_file_write_iter (.write_iter	= xfs_file_write_iter) -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead 预读 -> xfs_buf_readahead_map -> xfs_buf_read_map -> _xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> 由VFS -> 进入块层 -> submit_bio(bio) -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __submit_bio_noacct_mq / __submit_bio_noacct -> __submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
+SYSCALL_DEFINE3(write, ...) -> 
+    ksys_write -> 
+    vfs_write -> 
+    new_sync_write -> 
+    call_write_iter -> 
+    write_iter -> 
+    xfs_file_write_iter (.write_iter	= xfs_file_write_iter) -> 
+    xfs_file_buffered_write -> 
+    iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> 
+    xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead 预读 -> xfs_buf_readahead_map -> xfs_buf_read_map -> _xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> 由VFS -> 进入块层 -> submit_bio(bio) -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __submit_bio_noacct_mq / __submit_bio_noacct -> __submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
 request插入ctx：blk_mq_submit_bio -> blk_mq_sched_insert_request (blk_mq_insert_request) -> __blk_mq_insert_request -> __blk_mq_insert_req_list -> list_add(&rq->queuelist, &ctx->rq_lists[type])
 取出request: blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
 
@@ -1980,8 +1989,8 @@ nvme_init_subsystem
 常见问题:
 错误: no handler found for transport 
 
-
-
+RDMA相关, 建连/初始化等
+drivers/nvme/host/rdma.c
 nvmf_dev_open
 seq_open() 设置@file，将其与@op 描述的序列关联起来。 @op->start() 设置迭代器并返回序列的第一个元素。 @op->stop() 将其关闭。 @op->next() 返回序列的下一个元素。 @op->show() 将元素打印到缓冲区中。 如果出现错误 ->start() 和 ->next() 返回 ERR_PTR(错误)。 在序列末尾，它们返回 %NULL。 ->show() 如果成功则返回 0，如果出错则返回负数。 返回 SEQ_SKIP 意味着“丢弃该元素并继续”。 注意：seq_open()将分配一个struct seq_file并将其指针存储在@file->private_data中。 该指针不应被修改
 nvmf_dev_show
@@ -2560,8 +2569,8 @@ NVME_IOCTL_SUBMIT_IO：用于向NVMe设备提交I/O请求，例如读写数据�
 NVME_IOCTL_IO_CMD：用于向NVMe设备发送I/O命令，可以通过该命令发送NVMe特定的I/O命令，例如读取控制器寄存器、读取命名空间属性等等
 NVME_IOCTL_RESET：用于重置NVMe设备，该命令会将设备恢复到出厂默认状态
 static int nvme_ns_ioctl -> switch (cmd)
-nvme write -> NVME_IOCTL_SUBMIT_IO -> ioctl解密: https://www.cnblogs.com/mmmmmmmelody/p/10500263.html
-nvme_submit_io(ns, argp)
+nvme write -> case NVME_IOCTL_SUBMIT_IO -> ioctl解密: https://www.cnblogs.com/mmmmmmmelody/p/10500263.html
+return nvme_submit_io(ns, argp)
 	copy_from_user(&io, uio, sizeof(io))
 	length = (io.nblocks + 1) << ns->lba_shift
 	c.rw.nsid = cpu_to_le32(ns->head->ns_id)
@@ -2573,4 +2582,14 @@ nvme_submit_io(ns, argp)
 		nvme_execute_rq
 		...
 		ib_post_send
+
+
+
+调度器: kernel/sched/sched.h
+
+cpu架构/体系: arch
+系统字长: BITS_PER_LONG, c long type
+不透明类型: typedef xxx
+数据类型: include/linux/types.h
+有符号/无符号: signed char i = -1; unsigned char i = 255;
 
