@@ -126,7 +126,7 @@ static LIST_HEAD(dup_failed_modules);
  *     These typically should not happen unless your system is under memory
  *     pressure.
  *   * invalid_becoming_bytes: total number of bytes allocated and freed used
- *     used to read the kernel module userspace wants us to read before we
+ *     to read the kernel module userspace wants us to read before we
  *     promote it to be processed to be added to our @modules linked list. These
  *     failures can happen if we had a check in between a successful kernel_read_file_from_fd()
  *     call and right before we allocate the our private memory for the module
@@ -276,6 +276,7 @@ static ssize_t read_file_mod_stats(struct file *file, char __user *user_buf,
 	struct mod_fail_load *mod_fail;
 	unsigned int len, size, count_failed = 0;
 	char *buf;
+	int ret;
 	u32 live_mod_count, fkreads, fdecompress, fbecoming, floads;
 	unsigned long total_size, text_size, ikread_bytes, ibecoming_bytes,
 		idecompress_bytes, imod_bytes, total_virtual_lost;
@@ -390,8 +391,9 @@ static ssize_t read_file_mod_stats(struct file *file, char __user *user_buf,
 out_unlock:
 	mutex_unlock(&module_mutex);
 out:
+	ret = simple_read_from_buffer(user_buf, count, ppos, buf, len);
 	kfree(buf);
-        return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+	return ret;
 }
 #undef MAX_PREAMBLE
 #undef MAX_FAILED_MOD_PRINT

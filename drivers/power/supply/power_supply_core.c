@@ -29,8 +29,7 @@
 struct class *power_supply_class;
 EXPORT_SYMBOL_GPL(power_supply_class);
 
-ATOMIC_NOTIFIER_HEAD(power_supply_notifier);
-EXPORT_SYMBOL_GPL(power_supply_notifier);
+static BLOCKING_NOTIFIER_HEAD(power_supply_notifier);
 
 static struct device_type power_supply_dev_type;
 
@@ -97,7 +96,7 @@ static void power_supply_changed_work(struct work_struct *work)
 		class_for_each_device(power_supply_class, NULL, psy,
 				      __power_supply_changed_work);
 		power_supply_update_leds(psy);
-		atomic_notifier_call_chain(&power_supply_notifier,
+		blocking_notifier_call_chain(&power_supply_notifier,
 				PSY_EVENT_PROP_CHANGED, psy);
 		kobject_uevent(&psy->dev.kobj, KOBJ_CHANGE);
 		spin_lock_irqsave(&psy->changed_lock, flags);
@@ -348,6 +347,10 @@ static int __power_supply_is_system_supplied(struct device *dev, void *data)
 	struct power_supply *psy = dev_get_drvdata(dev);
 	unsigned int *count = data;
 
+	if (!psy->desc->get_property(psy, POWER_SUPPLY_PROP_SCOPE, &ret))
+		if (ret.intval == POWER_SUPPLY_SCOPE_DEVICE)
+			return 0;
+
 	(*count)++;
 	if (psy->desc->type != POWER_SUPPLY_TYPE_BATTERY)
 		if (!psy->desc->get_property(psy, POWER_SUPPLY_PROP_ONLINE,
@@ -366,8 +369,8 @@ int power_supply_is_system_supplied(void)
 				      __power_supply_is_system_supplied);
 
 	/*
-	 * If no power class device was found at all, most probably we are
-	 * running on a desktop system, so assume we are on mains power.
+	 * If no system scope power class device was found at all, most probably we
+	 * are running on a desktop system, so assume we are on mains power.
 	 */
 	if (count == 0)
 		return 1;
@@ -573,7 +576,7 @@ int power_supply_get_battery_info(struct power_supply *psy,
 	struct power_supply_battery_info *info;
 	struct device_node *battery_np = NULL;
 	struct fwnode_reference_args args;
-	struct fwnode_handle *fwnode;
+	struct fwnode_handle *fwnode = NULL;
 	const char *value;
 	int err, len, index;
 	const __be32 *list;
@@ -585,7 +588,7 @@ int power_supply_get_battery_info(struct power_supply *psy,
 			return -ENODEV;
 
 		fwnode = fwnode_handle_get(of_fwnode_handle(battery_np));
-	} else {
+	} else if (psy->dev.parent) {
 		err = fwnode_property_get_reference_args(
 					dev_fwnode(psy->dev.parent),
 					"monitored-battery", NULL, 0, 0, &args);
@@ -594,6 +597,9 @@ int power_supply_get_battery_info(struct power_supply *psy,
 
 		fwnode = args.fwnode;
 	}
+
+	if (!fwnode)
+		return -ENOENT;
 
 	err = fwnode_property_read_string(fwnode, "compatible", &value);
 	if (err)
@@ -1255,13 +1261,13 @@ static void power_supply_dev_release(struct device *dev)
 
 int power_supply_reg_notifier(struct notifier_block *nb)
 {
-	return atomic_notifier_chain_register(&power_supply_notifier, nb);
+	return blocking_notifier_chain_register(&power_supply_notifier, nb);
 }
 EXPORT_SYMBOL_GPL(power_supply_reg_notifier);
 
 void power_supply_unreg_notifier(struct notifier_block *nb)
 {
-	atomic_notifier_chain_unregister(&power_supply_notifier, nb);
+	blocking_notifier_chain_unregister(&power_supply_notifier, nb);
 }
 EXPORT_SYMBOL_GPL(power_supply_unreg_notifier);
 
@@ -1298,8 +1304,12 @@ static int psy_register_thermal(struct power_supply *psy)
 
 	/* Register battery zone device psy reports temperature */
 	if (psy_has_property(psy->desc, POWER_SUPPLY_PROP_TEMP)) {
-		psy->tzd = thermal_zone_device_register(psy->desc->name,
-				0, 0, psy, &psy_tzd_ops, NULL, 0, 0);
+		/* Prefer our hwmon device and avoid duplicates */
+		struct thermal_zone_params tzp = {
+			.no_hwmon = IS_ENABLED(CONFIG_POWER_SUPPLY_HWMON)
+		};
+		psy->tzd = thermal_tripless_zone_device_register(psy->desc->name,
+				psy, &psy_tzd_ops, &tzp);
 		if (IS_ERR(psy->tzd))
 			return PTR_ERR(psy->tzd);
 		ret = thermal_zone_device_enable(psy->tzd);
@@ -1369,6 +1379,7 @@ __power_supply_register(struct device *parent,
 		psy->drv_data = cfg->drv_data;
 		psy->of_node =
 			cfg->fwnode ? to_of_node(cfg->fwnode) : cfg->of_node;
+		dev->of_node = psy->of_node;
 		psy->supplied_to = cfg->supplied_to;
 		psy->num_supplicants = cfg->num_supplicants;
 	}

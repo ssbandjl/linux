@@ -984,7 +984,10 @@ xfs_ag_shrink_space(
 		if (err2 != -ENOSPC)
 			goto resv_err;
 
-		__xfs_free_extent_later(*tpp, args.fsbno, delta, NULL, true);
+		err2 = __xfs_free_extent_later(*tpp, args.fsbno, delta, NULL,
+				XFS_AG_RESV_NONE, true);
+		if (err2)
+			goto resv_err;
 
 		/*
 		 * Roll the transaction before trying to re-init the per-ag
@@ -998,6 +1001,12 @@ xfs_ag_shrink_space(
 		error = -ENOSPC;
 		goto resv_init_out;
 	}
+
+	/* Update perag geometry */
+	pag->block_count -= delta;
+	__xfs_agino_range(pag->pag_mount, pag->block_count, &pag->agino_min,
+				&pag->agino_max);
+
 	xfs_ialloc_log_agi(*tpp, agibp, XFS_AGI_LENGTH);
 	xfs_alloc_log_agf(*tpp, agfbp, XFS_AGF_LENGTH);
 	return 0;

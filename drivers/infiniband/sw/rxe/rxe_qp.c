@@ -176,8 +176,60 @@ static void rxe_qp_init_misc(struct rxe_dev *rxe, struct rxe_qp *qp,
 	spin_lock_init(&qp->rq.producer_lock);
 	spin_lock_init(&qp->rq.consumer_lock);
 
+	skb_queue_head_init(&qp->req_pkts);
+	skb_queue_head_init(&qp->resp_pkts);
+
 	atomic_set(&qp->ssn, 0);
 	atomic_set(&qp->skb_out, 0);
+}
+
+static int rxe_init_sq(struct rxe_qp *qp, struct ib_qp_init_attr *init,
+		       struct ib_udata *udata,
+		       struct rxe_create_qp_resp __user *uresp)
+{
+	struct rxe_dev *rxe = to_rdev(qp->ibqp.device);
+	int wqe_size;
+	int err;
+
+	qp->sq.max_wr = init->cap.max_send_wr;
+	wqe_size = max_t(int, init->cap.max_send_sge * sizeof(struct ib_sge),
+			 init->cap.max_inline_data);
+	qp->sq.max_sge = wqe_size / sizeof(struct ib_sge);
+	qp->sq.max_inline = wqe_size;
+	wqe_size += sizeof(struct rxe_send_wqe);
+
+	qp->sq.queue = rxe_queue_init(rxe, &qp->sq.max_wr, wqe_size,
+				      QUEUE_TYPE_FROM_CLIENT);
+	if (!qp->sq.queue) {
+		rxe_err_qp(qp, "Unable to allocate send queue");
+		err = -ENOMEM;
+		goto err_out;
+	}
+
+	/* prepare info for caller to mmap send queue if user space qp */
+	err = do_mmap_info(rxe, uresp ? &uresp->sq_mi : NULL, udata,
+			   qp->sq.queue->buf, qp->sq.queue->buf_size,
+			   &qp->sq.queue->ip);
+	if (err) {
+		rxe_err_qp(qp, "do_mmap_info failed, err = %d", err);
+		goto err_free;
+	}
+
+	/* return actual capabilities to caller which may be larger
+	 * than requested
+	 */
+	init->cap.max_send_wr = qp->sq.max_wr;
+	init->cap.max_send_sge = qp->sq.max_sge;
+	init->cap.max_inline_data = qp->sq.max_inline;
+
+	return 0;
+
+err_free:
+	vfree(qp->sq.queue->buf);
+	kfree(qp->sq.queue);
+	qp->sq.queue = NULL;
+err_out:
+	return err;
 }
 
 static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
@@ -185,8 +237,9 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 			   struct rxe_create_qp_resp __user *uresp)
 {
 	int err;
-	int wqe_size;
-	enum queue_type type;
+
+	/* if we don't finish qp create make sure queue is valid */
+	skb_queue_head_init(&qp->req_pkts);
 
 	err = sock_create_kern(&init_net, AF_INET, SOCK_DGRAM, 0, &qp->sk);
 	if (err < 0)
@@ -201,40 +254,16 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 	 * (0xc000 - 0xffff).
 	 */
 	qp->src_port = RXE_ROCE_V2_SPORT + (hash_32(qp_num(qp), 14) & 0x3fff);
-	qp->sq.max_wr		= init->cap.max_send_wr;
 
-	/* These caps are limited by rxe_qp_chk_cap() done by the caller */
-	wqe_size = max_t(int, init->cap.max_send_sge * sizeof(struct ib_sge),
-			 init->cap.max_inline_data);
-	qp->sq.max_sge = init->cap.max_send_sge =
-		wqe_size / sizeof(struct ib_sge);
-	qp->sq.max_inline = init->cap.max_inline_data = wqe_size;
-	wqe_size += sizeof(struct rxe_send_wqe);
-
-	type = QUEUE_TYPE_FROM_CLIENT;
-	qp->sq.queue = rxe_queue_init(rxe, &qp->sq.max_wr,
-				wqe_size, type);
-	if (!qp->sq.queue)
-		return -ENOMEM;
-
-	err = do_mmap_info(rxe, uresp ? &uresp->sq_mi : NULL, udata,
-			   qp->sq.queue->buf, qp->sq.queue->buf_size,
-			   &qp->sq.queue->ip);
-
-	if (err) {
-		vfree(qp->sq.queue->buf);
-		kfree(qp->sq.queue);
-		qp->sq.queue = NULL;
+	err = rxe_init_sq(qp, init, udata, uresp);
+	if (err)
 		return err;
-	}
 
 	qp->req.wqe_index = queue_get_producer(qp->sq.queue,
 					       QUEUE_TYPE_FROM_CLIENT);
 
 	qp->req.opcode		= -1;
 	qp->comp.opcode		= -1;
-
-	skb_queue_head_init(&qp->req_pkts);
 
 	rxe_init_task(&qp->req.task, qp, rxe_requester);
 	rxe_init_task(&qp->comp.task, qp, rxe_completer);
@@ -247,39 +276,66 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 	return 0;
 }
 
+static int rxe_init_rq(struct rxe_qp *qp, struct ib_qp_init_attr *init,
+		       struct ib_udata *udata,
+		       struct rxe_create_qp_resp __user *uresp)
+{
+	struct rxe_dev *rxe = to_rdev(qp->ibqp.device);
+	int wqe_size;
+	int err;
+
+	qp->rq.max_wr = init->cap.max_recv_wr;
+	qp->rq.max_sge = init->cap.max_recv_sge;
+	wqe_size = sizeof(struct rxe_recv_wqe) +
+				qp->rq.max_sge*sizeof(struct ib_sge);
+
+	qp->rq.queue = rxe_queue_init(rxe, &qp->rq.max_wr, wqe_size,
+				      QUEUE_TYPE_FROM_CLIENT);
+	if (!qp->rq.queue) {
+		rxe_err_qp(qp, "Unable to allocate recv queue");
+		err = -ENOMEM;
+		goto err_out;
+	}
+
+	/* prepare info for caller to mmap recv queue if user space qp */
+	err = do_mmap_info(rxe, uresp ? &uresp->rq_mi : NULL, udata,
+			   qp->rq.queue->buf, qp->rq.queue->buf_size,
+			   &qp->rq.queue->ip);
+	if (err) {
+		rxe_err_qp(qp, "do_mmap_info failed, err = %d", err);
+		goto err_free;
+	}
+
+	/* return actual capabilities to caller which may be larger
+	 * than requested
+	 */
+	init->cap.max_recv_wr = qp->rq.max_wr;
+
+	return 0;
+
+err_free:
+	vfree(qp->rq.queue->buf);
+	kfree(qp->rq.queue);
+	qp->rq.queue = NULL;
+err_out:
+	return err;
+}
+
 static int rxe_qp_init_resp(struct rxe_dev *rxe, struct rxe_qp *qp,
 			    struct ib_qp_init_attr *init,
 			    struct ib_udata *udata,
 			    struct rxe_create_qp_resp __user *uresp)
 {
 	int err;
-	int wqe_size;
-	enum queue_type type;
+
+	/* if we don't finish qp create make sure queue is valid */
+	skb_queue_head_init(&qp->resp_pkts);
 
 	if (!qp->srq) {
-		qp->rq.max_wr		= init->cap.max_recv_wr;
-		qp->rq.max_sge		= init->cap.max_recv_sge;
-
-		wqe_size = rcv_wqe_size(qp->rq.max_sge);
-
-		type = QUEUE_TYPE_FROM_CLIENT;
-		qp->rq.queue = rxe_queue_init(rxe, &qp->rq.max_wr,
-					wqe_size, type);
-		if (!qp->rq.queue)
-			return -ENOMEM;
-
-		err = do_mmap_info(rxe, uresp ? &uresp->rq_mi : NULL, udata,
-				   qp->rq.queue->buf, qp->rq.queue->buf_size,
-				   &qp->rq.queue->ip);
-		if (err) {
-			vfree(qp->rq.queue->buf);
-			kfree(qp->rq.queue);
-			qp->rq.queue = NULL;
+		err = rxe_init_rq(qp, init, udata, uresp);
+		if (err)
 			return err;
-		}
 	}
-
-	skb_queue_head_init(&qp->resp_pkts);
 
 	rxe_init_task(&qp->resp.task, qp, rxe_responder);
 
@@ -300,6 +356,7 @@ int rxe_qp_from_init(struct rxe_dev *rxe, struct rxe_qp *qp, struct rxe_pd *pd,
 	struct rxe_cq *rcq = to_rcq(init->recv_cq);
 	struct rxe_cq *scq = to_rcq(init->send_cq);
 	struct rxe_srq *srq = init->srq ? to_rsrq(init->srq) : NULL;
+	unsigned long flags;
 
 	rxe_get(pd);
 	rxe_get(rcq);
@@ -307,10 +364,10 @@ int rxe_qp_from_init(struct rxe_dev *rxe, struct rxe_qp *qp, struct rxe_pd *pd,
 	if (srq)
 		rxe_get(srq);
 
-	qp->pd			= pd;
-	qp->rcq			= rcq;
-	qp->scq			= scq;
-	qp->srq			= srq;
+	qp->pd = pd;
+	qp->rcq = rcq;
+	qp->scq = scq;
+	qp->srq = srq;
 
 	atomic_inc(&rcq->num_wq);
 	atomic_inc(&scq->num_wq);
@@ -325,10 +382,10 @@ int rxe_qp_from_init(struct rxe_dev *rxe, struct rxe_qp *qp, struct rxe_pd *pd,
 	if (err)
 		goto err2;
 
-	spin_lock_bh(&qp->state_lock);
+	spin_lock_irqsave(&qp->state_lock, flags);
 	qp->attr.qp_state = IB_QPS_RESET;
 	qp->valid = 1;
-	spin_unlock_bh(&qp->state_lock);
+	spin_unlock_irqrestore(&qp->state_lock, flags);
 
 	return 0;
 
@@ -391,6 +448,13 @@ int rxe_qp_chk_attr(struct rxe_dev *rxe, struct rxe_qp *qp,
 
 	if (mask & IB_QP_CAP && rxe_qp_chk_cap(rxe, &attr->cap, !!qp->srq))
 		goto err1;
+
+	if (mask & IB_QP_ACCESS_FLAGS) {
+		if (!(qp_type(qp) == IB_QPT_RC || qp_type(qp) == IB_QPT_UC))
+			goto err1;
+		if (attr->qp_access_flags & ~RXE_ACCESS_SUPPORTED_QP)
+			goto err1;
+	}
 
 	if (mask & IB_QP_AV && rxe_av_chk_attr(qp, &attr->ah_attr))
 		goto err1;
@@ -492,24 +556,28 @@ static void rxe_qp_reset(struct rxe_qp *qp)
 /* move the qp to the error state */
 void rxe_qp_error(struct rxe_qp *qp)
 {
-	spin_lock_bh(&qp->state_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&qp->state_lock, flags);
 	qp->attr.qp_state = IB_QPS_ERR;
 
 	/* drain work and packet queues */
 	rxe_sched_task(&qp->resp.task);
 	rxe_sched_task(&qp->comp.task);
 	rxe_sched_task(&qp->req.task);
-	spin_unlock_bh(&qp->state_lock);
+	spin_unlock_irqrestore(&qp->state_lock, flags);
 }
 
 static void rxe_qp_sqd(struct rxe_qp *qp, struct ib_qp_attr *attr,
 		       int mask)
 {
-	spin_lock_bh(&qp->state_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&qp->state_lock, flags);
 	qp->attr.sq_draining = 1;
 	rxe_sched_task(&qp->comp.task);
 	rxe_sched_task(&qp->req.task);
-	spin_unlock_bh(&qp->state_lock);
+	spin_unlock_irqrestore(&qp->state_lock, flags);
 }
 
 /* caller should hold qp->state_lock */
@@ -555,14 +623,16 @@ int rxe_qp_from_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask,
 		qp->attr.cur_qp_state = attr->qp_state;
 
 	if (mask & IB_QP_STATE) {
-		spin_lock_bh(&qp->state_lock);
+		unsigned long flags;
+
+		spin_lock_irqsave(&qp->state_lock, flags);
 		err = __qp_chk_state(qp, attr, mask);
 		if (!err) {
 			qp->attr.qp_state = attr->qp_state;
 			rxe_dbg_qp(qp, "state -> %s\n",
 					qps2str[attr->qp_state]);
 		}
-		spin_unlock_bh(&qp->state_lock);
+		spin_unlock_irqrestore(&qp->state_lock, flags);
 
 		if (err)
 			return err;
@@ -688,6 +758,8 @@ int rxe_qp_from_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask,
 /* called by the query qp verb */
 int rxe_qp_to_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask)
 {
+	unsigned long flags;
+
 	*attr = qp->attr;
 
 	attr->rq_psn				= qp->resp.psn;
@@ -708,12 +780,13 @@ int rxe_qp_to_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask)
 	/* Applications that get this state typically spin on it.
 	 * Yield the processor
 	 */
-	spin_lock_bh(&qp->state_lock);
+	spin_lock_irqsave(&qp->state_lock, flags);
 	if (qp->attr.sq_draining) {
-		spin_unlock_bh(&qp->state_lock);
+		spin_unlock_irqrestore(&qp->state_lock, flags);
 		cond_resched();
+	} else {
+		spin_unlock_irqrestore(&qp->state_lock, flags);
 	}
-	spin_unlock_bh(&qp->state_lock);
 
 	return 0;
 }
@@ -736,10 +809,11 @@ int rxe_qp_chk_destroy(struct rxe_qp *qp)
 static void rxe_qp_do_cleanup(struct work_struct *work)
 {
 	struct rxe_qp *qp = container_of(work, typeof(*qp), cleanup_work.work);
+	unsigned long flags;
 
-	spin_lock_bh(&qp->state_lock);
+	spin_lock_irqsave(&qp->state_lock, flags);
 	qp->valid = 0;
-	spin_unlock_bh(&qp->state_lock);
+	spin_unlock_irqrestore(&qp->state_lock, flags);
 	qp->qp_timeout_jiffies = 0;
 
 	if (qp_type(qp) == IB_QPT_RC) {

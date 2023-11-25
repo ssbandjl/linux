@@ -231,6 +231,9 @@ struct bu27034_result {
 
 static const struct regmap_range bu27034_volatile_ranges[] = {
 	{
+		.range_min = BU27034_REG_SYSTEM_CONTROL,
+		.range_max = BU27034_REG_SYSTEM_CONTROL,
+	}, {
 		.range_min = BU27034_REG_MODE_CONTROL4,
 		.range_max = BU27034_REG_MODE_CONTROL4,
 	}, {
@@ -572,7 +575,7 @@ static int bu27034_set_scale(struct bu27034_data *data, int chan,
 		return -EINVAL;
 
 	if (chan == BU27034_CHAN_ALS) {
-		if (val == 0 && val2 == 1000)
+		if (val == 0 && val2 == 1000000)
 			return 0;
 
 		return -EINVAL;
@@ -584,7 +587,7 @@ static int bu27034_set_scale(struct bu27034_data *data, int chan,
 		goto unlock_out;
 
 	ret = iio_gts_find_gain_sel_for_scale_using_time(&data->gts, time_sel,
-						val, val2 * 1000, &gain_sel);
+						val, val2, &gain_sel);
 	if (ret) {
 		/*
 		 * Could not support scale with given time. Need to change time.
@@ -621,7 +624,7 @@ static int bu27034_set_scale(struct bu27034_data *data, int chan,
 
 			/* Can we provide requested scale with this time? */
 			ret = iio_gts_find_gain_sel_for_scale_using_time(
-				&data->gts, new_time_sel, val, val2 * 1000,
+				&data->gts, new_time_sel, val, val2,
 				&gain_sel);
 			if (ret)
 				continue;
@@ -1167,11 +1170,12 @@ static int bu27034_read_raw(struct iio_dev *idev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_INT_TIME:
-		*val = bu27034_get_int_time(data);
-		if (*val < 0)
-			return *val;
+		*val = 0;
+		*val2 = bu27034_get_int_time(data);
+		if (*val2 < 0)
+			return *val2;
 
-		return IIO_VAL_INT;
+		return IIO_VAL_INT_PLUS_MICRO;
 
 	case IIO_CHAN_INFO_SCALE:
 		return bu27034_get_scale(data, chan->channel, val, val2);
@@ -1213,6 +1217,21 @@ static int bu27034_read_raw(struct iio_dev *idev,
 	}
 }
 
+static int bu27034_write_raw_get_fmt(struct iio_dev *indio_dev,
+				     struct iio_chan_spec const *chan,
+				     long mask)
+{
+
+	switch (mask) {
+	case IIO_CHAN_INFO_SCALE:
+		return IIO_VAL_INT_PLUS_NANO;
+	case IIO_CHAN_INFO_INT_TIME:
+		return IIO_VAL_INT_PLUS_MICRO;
+	default:
+		return -EINVAL;
+	}
+}
+
 static int bu27034_write_raw(struct iio_dev *idev,
 			     struct iio_chan_spec const *chan,
 			     int val, int val2, long mask)
@@ -1229,7 +1248,10 @@ static int bu27034_write_raw(struct iio_dev *idev,
 		ret = bu27034_set_scale(data, chan->channel, val, val2);
 		break;
 	case IIO_CHAN_INFO_INT_TIME:
-		ret = bu27034_try_set_int_time(data, val);
+		if (!val)
+			ret = bu27034_try_set_int_time(data, val2);
+		else
+			ret = -EINVAL;
 		break;
 	default:
 		ret = -EINVAL;
@@ -1260,6 +1282,7 @@ static int bu27034_read_avail(struct iio_dev *idev,
 static const struct iio_info bu27034_info = {
 	.read_raw = &bu27034_read_raw,
 	.write_raw = &bu27034_write_raw,
+	.write_raw_get_fmt = &bu27034_write_raw_get_fmt,
 	.read_avail = &bu27034_read_avail,
 };
 
@@ -1268,12 +1291,19 @@ static int bu27034_chip_init(struct bu27034_data *data)
 	int ret, sel;
 
 	/* Reset */
-	ret = regmap_update_bits(data->regmap, BU27034_REG_SYSTEM_CONTROL,
+	ret = regmap_write_bits(data->regmap, BU27034_REG_SYSTEM_CONTROL,
 			   BU27034_MASK_SW_RESET, BU27034_MASK_SW_RESET);
 	if (ret)
 		return dev_err_probe(data->dev, ret, "Sensor reset failed\n");
 
 	msleep(1);
+
+	ret = regmap_reinit_cache(data->regmap, &bu27034_regmap);
+	if (ret) {
+		dev_err(data->dev, "Failed to reinit reg cache\n");
+		return ret;
+	}
+
 	/*
 	 * Read integration time here to ensure it is in regmap cache. We do
 	 * this to speed-up the int-time acquisition in the start of the buffer
@@ -1486,8 +1516,9 @@ static struct i2c_driver bu27034_i2c_driver = {
 	.driver = {
 		.name = "bu27034-als",
 		.of_match_table = bu27034_of_match,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
-	.probe_new = bu27034_probe,
+	.probe = bu27034_probe,
 };
 module_i2c_driver(bu27034_i2c_driver);
 

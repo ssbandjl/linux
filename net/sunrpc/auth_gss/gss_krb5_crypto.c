@@ -34,9 +34,9 @@
  * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
  */
 
-#include <crypto/algapi.h>
 #include <crypto/hash.h>
 #include <crypto/skcipher.h>
+#include <crypto/utils.h>
 #include <linux/err.h>
 #include <linux/types.h>
 #include <linux/mm.h>
@@ -638,6 +638,16 @@ gss_krb5_cts_crypt(struct crypto_sync_skcipher *cipher, struct xdr_buf *buf,
 		goto out;
 
 	ret = write_bytes_to_xdr_buf(buf, offset, data, len);
+
+#if IS_ENABLED(CONFIG_KUNIT)
+	/*
+	 * CBC-CTS does not define an output IV but RFC 3962 defines it as the
+	 * penultimate block of ciphertext, so copy that into the IV buffer
+	 * before returning.
+	 */
+	if (encrypt)
+		memcpy(iv, data, crypto_sync_skcipher_ivsize(cipher));
+#endif
 
 out:
 	kfree(data);

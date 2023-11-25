@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2022 Intel Corporation
+ * Copyright (C) 2022-2023 Intel Corporation
  */
 #include "mvm.h"
 #include "time-sync.h"
@@ -71,6 +71,11 @@ static int iwl_mvm_mld_add_int_sta_to_fw(struct iwl_mvm *mvm,
 
 	cmd.station_type = cpu_to_le32(sta->type);
 
+	if (fw_has_capa(&mvm->fw->ucode_capa,
+			IWL_UCODE_TLV_CAPA_STA_EXP_MFP_SUPPORT) &&
+	    sta->type == STATION_TYPE_BCAST_MGMT)
+		cmd.mfp = cpu_to_le32(1);
+
 	if (addr) {
 		memcpy(cmd.peer_mld_address, addr, ETH_ALEN);
 		memcpy(cmd.peer_link_address, addr, ETH_ALEN);
@@ -128,11 +133,11 @@ static int iwl_mvm_add_aux_sta_to_fw(struct iwl_mvm *mvm,
 /*
  * Adds an internal sta to the FW table with its queues
  */
-static int iwl_mvm_mld_add_int_sta_with_queue(struct iwl_mvm *mvm,
-					      struct iwl_mvm_int_sta *sta,
-					      const u8 *addr, int link_id,
-					      u16 *queue, u8 tid,
-					      unsigned int *_wdg_timeout)
+int iwl_mvm_mld_add_int_sta_with_queue(struct iwl_mvm *mvm,
+				       struct iwl_mvm_int_sta *sta,
+				       const u8 *addr, int link_id,
+				       u16 *queue, u8 tid,
+				       unsigned int *_wdg_timeout)
 {
 	int ret, txq;
 	unsigned int wdg_timeout = _wdg_timeout ? *_wdg_timeout :
@@ -342,7 +347,7 @@ static int iwl_mvm_mld_rm_int_sta(struct iwl_mvm *mvm,
 		return -EINVAL;
 
 	if (flush)
-		iwl_mvm_flush_sta(mvm, int_sta, true);
+		iwl_mvm_flush_sta(mvm, int_sta->sta_id, int_sta->tfd_queue_msk);
 
 	iwl_mvm_mld_disable_txq(mvm, BIT(int_sta->sta_id), queuptr, tid);
 
@@ -363,6 +368,9 @@ int iwl_mvm_mld_rm_bcast_sta(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 	u16 *queueptr;
 
 	lockdep_assert_held(&mvm->mutex);
+
+	if (WARN_ON(!link))
+		return -EIO;
 
 	switch (vif->type) {
 	case NL80211_IFTYPE_AP:
@@ -392,6 +400,9 @@ int iwl_mvm_mld_rm_mcast_sta(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 	struct iwl_mvm_vif_link_info *link = mvmvif->link[link_conf->link_id];
 
 	lockdep_assert_held(&mvm->mutex);
+
+	if (WARN_ON(!link))
+		return -EIO;
 
 	return iwl_mvm_mld_rm_int_sta(mvm, &link->mcast_sta, true, 0,
 				      &link->cab_queue);
@@ -441,6 +452,11 @@ static int iwl_mvm_mld_cfg_sta(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 
 	if (mvm_sta->sta_state >= IEEE80211_STA_ASSOC)
 		cmd.assoc_id = cpu_to_le32(sta->aid);
+
+	if (fw_has_capa(&mvm->fw->ucode_capa,
+			IWL_UCODE_TLV_CAPA_STA_EXP_MFP_SUPPORT) &&
+	    (sta->mfp || mvm_sta->sta_state < IEEE80211_STA_AUTHORIZED))
+		cmd.mfp = cpu_to_le32(1);
 
 	switch (link_sta->rx_nss) {
 	case 1:
@@ -667,20 +683,22 @@ int iwl_mvm_mld_add_sta(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 		ret = iwl_mvm_mld_alloc_sta_links(mvm, vif, sta);
 		if (ret)
 			return ret;
-	}
 
-	spin_lock_init(&mvm_sta->lock);
+		spin_lock_init(&mvm_sta->lock);
 
-	if (test_bit(IWL_MVM_STATUS_IN_HW_RESTART, &mvm->status))
-		ret = iwl_mvm_alloc_sta_after_restart(mvm, vif, sta);
-	else
 		ret = iwl_mvm_sta_init(mvm, vif, sta, IWL_MVM_INVALID_STA,
 				       STATION_TYPE_PEER);
+	} else {
+		ret = iwl_mvm_alloc_sta_after_restart(mvm, vif, sta);
+	}
+
 	if (ret)
 		goto err;
 
 	/* at this stage sta link pointers are already allocated */
 	ret = iwl_mvm_mld_update_sta(mvm, vif, sta);
+	if (ret)
+		goto err;
 
 	for_each_sta_active_link(vif, sta, link_sta, link_id) {
 		struct ieee80211_bss_conf *link_conf =
@@ -728,7 +746,7 @@ int iwl_mvm_mld_update_sta(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 	struct iwl_mvm_sta *mvm_sta = iwl_mvm_sta_from_mac80211(sta);
 	struct ieee80211_link_sta *link_sta;
 	unsigned int link_id;
-	int ret = 0;
+	int ret = -EINVAL;
 
 	lockdep_assert_held(&mvm->mutex);
 
@@ -790,8 +808,6 @@ int iwl_mvm_mld_rm_sta(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 	int ret;
 
 	lockdep_assert_held(&mvm->mutex);
-
-	kfree(mvm_sta->dup_data);
 
 	/* flush its queues here since we are freeing mvm_sta */
 	for_each_sta_active_link(vif, sta, link_sta, link_id) {
@@ -1090,15 +1106,26 @@ int iwl_mvm_mld_update_sta_links(struct iwl_mvm *mvm,
 			link_sta_dereference_protected(sta, link_id);
 		mvm_vif_link = mvm_vif->link[link_id];
 
-		if (WARN_ON(!mvm_vif_link || !link_conf || !link_sta ||
-			    mvm_sta->link[link_id])) {
+		if (WARN_ON(!mvm_vif_link || !link_conf || !link_sta)) {
 			ret = -EINVAL;
 			goto err;
 		}
 
-		ret = iwl_mvm_mld_alloc_sta_link(mvm, vif, sta, link_id);
-		if (WARN_ON(ret))
-			goto err;
+		if (test_bit(IWL_MVM_STATUS_IN_HW_RESTART, &mvm->status)) {
+			if (WARN_ON(!mvm_sta->link[link_id])) {
+				ret = -EINVAL;
+				goto err;
+			}
+		} else {
+			if (WARN_ON(mvm_sta->link[link_id])) {
+				ret = -EINVAL;
+				goto err;
+			}
+			ret = iwl_mvm_mld_alloc_sta_link(mvm, vif, sta,
+							 link_id);
+			if (WARN_ON(ret))
+				goto err;
+		}
 
 		link_sta->agg.max_rc_amsdu_len = 1;
 		ieee80211_sta_recalc_aggregates(sta);

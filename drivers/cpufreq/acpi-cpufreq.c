@@ -975,7 +975,7 @@ static int __init acpi_cpufreq_probe(struct platform_device *pdev)
 
 	/* don't keep reloading if cpufreq_driver exists */
 	if (cpufreq_get_current_driver())
-		return -EEXIST;
+		return -ENODEV;
 
 	pr_debug("%s\n", __func__);
 
@@ -1011,22 +1011,20 @@ static int __init acpi_cpufreq_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int acpi_cpufreq_remove(struct platform_device *pdev)
+static void acpi_cpufreq_remove(struct platform_device *pdev)
 {
 	pr_debug("%s\n", __func__);
 
 	cpufreq_unregister_driver(&acpi_cpufreq_driver);
 
 	free_acpi_perf_data();
-
-	return 0;
 }
 
 static struct platform_driver acpi_cpufreq_platdrv = {
 	.driver = {
 		.name	= "acpi-cpufreq",
 	},
-	.remove		= acpi_cpufreq_remove,
+	.remove_new	= acpi_cpufreq_remove,
 };
 
 static int __init acpi_cpufreq_init(void)

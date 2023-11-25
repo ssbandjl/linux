@@ -185,8 +185,7 @@ static void rtw_dynamic_csi_rate(struct rtw_dev *rtwdev, struct rtw_vif *rtwvif)
 		bf_info->cur_csi_rpt_rate = new_csi_rate_idx;
 }
 
-static void rtw_vif_watch_dog_iter(void *data, u8 *mac,
-				   struct ieee80211_vif *vif)
+static void rtw_vif_watch_dog_iter(void *data, struct ieee80211_vif *vif)
 {
 	struct rtw_watch_dog_iter_data *iter_data = data;
 	struct rtw_vif *rtwvif = (struct rtw_vif *)vif->drv_priv;
@@ -271,8 +270,8 @@ static void rtw_watch_dog_work(struct work_struct *work)
 	 * more than two stations associated to the AP, then we can not enter
 	 * lps, because fw does not handle the overlapped beacon interval
 	 *
-	 * mac80211 should iterate vifs and determine if driver can enter
-	 * ps by passing IEEE80211_CONF_PS to us, all we need to do is to
+	 * rtw_recalc_lps() iterate vifs and determine if driver can enter
+	 * ps by vif->type and vif->cfg.ps, all we need to do here is to
 	 * get that vif and check if device is having traffic more than the
 	 * threshold.
 	 */
@@ -319,22 +318,38 @@ static u8 rtw_acquire_macid(struct rtw_dev *rtwdev)
 	return mac_id;
 }
 
+static void rtw_sta_rc_work(struct work_struct *work)
+{
+	struct rtw_sta_info *si = container_of(work, struct rtw_sta_info,
+					       rc_work);
+	struct rtw_dev *rtwdev = si->rtwdev;
+
+	mutex_lock(&rtwdev->mutex);
+	rtw_update_sta_info(rtwdev, si, true);
+	mutex_unlock(&rtwdev->mutex);
+}
+
 int rtw_sta_add(struct rtw_dev *rtwdev, struct ieee80211_sta *sta,
 		struct ieee80211_vif *vif)
 {
 	struct rtw_sta_info *si = (struct rtw_sta_info *)sta->drv_priv;
+	struct rtw_vif *rtwvif = (struct rtw_vif *)vif->drv_priv;
 	int i;
 
 	si->mac_id = rtw_acquire_macid(rtwdev);
 	if (si->mac_id >= RTW_MAX_MAC_ID_NUM)
 		return -ENOSPC;
 
+	if (vif->type == NL80211_IFTYPE_STATION && vif->cfg.assoc == 0)
+		rtwvif->mac_id = si->mac_id;
+	si->rtwdev = rtwdev;
 	si->sta = sta;
 	si->vif = vif;
 	si->init_ra_lv = 1;
 	ewma_rssi_init(&si->avg_rssi);
 	for (i = 0; i < ARRAY_SIZE(sta->txq); i++)
 		rtw_txq_init(rtwdev, sta->txq[i]);
+	INIT_WORK(&si->rc_work, rtw_sta_rc_work);
 
 	rtw_update_sta_info(rtwdev, si, true);
 	rtw_fw_media_status_report(rtwdev, si->mac_id, true);
@@ -352,6 +367,8 @@ void rtw_sta_remove(struct rtw_dev *rtwdev, struct ieee80211_sta *sta,
 {
 	struct rtw_sta_info *si = (struct rtw_sta_info *)sta->drv_priv;
 	int i;
+
+	cancel_work_sync(&si->rc_work);
 
 	rtw_release_macid(rtwdev, si->mac_id);
 	if (fw_exist)
@@ -1285,7 +1302,6 @@ void rtw_update_sta_info(struct rtw_dev *rtwdev, struct rtw_sta_info *si,
 	si->stbc_en = stbc_en;
 	si->ldpc_en = ldpc_en;
 	si->rf_type = rf_type;
-	si->wireless_set = wireless_set;
 	si->sgi_enable = is_support_sgi;
 	si->vht_enable = is_vht_enable;
 	si->ra_mask = ra_mask;
@@ -2165,10 +2181,12 @@ void rtw_core_deinit(struct rtw_dev *rtwdev)
 		release_firmware(wow_fw->firmware);
 
 	destroy_workqueue(rtwdev->tx_wq);
+	timer_delete_sync(&rtwdev->tx_report.purge_timer);
 	spin_lock_irqsave(&rtwdev->tx_report.q_lock, flags);
 	skb_queue_purge(&rtwdev->tx_report.queue);
-	skb_queue_purge(&rtwdev->coex.queue);
 	spin_unlock_irqrestore(&rtwdev->tx_report.q_lock, flags);
+	skb_queue_purge(&rtwdev->coex.queue);
+	skb_queue_purge(&rtwdev->c2h_queue);
 
 	list_for_each_entry_safe(rsvd_pkt, tmp, &rtwdev->rsvd_page_list,
 				 build_list) {
@@ -2311,7 +2329,7 @@ struct rtw_iter_port_switch_data {
 	struct rtw_vif *rtwvif_ap;
 };
 
-static void rtw_port_switch_iter(void *data, u8 *mac, struct ieee80211_vif *vif)
+static void rtw_port_switch_iter(void *data, struct ieee80211_vif *vif)
 {
 	struct rtw_iter_port_switch_data *iter_data = data;
 	struct rtw_dev *rtwdev = iter_data->rtwdev;
@@ -2324,6 +2342,9 @@ static void rtw_port_switch_iter(void *data, u8 *mac, struct ieee80211_vif *vif)
 
 	rtw_dbg(rtwdev, RTW_DBG_STATE, "AP port switch from %d -> %d\n",
 		rtwvif_ap->port, rtwvif_target->port);
+
+	/* Leave LPS so the value swapped are not in PS mode */
+	rtw_leave_lps(rtwdev);
 
 	reg1 = &rtwvif_ap->conf->net_type;
 	reg2 = &rtwvif_target->conf->net_type;
@@ -2343,6 +2364,8 @@ static void rtw_port_switch_iter(void *data, u8 *mac, struct ieee80211_vif *vif)
 
 	swap(rtwvif_target->port, rtwvif_ap->port);
 	swap(rtwvif_target->conf, rtwvif_ap->conf);
+
+	rtw_fw_default_port(rtwdev, rtwvif_target);
 }
 
 void rtw_core_port_switch(struct rtw_dev *rtwdev, struct ieee80211_vif *vif)
@@ -2358,8 +2381,7 @@ void rtw_core_port_switch(struct rtw_dev *rtwdev, struct ieee80211_vif *vif)
 	rtw_iterate_vifs(rtwdev, rtw_port_switch_iter, &iter_data);
 }
 
-static void rtw_check_sta_active_iter(void *data, u8 *mac,
-				      struct ieee80211_vif *vif)
+static void rtw_check_sta_active_iter(void *data, struct ieee80211_vif *vif)
 {
 	struct rtw_vif *rtwvif = (struct rtw_vif *)vif->drv_priv;
 	bool *active = data;
@@ -2388,10 +2410,13 @@ void rtw_core_enable_beacon(struct rtw_dev *rtwdev, bool enable)
 	if (!rtwdev->ap_active)
 		return;
 
-	if (enable)
+	if (enable) {
 		rtw_write32_set(rtwdev, REG_BCN_CTRL, BIT_EN_BCN_FUNCTION);
-	else
+		rtw_write32_clr(rtwdev, REG_TXPAUSE, BIT_HIGH_QUEUE);
+	} else {
 		rtw_write32_clr(rtwdev, REG_BCN_CTRL, BIT_EN_BCN_FUNCTION);
+		rtw_write32_set(rtwdev, REG_TXPAUSE, BIT_HIGH_QUEUE);
+	}
 }
 
 MODULE_AUTHOR("Realtek Corporation");

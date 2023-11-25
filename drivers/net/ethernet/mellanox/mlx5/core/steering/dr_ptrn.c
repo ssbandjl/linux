@@ -82,7 +82,7 @@ dr_ptrn_alloc_pattern(struct mlx5dr_ptrn_mgr *mgr,
 	u32 chunk_size;
 	u32 index;
 
-	chunk_size = ilog2(num_of_actions);
+	chunk_size = ilog2(roundup_pow_of_two(num_of_actions));
 	/* HW modify action index granularity is at least 64B */
 	chunk_size = max_t(u32, chunk_size, DR_CHUNK_SIZE_8);
 
@@ -213,6 +213,8 @@ struct mlx5dr_ptrn_mgr *mlx5dr_ptrn_mgr_create(struct mlx5dr_domain *dmn)
 	}
 
 	INIT_LIST_HEAD(&mgr->ptrn_list);
+	mutex_init(&mgr->modify_hdr_mutex);
+
 	return mgr;
 
 free_mgr:
@@ -237,5 +239,6 @@ void mlx5dr_ptrn_mgr_destroy(struct mlx5dr_ptrn_mgr *mgr)
 	}
 
 	mlx5dr_icm_pool_destroy(mgr->ptrn_icm_pool);
+	mutex_destroy(&mgr->modify_hdr_mutex);
 	kfree(mgr);
 }
