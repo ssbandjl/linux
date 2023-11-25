@@ -1,3 +1,10 @@
+https://github.com/ssbandjl/linux.git
+upstream: https://github.com/torvalds/linux.git
+git remote add upstream
+git fetch upstream
+git merge upstream/master
+
+
 nvme
 static struct blk_mq_ops nvme_mq_ops -> struct blk_mq_ops 
 static const struct blk_mq_ops bsg_mq_ops = {
@@ -27,5 +34,26 @@ nvmet_register_transport -> int nvmet_register_transport
 	up_write
 
 EXPORT_SYMBOL(ib_register_client) 导出符号表
+
+
+内存区域: zone_type
+内核将zone按照不同的使用用途划分为不同的type，位于include/linux/
+mmzone.h文件中：
+ZONE_DMA:主要为了兼容ISA设备，在该设备中DMA只能访问低于16M内存地址，只能将其单独划出来进行管理。
+ZONE_DMA32:针对32位系统进行兼容，一般在使用ZONE_DMA时由于16M内存过小，而有些设备DMA寻址能达到32位，在64位系统中为了能够兼容32位系统，划分了ZONE_DMA32，该物理内存为低于32位，以满足32位寻址的DMA。
+ZONE_NORMAL：使用正常的物理内存区域，大部分申请的内存都使用的该区域。
+ZONE_HIGHMEM:只会出现在32位系统中，这是由于在32位系统中，物理内存最多能够直接映射到内核中896M内存，但是为了兼容大于896M内存系统，将大于896M的高端内存以弥补地址空间不足的问题。高端内存映射不会采用一一映射，而是在使用的时候才映射，在64位系统中由于使用空间足够，不需要ZONE_HIGHMEM。
+ZONE_MOVEABLE:可移动或收收区域，该zone一般称为伪ZONE，所管理的物理内存来自于ZONE_NORMAL或者ZONE_HIGHMEM中根据配置划分出的一片物理内存为ZONE_MOVABLE
+
+
+内存块标签:
+enum memblock_flags {
+	MEMBLOCK_NONE		= 0x0,	/* No special request */
+	MEMBLOCK_HOTPLUG	= 0x1,	/* hotpluggable region */
+	MEMBLOCK_MIRROR		= 0x2,	/* mirrored region */
+	MEMBLOCK_NOMAP		= 0x4,	/* don't add to kernel direct mapping */
+	MEMBLOCK_DRIVER_MANAGED = 0x8,	/* always detected via a driver */
+	MEMBLOCK_RSRV_NOINIT	= 0x10,	/* don't initialize struct pages */
+};
 
 
