@@ -57,3 +57,28 @@ enum memblock_flags {
 };
 
 
+iopath,
+write(fd, "pilgrimtao is cool", 18)
+    ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
+        vfs_write(f.file, buf, count, ppos)
+            if (file->f_op->write) -> 首选普通写
+                ret = file->f_op->write(file, buf, count, pos)
+            else if (file->f_op->write_iter) -> 如果没有实现普通写,但是实现了迭代写, 则调用同步写
+                ret = new_sync_write(file, buf, count, pos)
+                    call_write_iter(filp, &kiocb, &iter)
+                        return file->f_op->write_iter(kio, iter) -> fs.h, -> xfs_file_write_iter
+                            if (IS_DAX(inode)) -> 如果是直接访问（Direct Access，DAX）
+                                return xfs_file_dax_write(iocb, from) -> ...
+                            if (iocb->ki_flags & IOCB_DIRECT) -> 如果在写的逻辑__generic_file_write_iter里面，发现设置了IOCB_DIRECT，则调用generic_file_direct_write，里面同样会调用address_space的direct_IO的函数，将数据直接写入硬盘: https://www.cnblogs.com/luozhiyun/p/13061199.html
+                                ret = xfs_file_dio_write(iocb, from)
+                            return xfs_file_buffered_write(iocb, from) -> 默认带缓存的写
+                                iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin
+
+
+
+
+
+
+
+
+
