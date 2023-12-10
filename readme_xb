@@ -82,3 +82,33 @@ write(fd, "pilgrimtao is cool", 18)
 
 
 
+drivers/infiniband/core/verbs.c
+struct ib_pd *__ib_alloc_pd
+
+
+blk_mq_rdma_map_queues
+
+nvme块层队列函数操作表
+static const struct blk_mq_ops nvme_mq_ops = {
+	.queue_rq	= nvme_queue_rq,
+	.queue_rqs	= nvme_queue_rqs,
+	.complete	= nvme_pci_complete_rq,
+	.commit_rqs	= nvme_commit_rqs,
+	.init_hctx	= nvme_init_hctx,
+	.init_request	= nvme_pci_init_request,
+	.map_queues	= nvme_pci_map_queues,
+	.timeout	= nvme_timeout,
+	.poll		= nvme_poll,
+};
+
+
+nvme_poll
+
+nvme_ring_cq_doorbell(nvmeq) -> 敲环形完成队列的门铃
+
+
+nvme请求入队:
+static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx, const struct blk_mq_queue_data *bd)
+    
+
+    
