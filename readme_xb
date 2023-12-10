@@ -4,7 +4,12 @@ git remote add upstream
 git fetch upstream
 git merge upstream/master
 
+代码: https://elixir.bootlin.com/linux/v6.0-rc1/source/drivers/nvme/host/pci.c#L504
 
+nvme协议参考: https://github.com/andyBrake/andyBrake.github.io/blob/master/doc/nvme_express.md
+
+
+----- nvme start -----
 nvme
 static struct blk_mq_ops nvme_mq_ops -> struct blk_mq_ops 
 static const struct blk_mq_ops bsg_mq_ops = {
@@ -75,13 +80,6 @@ write(fd, "pilgrimtao is cool", 18)
                                 iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin
 
 
-
-
-
-
-
-
-
 drivers/infiniband/core/verbs.c
 struct ib_pd *__ib_alloc_pd
 
@@ -102,13 +100,156 @@ static const struct blk_mq_ops nvme_mq_ops = {
 };
 
 
-nvme_poll
 
-nvme_ring_cq_doorbell(nvmeq) -> 敲环形完成队列的门铃
+
 
 
 nvme请求入队:
 static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx, const struct blk_mq_queue_data *bd)
-    
+    ret = nvme_prep_rq(dev, req) -> 准备nvme请求
+        nvme_setup_cmd(req->q->queuedata, req) -> 设置nvme命令(重要函数)
+        nvme_start_request(req)
 
-    
+
+
+static struct blk_mq_hw_ctx *blk_mq_alloc_and_init_hctx(struct blk_mq_tag_set *set, struct request_queue *q, int hctx_idx, int node)
+    static int blk_mq_init_hctx(struct request_queue *q, struct blk_mq_tag_set *set, struct blk_mq_hw_ctx *hctx, unsigned hctx_idx)
+        初始化块层的IO入队请求
+        static int blk_mq_init_request(struct blk_mq_tag_set *set, struct request *rq, unsigned int hctx_idx, int node)
+            set->ops->init_request(set, rq, hctx_idx, node) -> static int nvme_pci_init_request(struct blk_mq_tag_set *set, struct request *req, unsigned int hctx_idx, unsigned int numa_node)
+
+
+
+
+static int blk_mq_alloc_rqs(struct blk_mq_tag_set *set,struct blk_mq_tags *tags, unsigned int hctx_idx, unsigned int depth)
+
+
+
+host头文件: 
+drivers/nvme/host/nvme.h
+
+
+
+blk_status_t nvme_setup_cmd(struct nvme_ns *ns, struct request *req)
+{
+	struct nvme_command *cmd = nvme_req(req)->cmd;
+	blk_status_t ret = BLK_STS_OK;
+
+	if (!(req->rq_flags & RQF_DONTPREP))
+		nvme_clear_nvme_request(req);
+
+	switch (req_op(req)) {
+	case REQ_OP_DRV_IN:
+	case REQ_OP_DRV_OUT:
+		/* these are setup prior to execution in nvme_init_request() */
+		break;
+	case REQ_OP_FLUSH:
+		nvme_setup_flush(ns, cmd);
+		break;
+	case REQ_OP_ZONE_RESET_ALL:
+	case REQ_OP_ZONE_RESET:
+		ret = nvme_setup_zone_mgmt_send(ns, req, cmd, NVME_ZONE_RESET);
+		break;
+	case REQ_OP_ZONE_OPEN:
+		ret = nvme_setup_zone_mgmt_send(ns, req, cmd, NVME_ZONE_OPEN);
+		break;
+	case REQ_OP_ZONE_CLOSE:
+		ret = nvme_setup_zone_mgmt_send(ns, req, cmd, NVME_ZONE_CLOSE);
+		break;
+	case REQ_OP_ZONE_FINISH:
+		ret = nvme_setup_zone_mgmt_send(ns, req, cmd, NVME_ZONE_FINISH);
+		break;
+	case REQ_OP_WRITE_ZEROES:
+		ret = nvme_setup_write_zeroes(ns, req, cmd);
+		break;
+	case REQ_OP_DISCARD:
+		ret = nvme_setup_discard(ns, req, cmd);
+		break;
+	case REQ_OP_READ:
+		ret = nvme_setup_rw(ns, req, cmd, nvme_cmd_read);
+		break;
+	case REQ_OP_WRITE:
+		ret = nvme_setup_rw(ns, req, cmd, nvme_cmd_write);
+		break;
+	case REQ_OP_ZONE_APPEND:
+		ret = nvme_setup_rw(ns, req, cmd, nvme_cmd_zone_append);
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		return BLK_STS_IOERR;
+	}
+
+	cmd->common.command_id = nvme_cid(req);
+	trace_nvme_setup_cmd(req, cmd);
+	return ret;
+}
+
+
+nvme io命令:
+参考: include/linux/nvme.h
+enum nvme_opcode {
+	nvme_cmd_flush		= 0x00,
+	nvme_cmd_write		= 0x01,
+	nvme_cmd_read		= 0x02,
+	nvme_cmd_write_uncor	= 0x04,
+	nvme_cmd_compare	= 0x05,
+	nvme_cmd_write_zeroes	= 0x08,
+	nvme_cmd_dsm		= 0x09,
+	nvme_cmd_verify		= 0x0c,
+	nvme_cmd_resv_register	= 0x0d,
+	nvme_cmd_resv_report	= 0x0e,
+	nvme_cmd_resv_acquire	= 0x11,
+	nvme_cmd_resv_release	= 0x15,
+	nvme_cmd_zone_mgmt_send	= 0x79,
+	nvme_cmd_zone_mgmt_recv	= 0x7a,
+	nvme_cmd_zone_append	= 0x7d,
+	nvme_cmd_vendor_start	= 0x80,
+};
+
+封装读写命令:
+static inline blk_status_t nvme_setup_rw(struct nvme_ns *ns, struct request *req, struct nvme_command *cmnd, enum nvme_opcode op)
+    ...
+    cmnd->rw.opcode = op;
+    cmnd->rw.slba = cpu_to_le64(nvme_sect_to_lba(ns, blk_rq_pos(req)))
+    cmnd->rw.length = cpu_to_le16((blk_rq_bytes(req) >> ns->lba_shift) - 1)
+    ...
+
+----- nvme end -----
+
+
+blk:
+Software Staging Queue 會以 struct blk_mq_ctx 這個結構來表示
+Hardware Dispatch Queue 會以 struct blk_mq_hw_ctx 這個結構來表示
+
+
+
+blk_rq_timed_out_timer
+綜合以上，當 blk_mq_start_request 被呼叫而開始一個 request 的處理流程。blk_mq_start_request 會執行 blk_add_timer -> mod_timer。藉此讓之前提到的 timer task blk_rq_timed_out_timer 在一段時間後被執行。而這個 timer task 最後就會啟動 &q->timeout_work 下註冊的 blk_mq_timeout_work，後者最後可以透過 blk_mq_check_expired -> blk_mq_rq_timed_out 去觸發 timeout 方法。
+而 NVMe driver 中定義的 timeout 方法為 nvme_timeout。不過由於其本身內容與 blk-mq 自身機制關係較少，比較多是與 NVMe 相關，細節我們就不在此章節釐清
+
+
+nvme完成io:
+queue_request_irq
+static irqreturn_t nvme_irq(int irq, void *data)
+    nvme_poll_cq nvme_poll
+        while (nvme_cqe_pending(nvmeq))
+            nvme_handle_cqe(nvmeq, iob, nvmeq->cq_head)
+                nvme_pci_complete_rq(req)
+            nvme_update_cq_head(nvmeq)
+        nvme_ring_cq_doorbell(nvmeq) -> 敲环形完成队列的门铃
+            nvme_dbbuf_update_and_check_event
+
+
+nvme块设备:
+nvme块设备驱动的注册位置在哪呢？居然在nvme_scan_work里面，它我们前面分析过，启动nvme设备的一堆work queue里面就有它。它内部的操作是遍历nvme设备的所有namespace，发现某个ns不存在就会用nvme_alloc_ns去注册一个块设备并加入到ns链表中，所以nvme设备的namespace才是一个块设备，而nvme设备是被视为了一个字符设备。这个块设备的内存结构为nvme_ns，操作集则是nvme_fops，一堆函数里面重点看看nvme_ioctl，这个函数和最开始注册的字符设备驱动的nvme_dev_ioctl的名称和内部实现都很像，看到这里我已经有点懵了，怎么整了两套ioctrl出来，实现也像。为什么要整两套出来，暂时没想通。但是两者还是有一点区别的，字符设备处理了NVME_IOCTL_ADMIN_CMD、NVME_IOCTL_IO_CMD、NVME_IOCTL_RESET、NVME_IOCTL_SUBSYS_RESET、NVME_IOCTL_RESCAN；而块设备处理了NVME_IOCTL_ADMIN_CMD、NVME_IOCTL_IO_CMD、NVME_IOCTL_ID、NVME_IOCTL_SUBMIT_IO。
+
+3-1、块设备结构nvme_ns内部包含了request_queue,gendisk这两个块设备驱动必要成员。request_queue就用nvme_ctrl的tagset（是个指针，指向的是nvme_dev结构中的那个tagset）创建出来的，所以这里才去创建了nvme设备io请求的request queue哦。disk里面就会注册这个块设备的操作集struct block_device_operations nvme_fops，按照块设备的实现机制，这个操作集里面是不包含读写操作的，读写通过前面的queue来下发。而下发的实现就是通过nvme_submit_io这个函数来实现的，前面也已经提到过了。
+3-2、NVME_IOCTL_SUBMIT_IO，NVME_IOCTL_ADMIN_CMD 这些命令宏是定义在公共头文件内的，所以用户态程序可见。猜测用户态下发命令请求，io请求的时候，应该都是通过用户态的ioctrl来实现的，连读写请求也是哦，因为仔细看nvme_submit_io这个函数内的实现，是将用户态的io请求参数拷贝到了内核空间，并且使用了里面的addr字段，表示数据所在的地址
+
+
+nvme_sq_copy_cmd
+static inline void nvme_write_sq_db(struct nvme_queue *nvmeq, bool write_sq)
+    nvmeq->last_sq_tail = nvmeq->sq_tail -> 然后向SQ的doorbell里写入tail信息
+
+nvme_handle_cqe
+    nvme_pci_complete_rq
