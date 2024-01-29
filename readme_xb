@@ -1,5 +1,5 @@
 https://github.com/ssbandjl/linux.git
-upstream: https://github.com/torvalds/linux.git
+upstream: git remote add upstream https://github.com/torvalds/linux.git
 git remote add upstream
 git fetch upstream
 git merge upstream/master
@@ -266,4 +266,285 @@ e1000_intr
 
 
 readl/writel
+
+filter:
+drivers/net/ethernet/intel
+
+dpu driver:
+drivers/net/ethernet/mellanox/mlx5/core/sf/devlink.c
+mlx5_sf_add
+
+$ devlink dev eswitch set pci/0000:06:00.0 mode switchdev
+
+$ devlink port show
+pci/0000:06:00.0/65535: type eth netdev ens2f0np0 flavour physical port 0 splittable false
+
+$ devlink port add pci/0000:06:00.0 flavour pcisf pfnum 0 sfnum 88
+pci/0000:06:00.0/32768: type eth netdev eth6 flavour pcisf controller 0 pfnum 0 sfnum 88 external false splittable false
+function:
+hw_addr 00:00:00:00:00:00 state inactive opstate detached
+
+$ devlink port show ens2f0npf0sf88
+pci/0000:06:00.0/32768: type eth netdev ens2f0npf0sf88 flavour pcisf controller 0 pfnum 0 sfnum 88 external false splittable false
+function:
+hw_addr 00:00:00:00:00:00 state inactive opstate detached
+
+
+
+
+mlx5 driver:
+drivers/net/ethernet/mellanox/mlx5/core/main.c
+
+static int probe_one
+	mlx5_devlink_alloc
+
+
+
+mlx5_devlink_ops
+
+
+
+init debugfs, wq, Workqueue
+mlx5_mdev_init
+/sys/kernel/debug/mlx5/
+tree -L 2 /sys/kernel/debug/mlx5/
+
+probe flow ref:
+.probe()
+  |-init_one(struct pci_dev *pdev, pci_device_id id)
+      |-mlx5_devlink_alloc()
+      |   |-devlink_alloc(ops)        // net/core/devlink.c
+      |       |-devlink = kzalloc()
+      |       |-devlink->ops = ops
+      |       |-return devlink
+      |
+      |-mlx5_mdev_init(dev, prof_sel)
+      |   |-debugfs_create_dir
+      |   |-mlx5_pagealloc_init(dev)
+      |       |-create_singlethread_workqueue("mlx5_page_allocator")
+      |           |-alloc_ordered_workqueue
+      |               |-alloc_workqueue     // kernel/workqueue.c
+      |
+      |-mlx5_pci_init(dev, pdev, id);
+      |   |-mlx5_pci_enable_device(dev);
+      |   |-request_bar(pdev);             // Reserve PCI I/O and memory resources
+      |   |-pci_set_master(pdev);          // Enables bus-mastering on the device
+      |   |-set_dma_caps(pdev);            // setting DMA capabilities mask, set max_seg <= 1GB
+      |   |-dev->iseg = ioremap()
+      |
+      |-mlx5_load_one(dev, true);
+      |   |-if interface already STATE_UP
+      |   |   return
+      |   |
+      |   |-dev->state = STATE_UP
+      |   |-mlx5_function_setup       // Init firmware functions
+      |   |-if boot:
+      |   |   mlx5_init_once
+      |   |     |-mlx5_irq_table_init // Allocate IRQ table memory
+      |   |     |-mlx5_eq_table_init  // events queue
+      |   |     |-dev->vxlan  = mlx5_vxlan_create
+      |   |     |-dev->geneve = mlx5_geneve_create
+      |   |     |-mlx5_sriov_init
+      |   | else:
+      |   |   mlx5_attach_device
+      |   |-mlx5_load
+      |   |   |-mlx5_irq_table_create     // 初始化硬中断
+      |   |   |  |-pci_alloc_irq_vectors(MLX5_IRQ_VEC_COMP_BASE + 1, PCI_IRQ_MSIX);
+      |   |   |  |-request_irqs
+      |   |   |      for i in vectors:
+      |   |   |        request_irq(irqn, mlx5_irq_int_handler) // 注册中断处理函数
+      |   |   |-mlx5_eq_table_create      // 初始化事件队列（EventQueue）
+      |   |      |-create_comp_eqs(dev)   // Completion EQ
+      |   |          for ncomp_eqs:
+      |   |            eq->irq_nb.notifier_call = mlx5_eq_comp_int;
+      |   |            create_map_eq()
+      |   |            mlx5_eq_enable()
+      |   |-set_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state);
+      |
+      |-pci_save_state(pdev);
+      |
+      |-if (!mlx5_core_is_mp_slave(dev))
+          devlink_reload_enable(devlink);
+
+
+init pci:
+mlx5_pci_init -> mlx5：为 Mellanox Connect-IB 适配器添加驱动程序 该驱动程序由两个内核模块组成：mlx5_ib 和 mlx5_core。 此分区类似于 mlx4 的分区，不同之处在于 mlx5_ib 是 pci 设备驱动程序，而不是 mlx5_core。 mlx5_core 本质上是一个提供通用功能的库，旨在供将来推出的其他 Mellanox 设备使用。 mlx5_ib 与 drivers/infiniband/hw 下的任何硬件设备具有类似的作用
+	ioremap(dev->iseg_base, sizeof(*dev->iseg)) -> mapping initialization segment
+
+
+MSI-X 中断是比较推荐的方式，尤其是对于支持多队列的网卡。 因为每个 RX 队列有独立的 MSI-X 中断，因此可以被不同的 CPU 处理（通过 irqbalance 方式，或者修改/proc/irq/IRQ_NUMBER/smp_affinity）。后面会看到 ，处理中断的 CPU 也是随后处理这个包的 CPU。这样的话，从网卡硬件中断的层面就可 以设置让收到的包被不同的 CPU 处理
+
+
+mlx5e_nic
+  |-mlx5e_ipsec_build_inverse_table();
+  |-mlx5e_build_ptys2ethtool_map();
+  |-mlx5_register_interface(&mlx5e_interface)
+     |-list_add_tail(&intf->list, &intf_list);
+     |
+     |-for priv in mlx5_dev_list
+         mlx5_add_device(intf, priv)
+          /
+         /
+mlx5_add_device(intf, priv)
+ |-if !mlx5_lag_intf_add
+ |   return // if running in InfiniBand mode, directly return
+ |
+ |-dev_ctx = kzalloc()
+ |-dev_ctx->context = intf->add(dev)
+     |-mlx5e_add
+        |-netdev = mlx5e_create_netdev(mdev, &mlx5e_nic_profile, nch);
+        |  |-mlx5e_nic_init
+        |     |-mlx5e_build_nic_netdev(netdev);
+        |        |-netdev->netdev_ops = &mlx5e_netdev_ops; // 注册 ethtool_ops, poll
+        |-mlx5e_attach
+        |  |-mlx5e_attach_netdev
+        |      |-profile->init_tx()
+        |      |-profile->init_rx()
+        |      |-profile->enable()
+        |          |-mlx5e_nic_enable
+        |              |-mlx5e_init_l2_addr
+        |              |-queue_work(priv->wq, &priv->set_rx_mode_work)
+        |              |-mlx5e_open(netdev);
+        |              |  |-mlx5e_open_locked
+        |              |     |-mlx5e_open_channels
+        |              |     |  |-mlx5e_open_channel
+        |              |     |     |-netif_napi_add(netdev, &c->napi, mlx5e_napi_poll, 64);
+        |              |     |     |-mlx5e_open_queues
+        |              |     |         |-mlx5e_open_cq
+        |              |     |         |   |-mlx5e_alloc_cq
+        |              |     |         |       |-mlx5e_alloc_cq_common
+        |              |     |         |           |-mcq->comp = mlx5e_completion_event;
+        |              |     |         |-napi_enable(&c->napi)
+        |              |     |-mlx5e_activate_priv_channels
+        |              |        |-mlx5e_activate_channels
+        |              |            |-for ch in channels:
+        |              |                mlx5e_activate_channel
+        |              |                  |-mlx5e_activate_rq
+        |              |                     |-mlx5e_trigger_irq
+        |              |-netif_device_attach(netdev);
+
+
+thtool 是一个命令行工具，可以查看和修改网卡配置，常用于收集网卡统计数据。 内核实现了一个通用 ethtool 接口，网卡驱动只要实现这些接口，就可以使用 ethtool 来查看或修改网络配置； 在底层，它是通过 ioctl 和设备驱动通信的
+
+
+mlx5e_init_nic_rx
+	mlx5e_tc_nic_init
+	mlx5e_accel_init_rx
+
+
+
+
+queue and queue depth(descriptor)
+
+
+hash:
+ethtool -x eth0
+
+内核有一种称为 NAPI（New API）的机制，允许网卡注册自己的 poll() 方法，执行这个方法就会从相应的网卡收包。 关于 NAPI 后面会有更详细介绍，这里只看一下注册时的调用栈
+
+
+mlx5e_open(netdev);
+ |-mlx5e_open_locked
+    |-mlx5e_open_channels
+    |  |-mlx5e_open_channel
+    |     |-netif_napi_add(netdev, &c->napi, mlx5e_napi_poll, 64); // 注册 NAPI
+    |     |-mlx5e_open_queues
+    |         |-mlx5e_open_cq
+    |         |   |-mlx5e_alloc_cq
+    |         |       |-mlx5e_alloc_cq_common
+    |         |           |-mcq->comp = mlx5e_completion_event;
+    |         |-napi_enable(&c->napi)                              // 启用 NAPI
+    |-mlx5e_activate_priv_channels
+       |-mlx5e_activate_channels
+           |-for ch in channels:
+               mlx5e_activate_channel                              // 启用硬中断（IRQ）
+                 |-mlx5e_activate_rq
+                    |-mlx5e_trigger_irq
+
+中断方式针对高吞吐场景的改进是 NAPI 方式，简单来说它结合了轮询和中断两种方式。 绝大部分网卡都是这种模式，本文所用的 mlx5_core 就属于这一类
+
+
+
+4 触发硬件中断（IRQ）
+DMA 将包复制到 ring buffer（内核内存）之后，网卡发起对应的中断（在 MSI-X 场景，中断和 RX 队列绑定）。 来个具体例子，下面是台 40 核的机器，
+cat /proc/interrupts
+
+
+
+4.1 中断处理函数（ISR）注册
+这个过程其实是在网卡驱动初始化（第一章）时完成的，但是第一章的内容太多了，所以我们放到这里看一下：
+
+mlx5_load
+ |-mlx5_irq_table_create
+ |  |-table->irq = kcalloc()
+ |  |-pci_alloc_irq_vectors(dev->pdev, MLX5_IRQ_VEC_COMP_BASE + 1, nvec, PCI_IRQ_MSIX);
+ |  |-request_irqs
+ |     |-for i in vectors:
+ |         irq  = mlx5_irq_get(dev, i);
+ |         irqn = pci_irq_vector(dev->pdev, i);
+ |         irq_set_name(sprintf("mlx5_comp%d", vecidx-MLX5_IRQ_VEC_COMP_BASE), i);
+ |         snprintf(irq->name, "%s@pci:%s", name, pci_name(dev->pdev));
+ |         request_irq(irqn, mlx5_irq_int_handler, 0, irq->name, &irq->nh); // 注册中断处理函数
+ |
+ |-mlx5_eq_table_create      // 初始化事件队列（EventQueue）
+    |-create_comp_eqs(dev)   // Completion EQ
+        for ncomp_eqs:
+          eq->irq_nb.notifier_call = mlx5_eq_comp_int; // 每个 EQ 事件完成时的回调函数
+          create_map_eq()
+          mlx5_eq_enable()
+
+
+驱动的硬中断处理函数做的事情很少，但软中断将会在和硬中断相同的 CPU 上执行。这就 是为什么给每个 CPU 一个特定的硬中断非常重要：这个 CPU 不仅处理这个硬中断，而且通 过 NAPI 处理接下来的软中断来收包
+
+
+
+5.1 内核网络设备子系统初始化
+网络设备（netdev）的初始化在 net_dev_init()，在系统启动期间执行：
+
+// net/core/dev.c
+static int __init net_dev_init(void)
+	dev_proc_init();        // 注册 /proc/net/{dev,softnet_stat,ptytpe}
+
+
+内核的软中断系统是一种在硬中断处理上下文（驱动中）之外执行代码的机制。  可以把软中断系统想象成一系列内核线程（每个 CPU 一个）， 这些线程执行针对不同事件注册的处理函数（handler）。  如果用过 top 命令，可能会注意到 ksoftirqd/0 这个内核线程，其表示这个软中断线程跑在 CPU 0 上。  内核子系统（比如网络）能通过 open_softirq() 注册软中断处理函数。
+
+
+5.2 内核调度器与调用栈概览
+5.2.1 调用栈
+调度执行到某个特定线程的调用栈：
+
+smpboot_thread_fn
+  |-while (1) {
+      set_current_state(TASK_INTERRUPTIBLE); // 设置当前 CPU 为可中断状态
+
+      if !thread_should_run {                // 无 pending 的软中断
+          preempt_enable_no_resched();
+          schedule();
+      } else {                               // 有 pending 的软中断
+          __set_current_state(TASK_RUNNING);
+          preempt_enable();
+          thread_fn(td->cpu);                // 如果此时执行的是 ksoftirqd 线程，
+            |-run_ksoftirqd                  // 那会执行 run_ksoftirqd() 回调函数
+                |-local_irq_disable();       // 关闭所在 CPU 的所有硬中断
+                |
+                |-if local_softirq_pending() {
+                |    __do_softirq();
+                |    local_irq_enable();      // 重新打开所在 CPU 的所有硬中断
+                |    cond_resched();          // 将 CPU 交还给调度器
+                |    return;
+                |-}
+                |
+                |-local_irq_enable();         // 重新打开所在 CPU 的所有硬中断
+      }
+    }
+如果此时调度到的是 ksoftirqd 线程，那 thread_fn() 执行的就是 run_ksoftirqd()。
+
+
+
+cat /proc/net/ptype
+
+如今大部分网卡都在硬件层支持多队列。这意味着收进来的包会被通过 DMA 放到 位于不同内存的队列上，而不同的队列有相应的 NAPI 变量管理软中断 poll()过程。因此， 多个 CPU 同时处理从网卡来的中断，处理收包过程。 这个特性被称作 RSS（Receive Side Scaling，接收端水平扩展
+
+
+I/O 加速技术( I/OAT ) 是Intel与高端服务器主板捆绑在一起的DMA 引擎（嵌入式DMA 控制器） ，它通过执行直接内存访问(DMA) 从主处理器卸载内存副本。它通常用于加速网络流量，但支持任何类型的复制。
 
