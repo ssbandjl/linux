@@ -31,6 +31,15 @@ module_init(nvme_core_init) -> static int __init nvme_core_init(void)
 alloc_chrdev_region nvme
 class_create("nvme")
 
+target驱动实现: https://github.com/torvalds/linux/commit/8f000cac6e7a6edca7ab93bafc7ed28b27c1545b
+enum {
+	NVMET_RDMA_REQ_INLINE_DATA	= (1 << 0),
+	NVMET_RDMA_REQ_INVALIDATE_RKEY	= (1 << 1),
+};
+所有 NVMe 逻辑都位于通用目标中，该模块只是在它与 RDMA 子系统中的通用代码之间提供了一个小粘合剂。
+
+
+
 drivers/nvme/target/rdma.c
 static int __init nvmet_rdma_init(void)
 ib_register_client -> drivers/infiniband/core/device.c -> int ib_register_client -> IB 驱动程序的上层用户可以使用 ib_register_client() 来注册 IB 设备添加和删除的回调。 添加 IB 设备时，将调用每个已注册客户端的 add 方法（按照客户端注册的顺序），而当删除设备时，将调用每个客户端的 remove 方法（按照客户端注册的相反顺序）。 另外，调用ib_register_client()时，客户端会收到所有已经注册的设备的add回调
@@ -552,6 +561,7 @@ cat /proc/net/ptype
 I/O 加速技术( I/OAT ) 是Intel与高端服务器主板捆绑在一起的DMA 引擎（嵌入式DMA 控制器） ，它通过执行直接内存访问(DMA) 从主处理器卸载内存副本。它通常用于加速网络流量，但支持任何类型的复制。
 
 
+<<<<<<< HEAD
 pci_request_regions
 
 req irq:
@@ -815,4 +825,40 @@ net_rx_action
 tools/memory-model/Documentation/glossary.txt
 
 tools/memory-model/Documentation/explanation.txt
+ib_drain_qp 排空队列
+
+
+rdma driver:
+mlx5_ifc.h
+
+e1000
+e1000_hw.h
+static int __init e1000_init_module(void)
+drivers/net/ethernet/intel/e1000/e1000_main.c
+
+struct net_device_ops e1000_netdev_ops 
+
+ndo_start_xmit e1000_xmit_frame
+
+现在的中断驱动程序都采用的是NAPI方式，需要提供poll函数，本驱动中是e1000_netpoll轮询函数
+当有新数据包要发送时候，首先上层协议调用e1000_xmit_frame函数，然后在该函数中调用e1000_tx_queue来根据相应的参数找到缓冲块存放，缓冲块中有dma成员，表示该数据包所在的总线地址，控制总线会把内容映射到总线地址，然后由网卡传送出去。
+
+当有新数据包达到时，首先触动中断处理函数e1000_intr，该中断函数会将数据包放在buffer_info的缓冲块中()，就是讲总线地址指向的内容复制到skb中，然后根据skb中的协议将其传给上层协议的接收函数
+
+netif_napi_add(netdev, &adapter->napi, e1000e_poll);
+
+
+drivers/net/ethernet/intel/
+
+
+kernel source code:
+https://elixir.bootlin.com/linux/v6.8-rc1/source/drivers/net/ethernet/intel/e1000/e1000_main.c
+
+
+mlx5 driver:
+drivers/net/ethernet/mellanox/mlx5/core
+
+module_init(mlx5_init);
+
+
 
