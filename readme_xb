@@ -269,6 +269,9 @@ readl/writel
 
 filter:
 drivers/net/ethernet/intel
+drivers/net/ethernet/mellanox/mlx5
+
+
 
 dpu driver:
 drivers/net/ethernet/mellanox/mlx5/core/sf/devlink.c
@@ -547,4 +550,269 @@ cat /proc/net/ptype
 
 
 I/O 加速技术( I/OAT ) 是Intel与高端服务器主板捆绑在一起的DMA 引擎（嵌入式DMA 控制器） ，它通过执行直接内存访问(DMA) 从主处理器卸载内存副本。它通常用于加速网络流量，但支持任何类型的复制。
+
+
+pci_request_regions
+
+req irq:
+pci_alloc_irq_vectors
+
+
+
+mlx5_send:
+xmit
+mlx5e_xmit
+
+
+
+code:
+net/mlx5：以太网数据路径文件
+en_[rt]x.c 包含特定于 tx 或 rx 的数据路径相关代码。
+en_txrx.c 包含 rx 和 tx 通用的数据路径代码，这主要是 napi 相关代码。
+
+以下是数据路径中硬件和驱动程序正在使用的对象：
+通道 - 每个 IRQ 一个通道。 每个通道对象包含：
+RQ - 描述接收队列
+TIR - 每种流类型一个 TIR（传输接口接收）对象。 TIR 包含接收流类型的属性（例如 IPv4、IPv6 等）。
+流在流表中定义。 目前，TIR 描述了 RSS 哈希参数（如果存在）和 LRO 属性。
+SQ - 描述 tx 队列。 每个TC（流量类别）有一个SQ（发送队列）。
+TIS - 每个 TC 有一个 TIS（传输接口发送）。 它描述了 TC，稍后可能会扩展以描述更多传输属性。
+RQ和SQ都继承自对象WQ（工作队列）。 描述 CQE 的 WQE 在内存中的布局的通用代码位于文件 wq.[cj]
+对于每个通道，都有一个用于 RX 和 TX 的 NAPI 上下文。
+驱动程序正在使用 netdev_alloc_skb() 来分配 skb。
+
+
+通过netdev_alloc_skb()函数分配一个足够大的缓冲区来包含一个数据包和以太网头: · 第二步通过减少尾部空间为头部保留对齐的内存
+
+
+操作码:
+enum {
+	MLX5_OPCODE_NOP			= 0x00,
+	MLX5_OPCODE_SEND_INVAL		= 0x01,
+	MLX5_OPCODE_RDMA_WRITE		= 0x08,
+	MLX5_OPCODE_RDMA_WRITE_IMM	= 0x09,
+	MLX5_OPCODE_SEND		= 0x0a,
+	MLX5_OPCODE_SEND_IMM		= 0x0b,
+	MLX5_OPCODE_LSO			= 0x0e,
+	MLX5_OPCODE_RDMA_READ		= 0x10,
+	MLX5_OPCODE_ATOMIC_CS		= 0x11,
+	MLX5_OPCODE_ATOMIC_FA		= 0x12,
+	MLX5_OPCODE_ATOMIC_MASKED_CS	= 0x14,
+	MLX5_OPCODE_ATOMIC_MASKED_FA	= 0x15,
+	MLX5_OPCODE_BIND_MW		= 0x18,
+	MLX5_OPCODE_CONFIG_CMD		= 0x1f,
+	MLX5_OPCODE_ENHANCED_MPSW	= 0x29,
+
+	MLX5_RECV_OPCODE_RDMA_WRITE_IMM	= 0x00,
+	MLX5_RECV_OPCODE_SEND		= 0x01,
+	MLX5_RECV_OPCODE_SEND_IMM	= 0x02,
+	MLX5_RECV_OPCODE_SEND_INVAL	= 0x03,
+
+	MLX5_CQE_OPCODE_ERROR		= 0x1e,
+	MLX5_CQE_OPCODE_RESIZE		= 0x16,
+
+	MLX5_OPCODE_SET_PSV		= 0x20,
+	MLX5_OPCODE_GET_PSV		= 0x21,
+	MLX5_OPCODE_CHECK_PSV		= 0x22,
+	MLX5_OPCODE_DUMP		= 0x23,
+	MLX5_OPCODE_RGET_PSV		= 0x26,
+	MLX5_OPCODE_RCHECK_PSV		= 0x27,
+
+	MLX5_OPCODE_UMR			= 0x25,
+
+	MLX5_OPCODE_FLOW_TBL_ACCESS	= 0x2c,
+
+	MLX5_OPCODE_ACCESS_ASO		= 0x2d,
+};
+
+
+
+
+ndo: struct net_device_ops {
+
+
+opa_netdev_start_xmit
+ndo_start_xmit
+.ndo_start_xmit          = mlx5e_xmit
+当要更改的队列被禁用时，对 txq2sq 的所有更改都与 mlx5e_xmit 同步执行，并且 smp_wmb 保证在 mlx5e_xmit 尝试从 txq2sq 读取之前更改可见。 它保证当 mlx5e_xmit 在队列号 qid 上运行时 txq2sq[qid] 的值不会更改。 smb_wmb 与 ndo_start_xmit 周围的 HARD_TX_LOCK 配对，用作 ACQUIRE
+skb_get_queue_mapping
+mlx5e_accel_tx_begin -> net/mlx5e：将 TX 加速卸载分为两个阶段经过之前的修改，卸载不再一一调用，在 TLS 和 IPSEC 卸载之间计算 pi 并清除 wqe，这不太符合 mlx5e_accel_handle_tx 的目的 。 此补丁将 mlx5e_accel_handle_tx 拆分为两个函数，对应于运行卸载的两个逻辑阶段： 1. 在获取 WQE 之前。 这里运行的代码可以在获取主 WQE 之前自行发布 WQE。 它是 TLS 卸载的主要部分。 2. 获取 WQE 后。 这里运行更新 WQE 字段的代码，但无法再发布其他 WQE。 这是 TLS 卸载的一小部分，它在 cseg 中设置 tisn 字段，以及基于 eseg 的卸载（当前是 IPSEC，后续补丁也将 GENEVE 和校验和卸载移到那里）。 它允许 mlx5e_xmit 处理按正确顺序传输数据包所需的所有操作，改进代码结构并减少不必要的操作。 该结构将在后续补丁中得到进一步改进（所有基于 eseg 的卸载将移动到一个位置，并且为主 WQE 保留空间将在卸载的第 1 阶段和第 2 阶段之间进行，以消除不必要的数据移动）。
+mlx5e_sq_xmit_prepare
+mlx5e_tx_skb_supports_mpwqe -> net/mlx5e：使用 MACsec skb_metadata_dst 实现 MACsec Tx 数据路径 MACsec 驱动程序使用保存 64 位 SCI 编号的专用 skb_metadata_dst 标记用于设备卸载的 Tx 数据包。 先前设置的规则将匹配该号码，因此正确的 SA 用于 MACsec 操作。 由于设备驱动程序只能向流表提供 32 位元数据，因此需要使用从 64 位到 32 位标记或 id 的映射，这可以通过在控制路径中提供 32 位唯一流 id 来实现，并使用 哈希表将 64 位映射到数据路径中的唯一 ID
+	mlx5e_txwqe_build_eseg
+	mlx5e_sq_xmit_mpwqe -> net/mlx5e：SKB 的增强型 TX MPWQE 此提交添加了对常规 (SKB) 数据路径中的增强型 TX MPWQE 功能的支持。 MPWQE（多数据包工作队列元素）可以服务多个数据包，从而减少控制流量上的 PCI 带宽。 添加了两个新的统计数据（tx*_mpwqe_blks 和 tx*_mpwqe_pkts）。 该功能默认开启，并由 skb_tx_mpwqe 私有标志控制。 在 MPWQE 中，eseg 在所有数据包之间共享，因此基于 eseg 的卸载（IPSEC、GENEVE、校验和）在单独的 eseg 上运行，该 eseg 与当前 MPWQE 会话的 eseg 进行比较，以确定是否可以将新数据包添加到 同一次会议。 MPWQE 与某些卸载和功能不兼容，例如 TLS 卸载、TSO、非线性 SKB。 如果使用此类不兼容的功能，驱动程序会正常回退到非 MPWQE。 此更改对 TCP 单流测试和 XDP_TX 单流测试没有性能影响。
+	mlx5e_tx_mpwqe_ensure_complete
+mlx5e_sq_calc_wqe_attr
+mlx5e_txqsq_get_next_pi -> net/mlx5e：统一为 WQE 保留空间 在我们的快速路径设计中，WQE（工作队列元素）不得跨越页面边界。 为了强制执行这一点，对于由多个 BB（基本块）组成的 WQE，驱动程序会提前检查 WQ 中的可用连续空间，如果不够，则用 NOP 填充。 此补丁修改了计算下一个 WQE 位置的代码，考虑填充，并准备 WQE。 此代码对于所有 SQ 类型都是通用的。 在此补丁中，它进行了重新组织，使所有 SQ 类型的使用模式统一，并使实现独立且看起来几乎相同，准备重复代码以进一步尝试对其进行重复数据删除。 保留一个地方：里面有mlx5e_sq_xmit和mlx5e_fill_sq_frag_edge调用，因为它的特殊之处在于它在保留空间时也可能复制WQE的cseg和eseg。 这将在以下补丁之一中消除，并且该位置也将转换为新方法。
+mlx5e_accel_tx_finish
+mlx5e_txwqe_build_eseg
+mlx5e_sq_xmit_wqe -> send wqe
+	ihs -> mlx5：支持 BIG TCP 数据包 mlx5 支持 LSOv2。 IPv6 gro/tcp 堆栈为大数据包插入带有 JUMBO TLV 的临时逐跳标头。 当填充 TX 描述符时，我们需要忽略/跳过这个 HBH 标头。 请注意，ipv6_has_hopopt_jumbo() 仅识别非常具体的数据包布局，因此 mlx5e_sq_xmit_wqe() 仅处理此布局。 v7：采用 unsafe_memcpy() 和 MLX5_UNSAFE_MEMCPY_DISCLAIMER v2：清除 mlx5e_tx_get_gso_ihs() 中的 hopbyhop v4：修复 CONFIG_MLX5_CORE_IPOIB=y 的编译错误
+	hopbyhop -> IPv6 BIG TCP 允许网络协议栈准备更大的 GSO（发送）和 GRO（接收）数据包，以减少协议栈的遍历次数，从而提高性能和延迟。它可减少 CPU 负载，有助于实现更高的速度（即 100Gbit/s 及以上）。为了让这些数据包通过协议栈，BIG TCP 在 IPv6 头之后添加了一个临时的 "逐跳"（Hop-By-Hop）头，并在通过线路传输数据包之前将其剥离。BIG TCP 可在双协议栈设置中运行，IPv4 数据包将使用旧的下限（64k），IPv6 数据包将使用新的较大下限（192k）。请注意，Cilium 假定 GSO 和 GRO 的默认内核值为 64k，只有在必要时才会进行调整，也就是说，如果启用了 BIG TCP，而当前的 GSO/GRO 最大值小于 192k，那么 Cilium 会尝试增加这些值；如果禁用了 BIG TCP，而当前的最大值大于 64k，那么 Cilium 会尝试减少这些值。BIG TCP 不需要更改网络接口 MTU
+	mlx5e_insert_vlan
+	mlx5e_txwqe_build_dsegs -> net/mlx5e：Xmit 流分解 将当前的 mlx5e xmit 流分解为更小的块（辅助函数），以便将它们重新用于 IPoIB SKB 传输
+		dma_map_single
+		mlx5e_dma_push
+		for (i = 0; i < skb_shinfo(skb)->nr_frags; i++)
+			mlx5e_dma_push
+mlx5e_txwqe_complete -> net/mlx5e：使 tx_port_ts 逻辑能够适应无序 CQE 使用映射结构将包含端口时间戳信息的 CQE 与适当的 skb 相关联。 跟踪使用 FIFO 提交的 WQE 的顺序。 检查 FIFO 中查找值中的相应端口时间戳 CQE 是否被视为由于时间流逝而被丢弃。 使用 skb 后将查找值返回到空闲列表。 在未来的 WQE 提交迭代中重用释放的查找。 Map 结构使用整数标识符作为键，并返回与该标识符对应的 skb。 当 SQ 是 PTP（端口时间戳）SQ 时，将整数标识符嵌入提交给传输路径 WQ 的 WQE 中。 然后可以使用相应端口时间戳CQ的CQE中的字段来查询嵌入的标识符。 在端口时间戳napi_poll上下文中，从CQ轮询的CQE中查询标识符，并用于从WQE提交路径查找相应的skb。 skb 引用从映射中删除，然后嵌入来自 CQE 的端口硬件时间戳信息并最终被消耗。 元数据空闲列表 FIFO 是一个包含整数标识符的数组，可以在 FIFO 中压入和弹出这些整数标识符。 此结构的目的是记录哪些标识符值可以在后续 WQE 提交中安全使用，并且不应包含尚未通过在端口时间戳 CQ 上处理相应 CQE 完成而收获的标识符。 ts_cqe_pending_list 结构是数组和链表的组合。 该数组预先填充了将在链表头部添加和删除的节点。 每个节点都包含与在 WQE 中提交并在端口时间戳 CQE 中检索的值关联的唯一标识符值。 当提交WQE时，数组中与从元数据空闲列表中弹出的标识符相对应的节点被添加到CQE挂起列表的末尾，并被标记为“使用中”。 在两种情况下，节点会从链表中删除。 第一个条件是在 PTP napi_poll 上下文中轮询相应的端口时间戳 CQE。 第二个条件是自 WQE 提交对应的 DMA 时间戳值以来已经过去了一秒以上。 当第一个条件发生时，链表节点中的“使用中”位被清零，然后释放WQE提交对应的资源。 然而，第二个条件表明端口时间戳 CQE 可能永远不会被传递。 设备在无限长的时间后发布 CQE 并非不可能，尽管可能性极小。 为了应对这种不可能的情况，与相应的 WQE 提交相关的资源仍然保留，标识符值不会返回到空闲列表，并且节点上的“正在使用”位被清除以指示它不再 “可能交付”端口时间戳 CQE 标识符链接列表的一部分。 维护被认为极有可能永远不会被设备传送的端口时间戳 CQE 的数量的计数。 如果在 PTP napi_poll 上下文中轮询被认为不太可能交付的端口时间戳 CQE，则此计数会减少。
+	mlx5e_tx_skb_update_hwts_flags
+	mlx5e_tx_check_stop
+	mlx5e_skb_cb_hwtstamp_init -> net/mlx5e：添加 TX 端口时间戳支持 使用来自端口的时间戳（而不是数据包 CQE 创建时间戳）时，可以提高传输数据包时间戳的准确性，因为它可以更好地反映数据包传输的实际时间。 从 ConnectX6-DX 硬件开始支持 TX 端口时间戳。 尽管在原始完成时，只能附加 CQE 时间戳，但我们可以通过与 SQ 关联的特殊 CQ（除了常规 CQ 之外）上的附加完成来获取 TX 端口时间戳。 驱动程序忽略原始数据包完成时间戳，并报告特殊 CQ 完成的时间戳。 如果两次完成之间的绝对时间戳差异大于 1 / 128 秒，请忽略 TX 端口时间戳，因为它的抖动太大。 额外的补全不会生成任何 skb。 为每个 ptpsq 分配额外的 CQ，以接收 TX 端口时间戳。 驱动程序保存 skb FIFO，以便将传输的 skb 映射到两个预期完成。 使用 ptpsq 时，在 skb 上保留双引用计数，以保证在两个完成到达之前它不会被释放。 公开 ptp 附加 CQ 的专用计数器并将其连接到 TX 运行状况报告器。 该补丁将 TX 硬件时间戳偏移改进为在 100Gbps 线路速率下小于 40ns，而之前为 600ns。 这样，我们的硬件就符合 G.8273.2 C 类标准，并允许 Linux 系统部署在 5G 电信边缘，而该标准是必须的。
+	mlx5e_ptp_metadata_map_put
+	mlx5e_ptpsq_track_metadata -> net/mlx5e：填充元数据映射后跟踪 xmit 提交到 PTP WQ 在跟踪元数据索引以检测未传递的 CQE 之前，确保 skb 在映射到 skb 的元数据中可用。 如果在将 skb 放入映射之前将元数据索引放入跟踪列表中，则元数据索引可能会用于在相关 skb 在映射中可用之前检测未传递的 CQE，这可能导致 null-ptr-deref。
+	mlx5e_ptpsq_track_metadata -> net/mlx5e：扩展 SKB 空间检查以包括 PTP-SQ 设置 tx_port_ts 时，驱动程序将 PTP 端口上的所有 UPD 流量转移到专用 PTP-SQ。 SKB 会被缓存，直到有线 CQE 到达。 当数据包大小大于 MTU 时，固件可能会丢弃它，并且数据包不会传输到线路，因此线路 CQE 将无法到达驱动程序。 在这种情况下，SKB 累积在 SKB fifo 中。 添加房间检查以考虑 PTP-SQ SKB fifo，当 SKB fifo 已满时，驱动程序会停止队列，导致 TX 超时。 Devlink TX-reporter 可以从中恢复。
+	send_doorbell = __netdev_tx_sent_queue(sq->txq, attr->num_bytes, xmit_more)
+		netdev_tx_sent_queue
+	mlx5e_notify_hw(wq, sq->pc, sq->uar_map, cseg)
+		dma_wmb()
+		wmb()
+		mlx5_write64((__be32 *)ctrl, uar_map)
+
+then:
+mlx5e_poll_tx_cq
+
+
+
+
+send:
+dev_queue_xmit
+
+.send		= dev_queue_xmit
+	...
+	ndo_start_xmit
+
+
+
+struct mlx5e_priv {
+
+
+
+net/mlx5e: refactor xmit send function:
+一个庞大的函数mlx5e_sq_xmit被拆分成几个来实现多个
+目标：
+1. 重用IPoIB中的代码。
+2. 更好地与 TLS、IPSEC、GENEVE 和校验和卸载集成。 现在可以在运行基于 eseg 的卸载之前在 WQ 中预留空间，因此：
+2.1. mlx5e_fill_sq_frag_edge 之后不再需要复制 cseg 和 eseg。
+2.2. 将使用 mlx5e_txqsq_get_next_pi 代替旧版 mlx5e_fill_sq_frag_edge，以实现更好的代码可维护性和重用性。
+3. 为即将到来的 SKB TX MPWQE 做好准备。 之后就会介入
+mlx5e_sq_calc_wqe_attr 检查是否可以使用 MPWQE，以及
+代码流将分为两条路径：MPWQE 和非 MPWQE。
+提供了两个高级函数来发送数据包：
+* mlx5e_xmit 由网络堆栈调用，运行卸载并发送数据包。 在以下补丁之一中，MPWQE 支持将添加到此流程中。
+* mlx5e_sq_xmit_simple 由 TLS 卸载调用，仅运行校验和卸载并发送数据包。
+此更改对 TCP 单流测试和 XDP_TX 单流测试没有性能影响。
+当使用最新的 GCC 编译时，此更改显示不可见
+对 UDP pktgen（突发 32）单流测试的性能影响：
+数据包速率：16.86 Mpps (±0.15 Mpps) -> 16.95 Mpps (±0.15 Mpps)
+每包指令：434 -> 429
+每包周期：158 -> 160
+每个周期指令数：2.75 -> 2.69
+CPU：Intel(R) Xeon(R) CPU E5-2680 v3 @ 2.50GHz (x86_64)
+网卡：Mellanox ConnectX-6 Dx
+gcc 10.2.0
+
+gso:
+skb_is_gso
+GSO用来扩展之前的TSO，目前已经并入upstream内核。TSO只能支持tcp协议，而GSO可以支持tcpv4, tcpv6, udp等协议
+
+
+RX Multi-packet WQE, MPWQE:
+net/mlx5e：SKB 的增强型 TX MPWQE
+此提交添加了对常规 (SKB) 数据路径中的增强型 TX MPWQE 功能的支持。 MPWQE（多数据包工作队列元素）可以服务多个数据包，从而减少控制流量上的 PCI 带宽。
+
+
+
+mlx5e_sq_calc_wqe_attr -> net/mlx5e：添加缺少的最大 TX WQE 大小的完整性检查下面引用的提交开始使用最大 TX WQE 大小的固件功能。 此提交添加了一项重要的检查，以验证驱动程序不会尝试超出此功能，并且还恢复在引用的提交中错误删除的另一项检查（WQE 不得超过页面大小）。
+
+
+struct mlx5e_txqsq
+
+
+net/mlx5e：避免在配置更改时重置 netdev 统计信息 将所有 RQ、SQ 和通道计数器从通道对象移至 priv 结构中。 通过此更改，计数器将不会在通道配置更改时重置。 与高于零的 TC 关联的 SQ 的通道统计信息将在 ethtool -S 中显示，仅适用于自模块加载以来至少打开一次的 SQ（无论其打开/关闭当前状态如何）。 这样做是为了减少为常见的开箱即用（无 QoS）而呈现和计算的统计总量。 mlx5e_channel_stats 是 CH、RQ、SQ 统计数据的组合，以便在处理同一通道的 TX 和 RX 时为 NAPI 创建局部性。 对齐每个环的新统计结构，以避免多个通道同时更新到同一缓存行。 测试了数据包速率，没有感觉到降级。
+
+mlx5：支持 BIG TCP 数据包 mlx5 支持 LSOv2。 IPv6 gro/tcp 堆栈为大数据包插入带有 JUMBO TLV 的临时逐跳标头。 当填充 TX 描述符时，我们需要忽略/跳过这个 HBH 标头。 请注意，ipv6_has_hopopt_jumbo() 仅识别非常具体的数据包布局，因此 mlx5e_sq_xmit_wqe() 仅处理此布局。 v7：采用 unsafe_memcpy() 和 MLX5_UNSAFE_MEMCPY_DISCLAIMER v2：清除 mlx5e_tx_get_gso_ihs() 中的 hopbyhop v4：修复 CONFIG_MLX5_CORE_IPOIB=y 的编译错误
+
+skb send/receive:
+TX 方向
+用户态应用程序基于socket系统调用接口，传送需要TX 的HTTP应用层数据（如 Ngnix产生）
+内核态socket 层读取用户态数据，并按照应用层的协议类型，将数据发送到对应的传输层（如HTTP对应TCP）
+传输层申请 skb 数据结构，并填充数据到skb，然后skb 会向下传送到网络层和链路层（链路层在内核对应网络设备层），继续添加 IP 和 MAC header到skb中
+最后skb 到达网络设备驱动，其从skb 中获取到packet data 数据的虚拟地址（skb->data)，并映射出dma总线地址给 网卡进行DMA读取（如对虚拟地址和总线地址有疑问，请参考另一篇文章“一文读懂 内存DMA 及 设备内存控制”）
+RX 方向
+如高速网卡收到从光纤上传入的数据包后，基于网卡内DMA控制器 和 PCIe 总线，将数据包送入设备驱动层
+设备驱动（Device Driver）收到数据包后，申请SKB，并将数据放入SKB 结构指向的数据空间（位于 skb结构 的head 和 end 指针之间）注：驱动放数据到skb 有两种方式，一种方式是dev_alloc_skb + memcpy；第二种是 page + build_skb 实现零拷贝，效率更高
+驱动调用 NAPI Schedule 将RX数据送入TCP/IP Stack, 到达 IP 层则去除 SKB 指向数据的 IP Header，到达TCP 层去除 TCP Head
+最后在内核基于IP等路由信息，查找到对应的socket，将数据基于socket 送入用户态应用程序
+
+
+
+static inline struct sk_buff *dev_alloc_skb(unsigned int length)
+
+
+
+send complete:
+mlx5e_napi_poll
+	mlx5e_poll_tx_cq
+		mlx5_cqwq_get_cqe
+		...
+		mlx5e_txqsq_wake
+			mlx5_cqwq_update_db_record
+				*wq->db = cpu_to_be32(wq->cc & 0xffffff)
+			netif_tx_wake_queue
+
+
+
+IB/mlx5：实现分段完成队列（CQ）
+目前create CQ的实现需要连续的内存，这样的要求是有问题的，一旦内存碎片或者系统内存不足，就会导致dma_zalloc_coherent()失败。
+该补丁实现了分段 CQ 的新方案，通过引入新类型“struct mlx5_frag_buf_ctrl”来分配分段缓冲区（而不是连续缓冲区）来克服此问题。 完成队列（CQ）基于这个新的分段缓冲区。
+它修复了以下崩溃：
+kworker/29:0：页面分配失败：顺序：6，模式：0x80d0
+CPU：29 PID：8374 通讯：kworker/29:0 受污染：G OE 3.10.0
+工作队列：ib_cm cm_work_handler [ib_cm]
+调用轨迹：
+[<>] 转储堆栈+0x19/0x1b
+[<>] warn_alloc_failed+0x110/0x180
+[<>] __alloc_pages_slowpath+0x6b7/0x725
+[<>] __alloc_pages_nodemask+0x405/0x420
+[<>] dma_generic_alloc_coherent+0x8f/0x140
+[<>] x86_swiotlb_alloc_coherent+0x21/0x50
+[<>] mlx5_dma_zalloc_coherent_node+0xad/0x110 [mlx5_core]
+[<>]？ mlx5_db_alloc_node+0x69/0x1b0 [mlx5_core]
+[<>] mlx5_buf_alloc_node+0x3e/0xa0 [mlx5_core]
+[<>] mlx5_buf_alloc+0x14/0x20 [mlx5_core]
+[<>] create_cq_kernel+0x90/0x1f0 [mlx5_ib]
+[<>] mlx5_ib_create_cq+0x3b0/0x4e0 [mlx5_ib]
+
+
+我们说过，Linux在硬中断里只完成简单必要的工作，剩下的大部分的处理都是转交给软中断的。通过上面代码可以看到，硬中断处理过程真的是非常短。只是记录了一个寄存器，修改了一下下CPU的poll_list，然后发出个软中断。就这么简单，硬中断工作就算是完成了
+trigger soft_irq:
+__raise_softirq_irqoff
+or_softirq_pending(1UL << nr)
+...
+deal_with irq:
+static void run_ksoftirqd(unsigned int cpu)
+{
+    local_irq_disable();
+    if (local_softirq_pending()) {
+        __do_softirq();
+        rcu_note_context_switch(cpu);
+        local_irq_enable();
+        cond_resched();
+        return;
+    }
+    local_irq_enable();
+}
+
+net_rx_action
+
+
+
+# LKMM 相关术语的简要定义
+
+# 参考
+
+tools/memory-model/Documentation/glossary.txt
+
+tools/memory-model/Documentation/explanation.txt
 
