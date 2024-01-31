@@ -308,7 +308,24 @@ mlx5 driver:
 drivers/net/ethernet/mellanox/mlx5/core/main.c
 
 static int probe_one
-	mlx5_devlink_alloc
+    mlx5_devlink_alloc
+        ida_alloc -> 其中ida_destory是释放所有和IDA关联的资源。IDA结构体是一个树状结构体，是内核工作的一个机制。　  这里先介绍一下IDR，IDR机制是内核中将一个整数ID号和指针关联在一起的机制。 如果使用数组进行索引，当ID号很大时，数组索引会占据大量的存储空间，如果使用链表，在总线上设备特别多的情况下，链表的查询效率不高。而IDR机制内部采用红黑树，可以很方便的将整数和指针关联起来，并且有很高的搜索效率。  IDA只是用来分配id，并不将某数据结构和id关联起来。 例如sd设备的设备名，如sda，驱动在生成设备文件的时候会向系统申请一个ida，也就是唯一id，然后把id映射成设备文件名。在nvme-core中有使用到ida，所以在最后中需要释放。static DEFINE_IDA(nvme_subsystems_ida);
+    mlx5_mdev_init
+        mutex_init
+        INIT_LIST_HEAD
+        mlx5_cmd_init
+        mlx5_tout_init
+        mlx5_health_init
+        mlx5_pagealloc_init
+        mlx5_adev_init
+        mlx5_hca_caps_alloc
+        ida_alloc_range
+    mlx5_pci_init
+    mlx5_init_one
+    mlx5_crdump_enable
+    mlx5_hwmon_dev_register
+    pci_save_state
+    devlink_register
 
 
 
@@ -859,6 +876,88 @@ mlx5 driver:
 drivers/net/ethernet/mellanox/mlx5/core
 
 module_init(mlx5_init);
+get_random_bytes -> 这将返回任意数量的随机字节。 随机字节的质量与 /dev/urandom 一样好。 为了确保该函数提供的随机性良好，应调用函数 wait_for_random_bytes() 并在之前的任何时刻至少返回一次 0
+mlx5_core_verify_params -> net/mlx5：验证模块参数 验证 mlx5_core 模块参数，确保它们在预期范围内，如果未将其恢复为默认值。
+    profile -> static struct mlx5_profile profile[] -> 默认配置文件 -> mlx5：将 pci 设备处理从 mlx5_ib 移至 mlx5_core 在为 VPI 的新 mlx5 设备（即端口可以是 IB 或 ETH）做准备时，请将 pci 设备功能从 mlx5_ib 移至 mlx5_core。 这涉及以下更改： 1. 将 mlx5_core_dev 结构移出 mlx5_ib_dev。 mlx5_core_dev 现在是由 mlx5_core 维护的独立结构。 mlx5_ib_dev 现在有一个指向该结构的指针。 这需要更改通过 mlx5_ib_dev 访问 core_dev 结构的很多地方（现在，这需要是指针取消引用）。 2. 所有 PCI 初始化现在都在 mlx5_core 中完成。 因此，现在是 mlx5_core 执行 pci_register_device （而不是像以前那样的 mlx5_ib）。 3. mlx5_ib 现在将自身注册为 mlx5_core 作为“接口”驱动程序。 这与 mlx4 (ConnectX) 驱动程序采用的机制非常相似。 一旦 HCA 初始化（由 mlx5_core），它就会调用接口驱动程序来进行初始化。 4. 核心注册了一个新的事件处理程序：mlx5_core_event()。 该事件处理程序调用接口注册的事件处理程序
+mlx5_register_debugfs
+    debugfs_create_dir mlx5 -> 第一个参数是目录的名称，第二个参数用来指定这个目录的上级目录，如果是NULL，则表示是放在debugfs的根目录里,  /sys/kernel/debug/
+mlx5e_init -> net/mlx5e：将以太网部分连接到辅助总线 -> 目前，删除和重新加载流程可以与模块清理并行运行。 这种设计很容易出错。 例如：从具有不同锁定的清理和删除流中调用 aux_drivers 回调，这可能会导致死锁[1]。 因此，通过重新加载和删除来序列化模块清理
+    mlx5e_build_ptys2ethtool_map
+        MLX5_BUILD_PTYS2ETHTOOL_CONFIG
+    auxiliary_driver_register
+    mlx5e_rep_init -> net/mlx5e：首先取消注册 eth-reps 设备 当我们清理所有接口（即重新扫描或重新加载模块）时，我们需要先清理 eth-reps 设备，然后再清理 eth 设备。 我们将重新使用本机 NIC 端口网络设备实例作为上行链路表示器。 更改 eswitch 模式将跳过销毁 eth 设备，因此网络设备不会被销毁，而只会更改配置文件。 创建上行eth-rep将初始化representor相关资源。 从这个意义上说，当我们销毁所有设备时，我们首先需要销毁 eth-rep 设备，因此上行链路 eth-rep 将清除所有与表示器相关的资源，然后才销毁 eth 设备，这将销毁其余资源和网络设备
+mlx5_sf_driver_register -> static struct auxiliary_driver mlx5_sf_driver
+pci_register_driver(&mlx5_core_driver)
+
+
+
+static struct pci_driver mlx5_core_driver = {
+	.name           = KBUILD_MODNAME,
+	.id_table       = mlx5_core_pci_table,
+	.probe          = probe_one,
+	.remove         = remove_one,
+	.suspend        = mlx5_suspend,
+	.resume         = mlx5_resume,
+	.shutdown	= shutdown,
+	.err_handler	= &mlx5_err_handler,
+	.sriov_configure   = mlx5_core_sriov_configure,
+	.sriov_get_vf_total_msix = mlx5_sriov_get_vf_total_msix,
+	.sriov_set_msix_vec_count = mlx5_core_sriov_set_msix_vec_count,
+};
+
+static struct auxiliary_driver mlx5_sf_driver = {
+	.name = MLX5_SF_DEV_ID_NAME,
+	.probe = mlx5_sf_dev_probe,
+	.remove = mlx5_sf_dev_remove,
+	.shutdown = mlx5_sf_dev_shutdown,
+	.id_table = mlx5_sf_dev_id_table,
+};
+
+
+
+static int mlx5_sf_dev_probe(struct auxiliary_device *adev, const struct auxiliary_device_id *id)
+    mlx5_devlink_alloc -> devlink：尽早设置设备 所有内核 devlink 实现都会在特定设备的初始化例程期间调用 devlink_alloc()，该设备稍后用作 devlink_register() 的父设备。 这种较晚的设备分配会导致需要我们在设置其他参数之前调用 device_register() 的情况，但该调用向世界打开了 devlink 并可供 netlink 用户访问。 由于访问 devlink->dev 指针，任何将 devlink_register() 移至最后一次调用的尝试都会生成以下错误。
+    mlx5_dev_set_lightweight -> net/mlx5：轻探测本地 SF 如果用户想要配置 SF，例如：仅使用 vdpa 功能，则他需要完全探测 SF，配置他想要的内容，然后重新加载 SF。 为了节省重新加载的时间，本地SF将在没有任何辅助子设备的情况下进行探测，从而可以在其完全探测之前对SF进行配置。 这些 SF 的 enable_* devlink 参数的默认值设置为 false。
+    mlx5_mdev_init -> net/mlx5：为 SF 创建新的配置文件 为 SF 创建新的配置文件以禁用命令缓存。 每个功能命令缓存消耗约 500KB 的内存，当使用大量 SF 时，这种节省在内存受限的系统上非常显着。 使用新的配置文件来提供 SF 和 PF 之间未来的差异。 mr_cache 不用于非 PF 函数，因此它被排除在新配置文件之外。
+    ioremap
+    mlx5_init_one_light
+    or
+    mlx5_init_one
+    mlx5_core_peer_devlink_set
+    devlink_register
+
+
+net/mlx5: SF，添加辅助设备驱动程序
+为mlx5子功能辅助设备添加辅助设备驱动程序。 mlx5 子功能类似于 PCI PF 和 VF。 对于子功能，创建辅助设备。 因此，当 mlx5 SF 辅助设备绑定到驱动程序时，会创建其 netdev 和 rdma 设备，它们显示为
+$ ls -l /sys/bus/auxiliary/devices/
+mlx5_core.sf.4 -> ../../../devices/pci0000:00/0000:00:03.0/0000:06:00.0/mlx5_core.sf.4
+$ ls -l /sys/class/net/eth1/device
+/sys/class/net/eth1/device -> ../../../mlx5_core.sf.4
+$ cat /sys/bus/auxiliary/devices/mlx5_core.sf.4/sfnum
+$ devlink dev show
+pci/0000:06:00.0
+auxiliary/mlx5_core.sf.4
+$ devlink port show auxiliary/mlx5_core.sf.4/1
+auxiliary/mlx5_core.sf.4/1: type eth netdev p0sf88 flavour virtual port 0 splittable false
+$ rdma link show mlx5_0/1
+link mlx5_0/1 state ACTIVE physical_state LINK_UP netdev p0sf88
+$ rdma dev show
+8: rocep6s0f1: node_type ca fw 16.29.0550 node_guid 248a:0703:00b3:d113 sys_image_guid 248a:0703:00b3:d112
+13: mlx5_0: node_type ca fw 16.29.0550 node_guid 0000:00ff:fe00:8888 sys_image_guid 248a:0703:00b3:d112
+将来，devlink 设备实例名称将适应使用别名或 RFC [1] 中描述的 devlink 实例名称的 sfnum 注释。
+
+
+
+
+
+
+
+
+
+
+default config profile:
+static struct mlx5_profile profile[]
+
 
 
 
