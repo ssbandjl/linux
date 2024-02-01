@@ -266,9 +266,24 @@ nvme_handle_cqe
 
 driver/net/ethernet/intel/ice   [Intel E810网卡]
 ice_module_init
+	ice_adv_lnk_speed_maps_init
+	alloc_workqueue
+	pci_register_driver
+
 
 ice_probe
+	pcim_iomap_regions
+	ice_allocate_pf
+	dma_set_mask_and_coherent
+	pci_read_config_byte
+	netif_msg_init
+	ice_init_rdma
+		ice_is_rdma_ena
+
+send msg:
 ice_start_xmit
+	
+
 
 e1000_intr
 
@@ -307,6 +322,7 @@ hw_addr 00:00:00:00:00:00 state inactive opstate detached
 mlx5 driver:
 drivers/net/ethernet/mellanox/mlx5/core/main.c
 
+.probe
 static int probe_one
     mlx5_devlink_alloc
         ida_alloc -> 其中ida_destory是释放所有和IDA关联的资源。IDA结构体是一个树状结构体，是内核工作的一个机制。　  这里先介绍一下IDR，IDR机制是内核中将一个整数ID号和指针关联在一起的机制。 如果使用数组进行索引，当ID号很大时，数组索引会占据大量的存储空间，如果使用链表，在总线上设备特别多的情况下，链表的查询效率不高。而IDR机制内部采用红黑树，可以很方便的将整数和指针关联起来，并且有很高的搜索效率。  IDA只是用来分配id，并不将某数据结构和id关联起来。 例如sd设备的设备名，如sda，驱动在生成设备文件的时候会向系统申请一个ida，也就是唯一id，然后把id映射成设备文件名。在nvme-core中有使用到ida，所以在最后中需要释放。static DEFINE_IDA(nvme_subsystems_ida);
@@ -314,16 +330,48 @@ static int probe_one
         mutex_init
         INIT_LIST_HEAD
         mlx5_cmd_init
-        mlx5_tout_init
+            cmd->wq = create_singlethread_workqueue(cmd->wq_name)
+                alloc_workqueue
+            mlx5_cmdif_debugfs_init
+                debugfs_create_dir("commands", dev->priv.dbg.dbg_root)
+                ...
+        mlx5_tout_init -> set default timeout
+            tout_def_sw_val
         mlx5_health_init
         mlx5_pagealloc_init
-        mlx5_adev_init
-        mlx5_hca_caps_alloc
-        ida_alloc_range
+            create_singlethread_workqueue("mlx5_page_allocator")
+            xa_init(&dev->priv.page_root_xa)
+            mlx5_pages_debugfs_init -> net/mlx5：添加页面 debugfs 添加页面 debugfs 以公开以下计数器以实现可调试性： fw_pages_total - 已向固件提供但尚未返回的页面数。 vfs_pages - 对于 SRIOV，为 FW 提供了多少页供虚拟功能使用。 host_pf_pages - 对于 ECPF，为外部主机物理功能使用提供给 FW 的页数。
+        mlx5_adev_init -> 在新的虚拟总线下创建辅助设备。 这将取代定制的 mlx5 ->add()/->remove() 接口，下一个补丁将填充缺失的回调并删除旧的接口逻辑。 辅助驱动程序与设备的连接只能以一对一的方式进行，并且需要我们为每个协议创建设备，以便设备（模块）能够连接到它。
+            kcalloc(ARRAY_SIZE(mlx5_adev_devices) -> 
+        mlx5_hca_caps_alloc -> net/mlx5：分配单个功能当前 mlx5_core_dev 包含功能数组。 它包含设备的 19 个有效功能、2 个保留条目和 12 个孔。 因此，对于 14 个未使用的条目，mlx5_core_dev 分配了 14 * 8K = 112K 字节的从未使用过的内存。 由于这个 mlx5_core_dev 结构大小为 270Kbytes 奇数。 此分配进一步与 2 的下一个幂到 512Kbytes 对齐
+            for (i = 0; i < ARRAY_SIZE(types); i++)
+                kzalloc(sizeof(*cap)
+        ida_alloc_range -> struct ida sw_vhca_ida
     mlx5_pci_init
+        pci_set_drvdata
+        mlx5_pci_enable_device
+        request_bar
+        pci_set_master
+        set_dma_caps
+        pci_enable_atomic_ops_to_root
+        ...
+        mlx5_pci_vsc_init
     mlx5_init_one
-    mlx5_crdump_enable
-    mlx5_hwmon_dev_register
+        mlx5_init_one_devl_locked -> net/mlx5：轻探测本地 SF 如果用户想要配置 SF，例如：仅使用 vdpa 功能，则他需要完全探测 SF，配置他想要的内容，然后重新加载 SF。 为了节省重新加载的时间，本地SF将在没有任何辅助子设备的情况下进行探测，从而可以在其完全探测之前对SF进行配置。 这些 SF 的 enable_* devlink 参数的默认值设置为 false
+            mlx5_dev_is_lightweight
+            mlx5_function_setup
+            mlx5_init_once
+                ...
+                mlx5_fpga_init
+                ...
+                mlx5_dm_create
+            mlx5_load
+            set_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state)
+            mlx5_register_device(dev)
+    mlx5_crdump_enable -> net/mlx5：添加 Crdump 支持，Crdump 允许驱动程序检索 FW PCI crspace 的转储。 这在发生可能需要重置固件的灾难性问题时非常有用。 crspace 转储可用于以后的调试
+        ...
+    mlx5_hwmon_dev_register -> net/mlx5：通过硬件监控内核 API 暴露 NIC 温度 通过实现 hwmon 内核 API 暴露 NIC 温度，这会将当前热区内核 API 变为冗余。 对于每个受支持和公开的热二极管传感器，公开以下属性： 1) 输入温度。 2) 最高温度。 3) 温度标签：取决于固件功能，如果固件不支持传感器命名，则后备命名约定为：“sensorX”，其中 X 是硬件规格（MTMP 寄存器）传感器索引。 4) 温度临界最大值：指警告事件的高阈值。 将公开为 `tempY_crit` hwmon 属性（RO 属性）。 例如，对于 ConnectX5 HCA，该温度值为 105 摄氏度，比硬件关闭温度低 10 度。 5) 温度重置历史记录：重置最高温度。 例如，对于具有单个 IC 热二极管传感器的双端口 ConnectX5 NIC，将在“/sys/class/hwmon/hwmon[X,Y]”下有 2 个 hwmon 目录（每个 PCI 功能一个）。 列出上面的目录之一 (hwmonX/Y) 会生成以下相应的输出：grep -H -d skip . /sys/class/hwmon/hwmon0/*, sensors
     pci_save_state
     devlink_register
 
@@ -334,7 +382,6 @@ mlx5_devlink_ops
 
 
 init debugfs, wq, Workqueue
-mlx5_mdev_init
 /sys/kernel/debug/mlx5/
 tree -L 2 /sys/kernel/debug/mlx5/
 
@@ -578,7 +625,6 @@ cat /proc/net/ptype
 I/O 加速技术( I/OAT ) 是Intel与高端服务器主板捆绑在一起的DMA 引擎（嵌入式DMA 控制器） ，它通过执行直接内存访问(DMA) 从主处理器卸载内存副本。它通常用于加速网络流量，但支持任何类型的复制。
 
 
-<<<<<<< HEAD
 pci_request_regions
 
 req irq:
@@ -958,6 +1004,118 @@ $ rdma dev show
 default config profile:
 static struct mlx5_profile profile[]
 
+
+
+
+git remote add origin git@gitlab.nsv6.b122.top:bin/linux_kernel.git
+
+
+register_chrdev
+
+pci_enable_device
+
+filter: ./drivers/net/ethernet/intel/
+
+
+get info:
+System with RoCE SR-IOV card with 4 VFs:
+[leonro@vm ~]$ lspci |grep nox
+01:00.0 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6]
+01:00.1 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
+01:00.2 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
+01:00.3 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
+01:00.4 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
+[leonro@vm ~]$ ls -l /sys/bus/auxiliary/devices/
+mlx5_core.eth.0 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.0/mlx5_core.eth.0
+mlx5_core.eth.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.eth.1
+mlx5_core.eth.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.eth.2
+mlx5_core.eth.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.eth.3
+mlx5_core.eth.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.eth.4
+mlx5_core.rdma.0 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.0/mlx5_core.rdma.0
+mlx5_core.rdma.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.rdma.1
+mlx5_core.rdma.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.rdma.2
+mlx5_core.rdma.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.rdma.3
+mlx5_core.rdma.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.rdma.4
+mlx5_core.vdpa.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.vdpa.1
+mlx5_core.vdpa.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.vdpa.2
+mlx5_core.vdpa.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.vdpa.3
+mlx5_core.vdpa.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.vdpa.4
+[leonro@vm ~]$ rdma dev
+0: rocep1s0f0: node_type ca fw 4.6.9999 node_guid 5254:00c0:fe12:3455 sys_image_guid 5254:00c0:fe12:3455
+1: rocep1s0f0v0: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3456
+2: rocep1s0f0v1: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3457
+3: rocep1s0f0v2: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3458
+4: rocep1s0f0v3: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3459
+
+
+
+static const struct mlx5_adev_device {
+	const char *suffix;
+	bool (*is_supported)(struct mlx5_core_dev *dev);
+	bool (*is_enabled)(struct mlx5_core_dev *dev);
+} mlx5_adev_devices[] = {
+	[MLX5_INTERFACE_PROTOCOL_VNET] = { .suffix = "vnet",
+					   .is_supported = &mlx5_vnet_supported,
+					   .is_enabled = &is_vnet_enabled },
+	[MLX5_INTERFACE_PROTOCOL_IB] = { .suffix = "rdma",
+					 .is_supported = &mlx5_rdma_supported,
+					 .is_enabled = &is_ib_enabled },
+	[MLX5_INTERFACE_PROTOCOL_ETH] = { .suffix = "eth",
+					  .is_supported = &mlx5_eth_supported,
+					  .is_enabled = &mlx5_core_is_eth_enabled },
+	[MLX5_INTERFACE_PROTOCOL_ETH_REP] = { .suffix = "eth-rep",
+					   .is_supported = &is_eth_rep_supported },
+	[MLX5_INTERFACE_PROTOCOL_IB_REP] = { .suffix = "rdma-rep",
+					   .is_supported = &is_ib_rep_supported },
+	[MLX5_INTERFACE_PROTOCOL_MPIB] = { .suffix = "multiport",
+					   .is_supported = &is_mp_supported },
+	[MLX5_INTERFACE_PROTOCOL_DPLL] = { .suffix = "dpll",
+					   .is_supported = &is_dpll_supported },
+};
+
+
+capability types:
+static const int types[] = {
+	MLX5_CAP_GENERAL,
+	MLX5_CAP_GENERAL_2,
+	MLX5_CAP_ETHERNET_OFFLOADS,
+	MLX5_CAP_IPOIB_ENHANCED_OFFLOADS,
+	MLX5_CAP_ODP,
+	MLX5_CAP_ATOMIC,
+	MLX5_CAP_ROCE,
+	MLX5_CAP_IPOIB_OFFLOADS,
+	MLX5_CAP_FLOW_TABLE,
+	MLX5_CAP_ESWITCH_FLOW_TABLE,
+	MLX5_CAP_ESWITCH,
+	MLX5_CAP_QOS,
+	MLX5_CAP_DEBUG,
+	MLX5_CAP_DEV_MEM,
+	MLX5_CAP_DEV_EVENT,
+	MLX5_CAP_TLS,
+	MLX5_CAP_VDPA_EMULATION,
+	MLX5_CAP_IPSEC,
+	MLX5_CAP_PORT_SELECTION,
+	MLX5_CAP_MACSEC,
+	MLX5_CAP_ADV_VIRTUALIZATION,
+	MLX5_CAP_CRYPTO,
+};
+
+
+
+
+Usage example:
+Create SF:
+$ devlink port add pci/0000:08:00.0 flavour pcisf pfnum 0 sfnum 11
+$ devlink port function set pci/0000:08:00.0/32768 \
+hw_addr 00:00:00:00:00:11 state active
+
+Enable ETH auxiliary device:
+$ devlink dev param set auxiliary/mlx5_core.sf.1 \
+name enable_eth value true cmode driverinit
+
+Now, in order to fully probe the SF, use devlink reload:
+$ devlink dev reload auxiliary/mlx5_core.sf.1
+此时，用户拥有仅用于以太网功能的带有辅助设备的 SF devlink 实例
 
 
 
