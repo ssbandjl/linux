@@ -352,23 +352,189 @@ static int probe_one
         pci_set_drvdata
         mlx5_pci_enable_device
         request_bar
-        pci_set_master
+            pci_request_regions
+        pci_set_master -> pci_set_master() 将通过设置 PCI_COMMAND 寄存器中的总线主控位来启用 DMA。 如果 BIOS 设置为虚假值，它还会修复延迟计时器值。 pci_clear_master() 将通过清除总线主控位来禁用 DMA
         set_dma_caps
         pci_enable_atomic_ops_to_root
         ...
         mlx5_pci_vsc_init
     mlx5_init_one
         mlx5_init_one_devl_locked -> net/mlx5：轻探测本地 SF 如果用户想要配置 SF，例如：仅使用 vdpa 功能，则他需要完全探测 SF，配置他想要的内容，然后重新加载 SF。 为了节省重新加载的时间，本地SF将在没有任何辅助子设备的情况下进行探测，从而可以在其完全探测之前对SF进行配置。 这些 SF 的 enable_* devlink 参数的默认值设置为 false
+        vdpa: https://www.redhat.com/en/blog/introduction-vdpa-kernel-framework, cx6 vdpa 虚拟io硬件卸载: https://wangzheng422.github.io/docker_env/notes/2021/2021.10.cx6dx.vdpa.offload.html
             mlx5_dev_is_lightweight
             mlx5_function_setup
+                mlx5_function_enable -> net/mlx5：拆分 function_setup() 以启用和打开函数 mlx5_cmd_init_hca() 大约需要 0.2 秒。 如果用户希望禁用某些 SF aux 设备，例如对于大规模 1K SF，该用户将在 mlx5_cmd_init_hca() 上浪费超过 3 分钟的时间，而该阶段并不需要该功能。 下游补丁将更改通过 E-switch 进行探测的 SF、本地 SF，以便在没有任何辅助开发的情况下进行探测。 为了支持这一点，请拆分 function_setup() 以避免执行 mlx5_cmd_init_hca()
+                    wait_fw_init
+                    mlx5_cmd_enable
+                        cmdif_rev
+                        sema_init
+                        dma_pool_create("mlx5_cmd", mlx5_core_dma_dev(dev), size, align, 0)
+                        alloc_cmd_page
+                            dma_alloc_coherent
+                        iowrite32be
+                        wmb()
+                        create_msg_cache
+                            for * 2
+                                mlx5_alloc_cmd_msg
+                                    mlx5_calc_cmd_blocks
+                                    alloc_cmd_box
+                                        mailbox->buf = dma_pool_zalloc
+                                list_add_tail(&msg->list, &ch->head)
+                        create_debugfs_files
+                             debugfs_create_dir("cmd"
+                    mlx5_tout_query_iseg -> net/mlx5：从 init 段读取超时值 用存储在固件 init 段中的值替换硬编码超时。 在驱动程序加载期间从 init 段读取超时。 如果不支持 init 段超时，则回退到硬编码默认值。 还将无法从固件读取的预初始化超时移至新机制
+                        ...
+                        tout_convert_reg_field_to_ms -> 时间寄存器由两个字段to_multiplier（超时乘数）和to_value（超时值）组成。 to_value 是时间单位的数量，to_multiplier 是类型，应该是这四个值之一
+                            int_pow - 计算给定底数和指数的幂
+                    wait_fw_init
+                    mlx5_read_embedded_cpu
+                    mlx5_cmd_set_state
+                    mlx5_start_health_poll
+                        timer_setup(&health->timer, poll_health, 0)
+                            mlx5_health_check_fatal_sensors
+                    mlx5_core_enable_hca
+                        mlx5_cmd_exec_in(dev, enable_hca, in)
+                            ...
+                            cmd_exec
+                                u16 opcode = in_to_opcode(in) -> const char *mlx5_command_str(int command) -> 命令转可读字符串
+                    mlx5_core_set_issi -> net/mlx5：扩展 mlx5_core 以支持 ConnectX-4 以太网功能 这是 Mellanox ConnectX(R)-4 单/双端口适配器驱动程序的以太网部分，通过 VPI 支持 100Gb/s。 该驱动程序通过以太网功能扩展了现有的 mlx5 驱动程序。 该补丁包含驱动程序入口点，但不包括发送和接收（请参阅本系列中的上一个补丁）例程。 它还向 Kconfig 添加了选项 MLX5_CORE_EN 以启用/禁用以太网功能。 目前，Kconfig 被编程为使以太网和 Infiniband 功能相互排斥。 还将 MLX5_INFINIBAND 更改为依赖于 MLX5_CORE，而不是选择它，因为可以在不选择 MLX5_INFINIBAND 的情况下选择 MLX5_CORE
+                        MLX5_CMD_OP_QUERY_ISSI
+                    mlx5_satisfy_startup_pages -> mlx5_core：实现新的初始化序列引入enbale_hca和disable_hca命令来表示驱动程序何时启动或停止在设备上运行。 此外，驱动程序将使用引导和初始化页面计数； 需要引导页来允许固件完成引导命令，而另一个则完成 init hca。 命令接口版本已增加到 4，以强制使用支持的固件。 该补丁破坏了与旧版本固件（< 4）的兼容性； 但是，我们将发布的第一个 GA 固件将支持版本 4，因此这应该不是问题
+						mlx5_cmd_query_pages -> net/mlx5_core：支持 MANAGE_PAGES 和 QUERY_PAGES 固件命令更改 在之前的 QUERY_PAGES 命令版本中，我们使用一个命令来获取所需数量的引导、初始化和启动后页面。 新版本使用 op_mod 字段来指定查询是否针对所需数量的引导、初始化或后初始化页面。 此外，所需页面数量的输出字段大小从 16 位增加到 32 位。 在 MANAGE_PAGES 命令中，input_num_entries 和 output_num_entries 字段大小从 16 位更改为 32 位，并且 PAS 表偏移量更改为 0x10。 在页面请求事件中，num_pages 字段也更改为 32 位。 在 HCA-capability-layout 中，max_qp_mcg 字段的大小和位置已更改为支持 24 位。 该补丁与固件版本<5不兼容； 然而，事实证明我们将发布的第一个 GA 固件将不支持以前的版本，所以这应该没问题
+						give_pages -> net/mlx5：引入 Mellanox SmartNIC 并修改页面管理逻辑 Mellanox 的 SmartNIC 将嵌入式 CPU（例如 ARM）处理能力与高级网络卸载相结合，以加速多种安全、网络和存储应用程序。 随着SmartNIC的推出，出现了一种新的PCI功能，称为嵌入式CPU物理功能(ECPF)。 PF 可以从 ECPF PCI 功能获取其 ICM 页面。 驱动程序应通过读取初始化段中的位来识别它是否正在运行此类函数。 当固件请求页面时，它将发出页面请求事件，指定其请求多少页面以及针对哪个功能。 该驱动程序使用manage_pages命令进行响应，提供所请求的页面以及它正在提供这些页面的功能的指示。 此补丁之前的编码如下： function_id == 0：为接收 EQE 的函数请求页面。 function_id != 0：为由 function_id 值标识的 VF 请求页面 EQE 中新的一位字段标识为 ECPF 请求页面。 这里可以引入 page_supplier 的概念，为了支持这一点，修改了管理页面和查询页面，以便固件可以区分以下情况： 1. 函数为其自身提供页面 2. PF 为其 VF 提供页面 3. ECPF 为其自身提供页面 4. ECPF 为另一个函数提供页面 这种区别可以通过在 query_pages、manage_pages 和页面请求 EQE 中引入“embedded_cpu_function”位来实现
+							mlx5：为 Mellanox Connect-IB 适配器添加驱动程序 该驱动程序由两个内核模块组成：mlx5_ib 和 mlx5_core。 此分区类似于 mlx4 的分区，不同之处在于 mlx5_ib 是 pci 设备驱动程序，而不是 mlx5_core。 mlx5_core 本质上是一个提供通用功能的库，旨在供将来推出的其他 Mellanox 设备使用。 mlx5_ib 与 drivers/infiniband/hw 下的任何硬件设备具有类似的作用
+							kvzalloc
+							alloc_4k
+							alloc_system_page
+							mlx5_cmd_do
+							mlx5_cmd_check
+                    mlx5_tout_query_dtor -> default timeouts register (DTOR)
+						mlx5_core_access_reg
+							mlx5_access_reg
+                mlx5_function_open
+					set_hca_ctrl
+						...
+						MLX5_REG_HOST_ENDIANNESS
+					set_hca_cap -> 将所有 HCA 功能设置器合并到一个函数下，并编译出 ODP 相关函数，以防编译内核时不支持 ODP
+						handle_hca_cap
+						...
+						handle_hca_cap_roce -> net/mlx5：启用软件定义的 RoCEv2 UDP 源端口 启用此选项后，RoCEv2 数据包的 UDP 源端口由软件而不是固件定义
+						handle_hca_cap_port_selection -> net/mlx5：检测并启用旁路端口选择流表 使用端口选择功能 port_select_flow_table_bypass 位来检测并启用显式端口关联，即使在链路聚合哈希模式下也是如此
+							mlx5_core_get_caps MLX5_CAP_PORT_SELECTION
+							set_caps MLX5_SET_HCA_CAP_OP_MOD_PORT_SELECTION
+					mlx5_satisfy_startup_pages
+					mlx5_cmd_init_hca -> net/mlx5：在 init HCA 期间设置软件所有者 ID 为每个主机生成唯一的 128 位标识符，并在 INIT_HCA 命令中将该值传递给固件（如果报告了 sw_owner_id 功能）。 绑定到 mlx5_core 驱动程序的每个设备都将具有相同的软件所有者 ID。 在后续补丁中，mlx5_core 设备将通过新的 VPort 命令进行绑定，以便它们可以在单个 InfiniBand 设备下一起运行。 只能绑定具有相同软件所有者 ID 的设备，以防止发往一台主机的流量到达另一台主机。 INIT_HCA 命令长度扩展了 128 位。 命令长度作为输入 FW 命令提供。 较旧的固件以新的较长形式接收此命令没有问题
+						MLX5_CMD_OP_INIT_HCA
+					mlx5_set_driver_version
+						MLX5_CMD_OP_SET_DRIVER_VERSION
+					mlx5_query_hca_caps
+						mlx5_core_get_caps_mode
+					mlx5_start_health_fw_log_up
+						queue_delayed_work(health->wq -> mlx5_health_log_ts_update
             mlx5_init_once
-                ...
-                mlx5_fpga_init
-                ...
-                mlx5_dm_create
-            mlx5_load
+				mlx5_devcom_register_device -> net/mlx5：Devcom，基础设施更改将 devcom 基础设施更新为更通用，不依赖于最大支持端口定义或设备 GUID，并且封装程度更高，因此调用者无需在每次事件调用时传递注册 devcom 组件 ID
+				mlx5_register_hca_devcom_comp
+					mlx5_devcom_register_component MLX5_DEVCOM_HCA_PORTS
+				mlx5_query_board_id
+					MLX5_CMD_OP_QUERY_ADAPTER
+				mlx5_irq_table_init -> net/mlx5：将 IRQ 数据与 EQ 表数据分开 IRQ 表应该仅存在于 mlx5_core_dev（仅适用于 PF 和 VF）。 中断设备的 EQ 表应保存指向父 PCI 设备的 IRQ 表的指针
+				net/mlx5：为 SF 分配 MSI-X 矢量池 SF（子功能）当前使用其父物理功能所具有的全局 IRQ 表中的 IRQ。 为了更好地扩展，我们需要分配更多的IRQ并在不同的SF之间共享它们。 驱动程序将维护 3 个独立的 irq 池： 1. 为 PF 使用者提供服务的池（PF 的 netdev、rdma 堆栈），类似于此补丁之前的驱动程序。 即，该池将在 rdma 和 netev 之间共享 irq，并将保留 irq 索引和分配顺序。 最后一个对于 PF netdev rmap (aRFS) 很重要。 2. SF 的控制 IRQ 池。 该池的大小是可以创建的 SF 数量除以 SFS_PER_IRQ。 该池将服务于 SF 的控制路径 EQ。 3. SF 传输队列的完成数据路径 IRQ 池。 该池的大小为：num_irqs_alulated - pf_pool_size - sf_ctrl_pool_size。 该池将为 netdev 和 rdma 堆栈提供服务。 此外，SF 不支持 rmap。 SF 池的共享方法将在下一个补丁中解释。 重要提示：SF 不支持 rmap，因为 rmap 映射无法为不同 core/netdev RX 环共享的 IRQ 正常工作
+				mlx5_eq_table_init
+					mlx5_eq_debugfs_init
+				mlx5_events_init
+					INIT_WORK(&events->pcie_core_work, mlx5_pcie_event)
+					BLOCKING_INIT_NOTIFIER_HEAD(&events->sw_nh)
+				mlx5_fw_reset_init
+					INIT_WORK mlx5_fw_live_patch_event
+					...
+					init_completion -> 完成：使用简单的等待队列完成使用 wait_queue_head_t 将等待者排队。 wait_queue_head_t 包含一个 spinlock_t 来保护等待者列表，从而排除它在启用 PREEMPT_RT 的内核上的真正原子上下文中使用。 等待队列头中的自旋锁不能被 raw_spinlock 替换，因为： - 等待队列可以有自定义唤醒回调，它获取其他 spinlock_t 锁并且执行时间可能很长 -wake_up() 在唤醒期间遍历无限数量的列表条目 并可能唤醒无数的服务员。 出于简单性和性能原因，complete() 应该可在启用 PREEMPT_RT 的内核上使用。 完成不使用自定义唤醒回调，并且通常是单个等待者，除了一些极端情况。 将完成中的等待队列替换为简单的等待队列（swait），该队列使用 raw_spinlock_t 来保护等待列表，因此可以安全地在 PREEMPT_RT 上的真正原子区域内使用。 没有语义或功能上的变化： - 完成使用 swait 提供的独占等待模式 -complete() 唤醒一个独占等待者 -complete_all() 唤醒所有等待者，同时持有锁，以保护等待队列免受新传入等待者的影响。 转换为 swait 保留了此行为。 complete_all() 可能会导致大量等待者同时被唤醒，从而导致未绑定的延迟，但大多数complete_all() 使用站点要么在测试或初始化代码中，要么只有很少数量的并发等待者，目前不会导致延迟 问题。 现在保持简单。 USB 小工具驱动程序中警告检查的修复只是无锁等待检查从一种等待队列类型到另一种等待队列类型的直接转换
+				mlx5_cq_debugfs_init
+				mlx5_init_reserved_gids
+				mlx5_vxlan_create
+					mlx5_vxlan_add_port -> net：将 IANA_VXLAN_UDP_PORT 定义添加到 vxlan 头文件 将 IANA_VXLAN_UDP_PORT (4789) 定义添加到 vxlan 头文件，以便驱动程序可以使用它而不是本地定义。 更新了本地定义为 4789 的驱动程序以使用它
+				mlx5_geneve_create
+				mlx5_init_rl_table -> net/mlx5：速率限制表支持配置和管理硬件速率限制表。 硬件保存一个速率限制表，每个速率都与该表中的一个索引相关联。 稍后发送队列使用该索引来设置速率限制。 多个发送队列可以具有相同的速率限制，这由该表中的单个条目表示。 尽管可以共享速率，但每个队列都受到独立于其他队列的速率限制。 该表的 SW 影子保存速率本身、HW 表中的索引以及使用该速率的引用计数（队列数）。 导出的函数为 mlx5_rl_add_rate 和 mlx5_rl_remove_rate。 不同速率的数量及其值源自硬件功能
+					MLX5_CAP_QOS
+				mlx5_mpfs_init -> net/mlx5：当启用多 PF 配置以允许将用户配置的单播 MAC 地址传递到请求的 PF 时，需要将 E-Switch 和 MPFS 多物理功能交换机 (MPF) 分开。 在此补丁 eswitch.c 用于管理 HW MPFS L2 表之前，E-Switch 始终（无论 sriov）启用 vport(0) (NIC PF) vport 的上下文在单播 mac 地址列表更改时更新，以填充 PF 的 MPFS L2 表 因此。 在下游补丁中，我们希望允许编译没有 E-Switch 功能的驱动程序，为此，我们将 MPFS l2 表逻辑从 eswitch.c 移至其自己的文件中，并提供 Kconfig 标志 (MLX5_MPFS) 以允许为那些需要编译 MPFS 的人 不想要多 PF 支持。 NIC PF netdevice 现在将通过新的 MPFS API 直接更新 MPFS l2 表。 VF netdevice 无权访问 MPFS L2 表，因此 E-Switch 将继续负责代表其 VF 更新其 MPFS L2 表。 由于此更改，当未启用 SRIOV 时，我们也不再需要启用 vport(0)（PF vport）单播 mac 更改事件。 这意味着 E-Switch 现在仅在 SRIOV 激活时激活，否则不需要
+					mpfs->bitmap = bitmap_zalloc(l2table_size, GFP_KERNEL)
+				mlx5_sriov_init -> net/mlx5_core：添加基本 sriov 支持 此补丁为 mlx5 支持的设备添加了 SRIOV 基本支持。 PF 和 VF 使用相同的驱动程序； VF 由驱动程序通过添加到 pci 表条目的标志 MLX5_PCI_DEV_IS_VF 来识别。 像往常一样，通过将值写入 PF 设备的 sriov_numvs sysfs 文件来创建虚拟函数。 实例化 VF 后，虚拟机管理程序上的驱动程序将探测它们。 人们可以通过 /sys/bus/pci/drivers/mlx5_core/unbind 优雅地解除它们的绑定。 添加 mlx5_wait_for_vf_pages() 是为了确保当 VF 在没有执行正确拆卸的情况下死亡时，虚拟机管理程序驱动程序会等待，直到返回在虚拟机管理程序中分配的用于维持其操作的所有页面。 为了使 VF 能够运行，PF 需要为其调用enable_hca。 这可以在通过调用 pci_enable_sriov 创建 VF 之前完成。 如果卸载 PF 的驱动程序时有分配给 VM 的 VF，则所有 VF 都会出现系统错误，并且 PF 驱动程序卸载干净； 在这种情况下，不会调用 pci_disable_sriov，并且运行 lspci 时将显示设备。 重新加载 PF 驱动程序后，它将同步其数据结构，以维护其 VF 上的状态
+					pci_sriov_get_totalvfs
+					mlx5_get_max_vfs
+					pci_num_vf
+					mlx5_core_ec_sriov_enabled
+				mlx5_eswitch_init -> net/mlx5：介绍 E-Switch 和 l2 表 E-Switch 是代表和管理 ConnectX4 HCA 间以太网 l2 交换的软件实体。 E-Switch有自己的虚拟端口，每个Vport/vNIC/VF都可以通过e-switch的vport连接到设备。 每个 e-switch 由 HCA_CAP.vport_group_manager 标识的一个 vNIC（通常是 PF/vport[0]）管理，其主要职责是将每个数据包转发到正确的 vport。 e-Switch需要管理自己的l2表和FDB表。 L2 表是由 FW 管理的流表，多主机（多 PF）配置需要它以在 PF 之间进行 HCA 间切换。 FDB表是完全由e-Switch驱动程序管理的流表，其主要职责是在属于同一e-Swtich内部vport和上行链路vport之间交换数据包。 此补丁仅引入 e-Swtich l2 表管理，FDB 管理将在稍后启用以太网 SRIOV/VF 时提供。 以太网 sriov 和 l2 表管理的准备
+					devl_params_register
+					mlx5_esw_vports_init
+					esw_offloads_init
+						esw_offloads_init_reps
+						devl_params_register
+                mlx5_fpga_init -> net/mlx5：FPGA，添加对 Innova Mellanox 的基本支持 Innova 是在同一板上具有 ConnectX 和 FPGA 的 NIC。 FPGA 是线上凸块，因此会影响 ConnectX ASIC 上 mlx5_core 驱动程序的运行。 在 mlx5_core 中添加对 Innova 的基本支持。 这允许通过检测 FPGA 功能位并在初始化 ConnectX 接口之前验证其负载状态，将 Innova 卡用作常规 NIC。 还可以检测 FPGA 致命运行时故障并在发生时进入错误状态。 所有新的 FPGA 相关逻辑都放置在其自己的子目录“fpga”中，可以通过选择 CONFIG_MLX5_FPGA 来构建该子目录。 这为以后的补丁集中进一步支持各种 Innova 功能做好了准备。 随着更多功能的提交，将提供有关硬件架构的更多详细信息
+					mlx5_fpga_device_alloc
+                mlx5_vhca_event_init
+					MLX5_NB_INIT(&notifier->nb, mlx5_vhca_state_change_notifier, VHCA_STATE_CHANGE)
+				mlx5_sf_hw_table_init -> net/mlx5：SF，添加端口添加删除功能为了将 eswitch 之外的 SF 端口管理作为独立的软件层进行处理，请引入 eswitch 通知程序 API，以便希望在 switchdev 模式下支持 sf 端口管理的 mlx5 上层可以在 eswitch 时执行其任务 mode 设置为 switchdev 或在 eswitch 禁用之前。 在此类 eswitch 事件上初始化 sf 端口表。 在switchdev模式下添加SF端口添加和删除功能。 禁用 eswitch 时销毁所有 SF 端口。 通过 devlink 命令向用户公开 SF 端口添加和删除
+					mlx5_sf_hw_table_hwc_init
+				mlx5_sf_table_init
+					...
+					blocking_notifier_chain_register
+				mlx5_fs_core_alloc
+					mlx5_init_fc_stats -> net/mlx5_core：流计数器基础结构 如果计数器在创建时设置了老化标志，则会将其添加到将从工作队列定期查询的计数器列表中。 查询结果和上次使用时间戳被缓存。 添加/删除计数器必须非常高效，因为一秒钟可能会发出数千个此类操作。 只有一个对计数器的引用，没有老化，因此不需要锁。 但是，启用老化的计数器存储在列表中。 为了使代码尽可能无锁，所有列表操作和对硬件的访问都是从单个上下文（周期性计数器查询线程）完成的。 硬件支持每个 FTE 使用多个计数器，但目前我们为每个 FTE 使用一个计数器
+						mlx5_fc_stats_work
+						mlx5_fc_pool_init -> net/mlx5：添加流量计数器池 根据流量计数器批量添加流量计数器池，从而无需在流量创建过程中通过昂贵的 FW 命令分配新计数器。 获取/释放流量计数器所需的时间从约 50 [us] 缩短至约 50 [ns]。 该池是 mlx5 驱动程序实例的一部分，并为老化流提供流量计数器。 mlx5_fc_create() 已修改为默认为池中的老化流提供计数器，并且 mlx5_destroy_fc() 已修改为将计数器释放回池以供以后重用。 如果批量分配不受支持或失败，并且对于非老化流，后备行为是分配并释放各个计数器。 该池由流量计数器批量的三个列表组成：完全使用的批量之一、部分使用的批量之一和未使用的批量之一。 首先从部分使用的块中提供计数器，以帮助限制块碎片。 该池维护一个阈值，并努力将可用计数器的数量维持在该阈值以下。 当发出计数器获取请求且没有可用计数器时，池的大小会增加；当批量释放最后一个计数器且可用计数器多于阈值时，池的大小会减小。 所有池大小的更改都是在获取/释放过程的上下文中完成的。 阈值与池提供的已用计数器数量直接相关，同时受到硬性最大值的限制，并且每次分配/释放批量时都会重新计算。 这可确保池仅在大量使用时才为可用计数器消耗大量内存。 当完全填充且处于硬最大值时，可用计数器的缓冲区消耗约 40 [MB]
+					mlx5_ft_pool_init -> 固件目前支持 4 个 4 种大小的池 (FT_POOLS)，以及 16M 的虚拟内存区域 (MLX5_FT_SIZE)，该区域为每个流表池复制。 我们可以为每个池分配最多 	16M 的空间，并通过 mlx5_ft_pool_get_avail_sz 跟踪我们使用了多少空间。 固件目前不会报告任何此类情况。 ESW_POOL预计从大到小排序并匹配固件池
+					kmem_cache_create -> kernel里分配一些小内存用到的是slab分配器, kmem_cache_create()只是分配size大小的缓存，并不会调用对象的构造函数，只有当再调用kmem_cache_alloc()时才会构造对象，另外调用kmem_cache_create()并没有分配slab，是在创建对象的时候发现没有空闲对象，调用cache_grow()分配一个slab，然后再分配对象
+                mlx5_dm_create -> net/mlx5：将设备内存管理移至 mlx5_core 将设备内存分配和释放命令 SW ICM 内存移至 mlx5_core，以向所有 mlx5_core 用户公开此 API。 这是为支持内核中的软件控制做准备，其中需要分配和注册设备内存以进行直接规则插入。 此外，还引入了一个 API，用于使用 create_mkey 命令注册此设备内存以供将来的远程访问操作
+					bitmap_zalloc
+				mlx5_fw_tracer_create -> 实现固件跟踪器逻辑和寄存器访问、初始化和清理流程。 初始化跟踪器将是加载一个流程的一部分，因为多个 PF 将尝试获取所有权，但只有一个会成功并成为跟踪器所有者
+					INIT_WORK mlx5_fw_tracer_ownership_change
+					...
+					mlx5_query_mtrc_caps
+					mlx5_fw_tracer_create_log_buf -> net/mlx5：固件跟踪器，创建跟踪缓冲区并复制字符串数据库 对于每个 PF，执行以下操作： 1- 为跟踪器字符串数据库分配内存，并将字符串从固件读取到软件。 这些字符串稍后将用于解析跟踪。 2- 分配和 DMA 映射跟踪器缓冲区。 将写入缓冲区的跟踪将被解析为一组一个或多个跟踪，称为跟踪消息。 跟踪消息表示类似 C 语言的 printf 字符串。 消息的第一个跟踪保存了指向字符串数据库中正确字符串的指针。 以下跟踪保存消息的变量
+						mlx5_core_dma_dev
+						dma_map_single
+					mlx5_fw_tracer_allocate_strings_db
+					mlx5_fw_tracer_init_saved_traces_array
+				mlx5_hv_vhca_create -> net/mlx5：添加 HV VHCA 基础设施 HV VHCA 是一个基于 HyperV PCI 配置通道提供 PF 到 VF 通信通道的层。 它实现了 Mellanox 的 Inter VHCA 控制通信协议。 该协议包含用于在 PF 和 VF 驱动程序之间传递消息的控制块，以及用于传递实际数据的数据块。 基础设施是基于代理的。 每个代理将负责 VHCA 配置空间中的连续缓冲区块。 该基础设施将代理绑定到它们的块，并且这些代理只能访问读/写分配给它们的缓冲区块。 每个代理将提供三个回调（控制、无效、清理）。 当使用与此代理相关的命令使 block-0 无效时，将调用控制。 如果分配给该代理的块之一无效，则将调用无效回调。 在释放代理之前将调用清理，以清理其所有开放资源或延迟的工作。 Block-0 用作控制块。 来自 PF 的所有执行命令都将由 PF 写入该块。 VF 也会通过在 block-0 上写入来解决这些问题。 其格式由 struct mlx5_hv_vhca_control_block 布局描述
+					create_singlethread_workqueue("mlx5_hv_vhca")
+				mlx5_rsc_dump_create -> net/mlx5：添加对资源转储的支持在驱动程序加载时： - 初始化资源转储数据结构和内存访问工具（mkey 和 pd）。 - 读取包含固件段标识符的资源转储菜单。 每条记录均由段名称 (ASCII) 标识。 在驾驶员的一生中，用户（例如记者）可能会请求每个路段的转储。 用户应创建一个提供段标识符（SW 枚举）和命令键的命令。 作为回报，用户收到命令上下文。 为了接收转储，用户应提供命令上下文和将在其上写入转储内容的内存（与页对齐）。 由于转储可能大于给定内存，因此用户可以重新提交命令，直到收到转储结束的指示。 用户有责任销毁该命令
+            mlx5_load -> net/mlx5：将 load_one 分为三个阶段 使用先前补丁的基础将 mlx5_load_one 流程分解为三个阶段： 1. mlx5_function_setup() 从先前补丁到设置函数 2. mlx5_init_once() 从先前补丁到根据硬件上限 3 初始化软件对象 新的 mlx5_load() 用于加载 mlx5 组件 这为 mlx5 核心设备初始化流程提供了更好的逻辑分离，并将有助于无缝支持创建不同的 mlx5 设备类型，例如 PF、VF 和 SF mlx5 子功能虚拟设备。 此补丁不会更改任何功能
+				mlx5_get_uars_page -> net/mlx5：添加接口以获取对 UAR 的引用 需要对 UAR 的引用才能生成 CQ 或 EQ 门铃。 由于 CQ 或 EQ 门铃都可以使用相同的 UAR 区域生成，而不会对性能产生任何影响，因此我们只是获取对任何可用 UAR 的引用，如果一个不可用，我们会分配它，但我们不会浪费蓝色火焰寄存器 可以提供，我们将使用它们进行后续分配。 我们获取对此类 UAR 的引用并将其放入 mlx5_priv 中，以便任何内核使用者都可以使用它
+					alloc_uars_page
+				mlx5_events_start
+				mlx5_pagealloc_start
+				mlx5_eq_table_create
+					create_async_eqs
+					alloc_rmap
+				mlx5_fw_tracer_init
+				mlx5_fw_reset_events_start
+				mlx5_hv_vhca_init
+				mlx5_rsc_dump_init
+				mlx5_fpga_device_start
+				mlx5_fs_core_init
+				mlx5_core_set_hca_defaults
+				mlx5_vhca_event_start
+				mlx5_sf_hw_table_create
+				mlx5_ec_init
+					mlx5_host_pf_init
+						mlx5_cmd_host_pf_enable_hca
+							MLX5_CMD_OP_ENABLE_HCA
+				mlx5_lag_add_mdev -> net/mlx5：更改链路聚合的所有权模型 链路聚合用于将同一 HCA 的两个 PCI 功能组合到单个逻辑单元中。 这是核心功能，因此应由核心驱动程序管理。 目前情况并非如此。 当我们将链路聚合软件结构存储在较低设备内时，其生命周期（创建/销毁）由 mlx5e 部分决定。 更改所有权模型，使延迟与较低级别驱动程序的生命周期相关，而不是与 mlx5e 部分相关
+					__mlx5_lag_dev_add_mdev -> net/mlx5：链路聚合，如果需要，请正确锁定 eswitch 目前，在进行硬件链路聚合时，我们会检查 eswitch 模式，但由于这不是在锁定下完成的，因此检查无效。 由于代码需要在两个不同设备之间同步，因此需要格外小心。 - 当要更改 eswitch 模式时，如果硬件链路聚合处于活动状态，则销毁它。 - 更改 eswitch 模式时会阻止任何硬件绑定创建。 - 延迟处理绑定事件，直到没有正在进行的模式更改。 - 当附加一个新的 mdev 到 lag 时，阻塞直到没有正在进行的模式改变。 为了完成模式更改，必须锁定界面。 释放锁定并休眠 100 毫秒以允许前进。 由于这是一种非常罕见的情况（如果用户取消绑定和绑定 PCI 功能，同时更改其他 PCI 功能的 eswitch 模式，则可能会发生），因此它对现实世界没有影响。 由于现在需要采用多个 eswitch 模式锁定，lockdep 会抱怨可能的死锁。 为每个 eswitch 注册一把钥匙，让 Lockdep 满意
+						mlx5_devcom_get_next_peer_data
+						mlx5_ldev_get
+						mlx5_ldev_add_mdev
+					mlx5_ldev_add_debugfs
+				mlx5_sriov_attach -> net/mlx5：实现轻量级和模块化内部/pci 错误处理所需的 SRIOV 连接/分离流程。 实现 sriov Attach 功能，该功能可以在设备端预先保存 vfs 的数量。 实现 sriov detach 功能，禁用设备端当前的 vfs。 初始化/清理函数仅处理 sriov 软件上下文分配和销毁
+					mlx5_device_enable_sriov
+						mlx5_eswitch_enable -> net/mlx5：E-switch，保护 eswitch 模式更改 目前，eswitch 模式更改是从以下 2 个不同的执行上下文中发生的。 1. sriov sysfs 启用/禁用 2. devlink eswitch set 命令 两者都需要以同步方式访问 eswitch 相关数据结构。 在没有任何同步的情况下，存在以下竞争条件。 通过 devlink eswitch 模式更改启用/禁用 SR-IOV：
+						mlx5_get_default_msix_vec_count
+						mlx5_set_msix_vec_count
+						sriov_restore_guids
+				mlx5_sf_dev_table_create
+				mlx5_devlink_traps_register
             set_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state)
             mlx5_register_device(dev)
+				mlx5_rescan_drivers_locked
     mlx5_crdump_enable -> net/mlx5：添加 Crdump 支持，Crdump 允许驱动程序检索 FW PCI crspace 的转储。 这在发生可能需要重置固件的灾难性问题时非常有用。 crspace 转储可用于以后的调试
         ...
     mlx5_hwmon_dev_register -> net/mlx5：通过硬件监控内核 API 暴露 NIC 温度 通过实现 hwmon 内核 API 暴露 NIC 温度，这会将当前热区内核 API 变为冗余。 对于每个受支持和公开的热二极管传感器，公开以下属性： 1) 输入温度。 2) 最高温度。 3) 温度标签：取决于固件功能，如果固件不支持传感器命名，则后备命名约定为：“sensorX”，其中 X 是硬件规格（MTMP 寄存器）传感器索引。 4) 温度临界最大值：指警告事件的高阈值。 将公开为 `tempY_crit` hwmon 属性（RO 属性）。 例如，对于 ConnectX5 HCA，该温度值为 105 摄氏度，比硬件关闭温度低 10 度。 5) 温度重置历史记录：重置最高温度。 例如，对于具有单个 IC 热二极管传感器的双端口 ConnectX5 NIC，将在“/sys/class/hwmon/hwmon[X,Y]”下有 2 个 hwmon 目录（每个 PCI 功能一个）。 列出上面的目录之一 (hwmonX/Y) 会生成以下相应的输出：grep -H -d skip . /sys/class/hwmon/hwmon0/*, sensors
@@ -936,7 +1102,7 @@ mlx5_sf_driver_register -> static struct auxiliary_driver mlx5_sf_driver
 pci_register_driver(&mlx5_core_driver)
 
 
-
+核心驱动:
 static struct pci_driver mlx5_core_driver = {
 	.name           = KBUILD_MODNAME,
 	.id_table       = mlx5_core_pci_table,
@@ -946,9 +1112,9 @@ static struct pci_driver mlx5_core_driver = {
 	.resume         = mlx5_resume,
 	.shutdown	= shutdown,
 	.err_handler	= &mlx5_err_handler,
-	.sriov_configure   = mlx5_core_sriov_configure,
-	.sriov_get_vf_total_msix = mlx5_sriov_get_vf_total_msix,
-	.sriov_set_msix_vec_count = mlx5_core_sriov_set_msix_vec_count,
+	.sriov_configure   = mlx5_core_sriov_configure, / 支持sriov功能需要实现的函数 /
+	.sriov_get_vf_total_msix = mlx5_sriov_get_vf_total_msix, //  PF 驱动程序回调以获取可用于分发到VF 的MSI-X 向量的总数
+	.sriov_set_msix_vec_count = mlx5_core_sriov_set_msix_vec_count, // PF 驱动程序回调以更改 VF 上的 MSI-X 向量的数量
 };
 
 static struct auxiliary_driver mlx5_sf_driver = {
@@ -1118,4 +1284,219 @@ $ devlink dev reload auxiliary/mlx5_core.sf.1
 此时，用户拥有仅用于以太网功能的带有辅助设备的 SF devlink 实例
 
 
+命令操作:
+const char *mlx5_command_str(int command)
+{
+#define MLX5_COMMAND_STR_CASE(__cmd) case MLX5_CMD_OP_ ## __cmd: return #__cmd
+
+	switch (command) {
+	MLX5_COMMAND_STR_CASE(QUERY_HCA_CAP);
+	MLX5_COMMAND_STR_CASE(QUERY_ADAPTER);
+	MLX5_COMMAND_STR_CASE(INIT_HCA);
+	MLX5_COMMAND_STR_CASE(TEARDOWN_HCA);
+	MLX5_COMMAND_STR_CASE(ENABLE_HCA);
+	MLX5_COMMAND_STR_CASE(DISABLE_HCA);
+	MLX5_COMMAND_STR_CASE(QUERY_PAGES);
+	MLX5_COMMAND_STR_CASE(MANAGE_PAGES);
+	MLX5_COMMAND_STR_CASE(SET_HCA_CAP);
+	MLX5_COMMAND_STR_CASE(QUERY_ISSI);
+	MLX5_COMMAND_STR_CASE(SET_ISSI);
+	MLX5_COMMAND_STR_CASE(SET_DRIVER_VERSION);
+	MLX5_COMMAND_STR_CASE(CREATE_MKEY);
+	MLX5_COMMAND_STR_CASE(QUERY_MKEY);
+	MLX5_COMMAND_STR_CASE(DESTROY_MKEY);
+	MLX5_COMMAND_STR_CASE(QUERY_SPECIAL_CONTEXTS);
+	MLX5_COMMAND_STR_CASE(PAGE_FAULT_RESUME);
+	MLX5_COMMAND_STR_CASE(CREATE_EQ);
+	MLX5_COMMAND_STR_CASE(DESTROY_EQ);
+	MLX5_COMMAND_STR_CASE(QUERY_EQ);
+	MLX5_COMMAND_STR_CASE(GEN_EQE);
+	MLX5_COMMAND_STR_CASE(CREATE_CQ);
+	MLX5_COMMAND_STR_CASE(DESTROY_CQ);
+	MLX5_COMMAND_STR_CASE(QUERY_CQ);
+	MLX5_COMMAND_STR_CASE(MODIFY_CQ);
+	MLX5_COMMAND_STR_CASE(CREATE_QP);
+	MLX5_COMMAND_STR_CASE(DESTROY_QP);
+	MLX5_COMMAND_STR_CASE(RST2INIT_QP);
+	MLX5_COMMAND_STR_CASE(INIT2RTR_QP);
+	MLX5_COMMAND_STR_CASE(RTR2RTS_QP);
+	MLX5_COMMAND_STR_CASE(RTS2RTS_QP);
+	MLX5_COMMAND_STR_CASE(SQERR2RTS_QP);
+	MLX5_COMMAND_STR_CASE(2ERR_QP);
+	MLX5_COMMAND_STR_CASE(2RST_QP);
+	MLX5_COMMAND_STR_CASE(QUERY_QP);
+	MLX5_COMMAND_STR_CASE(SQD_RTS_QP);
+	MLX5_COMMAND_STR_CASE(INIT2INIT_QP);
+	MLX5_COMMAND_STR_CASE(CREATE_PSV);
+	MLX5_COMMAND_STR_CASE(DESTROY_PSV);
+	MLX5_COMMAND_STR_CASE(CREATE_SRQ);
+	MLX5_COMMAND_STR_CASE(DESTROY_SRQ);
+	MLX5_COMMAND_STR_CASE(QUERY_SRQ);
+	MLX5_COMMAND_STR_CASE(ARM_RQ);
+	MLX5_COMMAND_STR_CASE(CREATE_XRC_SRQ);
+	MLX5_COMMAND_STR_CASE(DESTROY_XRC_SRQ);
+	MLX5_COMMAND_STR_CASE(QUERY_XRC_SRQ);
+	MLX5_COMMAND_STR_CASE(ARM_XRC_SRQ);
+	MLX5_COMMAND_STR_CASE(CREATE_DCT);
+	MLX5_COMMAND_STR_CASE(DESTROY_DCT);
+	MLX5_COMMAND_STR_CASE(DRAIN_DCT);
+	MLX5_COMMAND_STR_CASE(QUERY_DCT);
+	MLX5_COMMAND_STR_CASE(ARM_DCT_FOR_KEY_VIOLATION);
+	MLX5_COMMAND_STR_CASE(QUERY_VPORT_STATE);
+	MLX5_COMMAND_STR_CASE(MODIFY_VPORT_STATE);
+	MLX5_COMMAND_STR_CASE(QUERY_ESW_VPORT_CONTEXT);
+	MLX5_COMMAND_STR_CASE(MODIFY_ESW_VPORT_CONTEXT);
+	MLX5_COMMAND_STR_CASE(QUERY_NIC_VPORT_CONTEXT);
+	MLX5_COMMAND_STR_CASE(MODIFY_NIC_VPORT_CONTEXT);
+	MLX5_COMMAND_STR_CASE(QUERY_ROCE_ADDRESS);
+	MLX5_COMMAND_STR_CASE(SET_ROCE_ADDRESS);
+	MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_CONTEXT);
+	MLX5_COMMAND_STR_CASE(MODIFY_HCA_VPORT_CONTEXT);
+	MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_GID);
+	MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_PKEY);
+	MLX5_COMMAND_STR_CASE(QUERY_VNIC_ENV);
+	MLX5_COMMAND_STR_CASE(QUERY_VPORT_COUNTER);
+	MLX5_COMMAND_STR_CASE(ALLOC_Q_COUNTER);
+	MLX5_COMMAND_STR_CASE(DEALLOC_Q_COUNTER);
+	MLX5_COMMAND_STR_CASE(QUERY_Q_COUNTER);
+	MLX5_COMMAND_STR_CASE(SET_MONITOR_COUNTER);
+	MLX5_COMMAND_STR_CASE(ARM_MONITOR_COUNTER);
+	MLX5_COMMAND_STR_CASE(SET_PP_RATE_LIMIT);
+	MLX5_COMMAND_STR_CASE(QUERY_RATE_LIMIT);
+	MLX5_COMMAND_STR_CASE(CREATE_SCHEDULING_ELEMENT);
+	MLX5_COMMAND_STR_CASE(DESTROY_SCHEDULING_ELEMENT);
+	MLX5_COMMAND_STR_CASE(QUERY_SCHEDULING_ELEMENT);
+	MLX5_COMMAND_STR_CASE(MODIFY_SCHEDULING_ELEMENT);
+	MLX5_COMMAND_STR_CASE(CREATE_QOS_PARA_VPORT);
+	MLX5_COMMAND_STR_CASE(DESTROY_QOS_PARA_VPORT);
+	MLX5_COMMAND_STR_CASE(ALLOC_PD);
+	MLX5_COMMAND_STR_CASE(DEALLOC_PD);
+	MLX5_COMMAND_STR_CASE(ALLOC_UAR);
+	MLX5_COMMAND_STR_CASE(DEALLOC_UAR);
+	MLX5_COMMAND_STR_CASE(CONFIG_INT_MODERATION);
+	MLX5_COMMAND_STR_CASE(ACCESS_REG);
+	MLX5_COMMAND_STR_CASE(ATTACH_TO_MCG);
+	MLX5_COMMAND_STR_CASE(DETACH_FROM_MCG);
+	MLX5_COMMAND_STR_CASE(GET_DROPPED_PACKET_LOG);
+	MLX5_COMMAND_STR_CASE(MAD_IFC);
+	MLX5_COMMAND_STR_CASE(QUERY_MAD_DEMUX);
+	MLX5_COMMAND_STR_CASE(SET_MAD_DEMUX);
+	MLX5_COMMAND_STR_CASE(NOP);
+	MLX5_COMMAND_STR_CASE(ALLOC_XRCD);
+	MLX5_COMMAND_STR_CASE(DEALLOC_XRCD);
+	MLX5_COMMAND_STR_CASE(ALLOC_TRANSPORT_DOMAIN);
+	MLX5_COMMAND_STR_CASE(DEALLOC_TRANSPORT_DOMAIN);
+	MLX5_COMMAND_STR_CASE(QUERY_CONG_STATUS);
+	MLX5_COMMAND_STR_CASE(MODIFY_CONG_STATUS);
+	MLX5_COMMAND_STR_CASE(QUERY_CONG_PARAMS);
+	MLX5_COMMAND_STR_CASE(MODIFY_CONG_PARAMS);
+	MLX5_COMMAND_STR_CASE(QUERY_CONG_STATISTICS);
+	MLX5_COMMAND_STR_CASE(ADD_VXLAN_UDP_DPORT);
+	MLX5_COMMAND_STR_CASE(DELETE_VXLAN_UDP_DPORT);
+	MLX5_COMMAND_STR_CASE(SET_L2_TABLE_ENTRY);
+	MLX5_COMMAND_STR_CASE(QUERY_L2_TABLE_ENTRY);
+	MLX5_COMMAND_STR_CASE(DELETE_L2_TABLE_ENTRY);
+	MLX5_COMMAND_STR_CASE(SET_WOL_ROL);
+	MLX5_COMMAND_STR_CASE(QUERY_WOL_ROL);
+	MLX5_COMMAND_STR_CASE(CREATE_LAG);
+	MLX5_COMMAND_STR_CASE(MODIFY_LAG);
+	MLX5_COMMAND_STR_CASE(QUERY_LAG);
+	MLX5_COMMAND_STR_CASE(DESTROY_LAG);
+	MLX5_COMMAND_STR_CASE(CREATE_VPORT_LAG);
+	MLX5_COMMAND_STR_CASE(DESTROY_VPORT_LAG);
+	MLX5_COMMAND_STR_CASE(CREATE_TIR);
+	MLX5_COMMAND_STR_CASE(MODIFY_TIR);
+	MLX5_COMMAND_STR_CASE(DESTROY_TIR);
+	MLX5_COMMAND_STR_CASE(QUERY_TIR);
+	MLX5_COMMAND_STR_CASE(CREATE_SQ);
+	MLX5_COMMAND_STR_CASE(MODIFY_SQ);
+	MLX5_COMMAND_STR_CASE(DESTROY_SQ);
+	MLX5_COMMAND_STR_CASE(QUERY_SQ);
+	MLX5_COMMAND_STR_CASE(CREATE_RQ);
+	MLX5_COMMAND_STR_CASE(MODIFY_RQ);
+	MLX5_COMMAND_STR_CASE(DESTROY_RQ);
+	MLX5_COMMAND_STR_CASE(QUERY_RQ);
+	MLX5_COMMAND_STR_CASE(CREATE_RMP);
+	MLX5_COMMAND_STR_CASE(MODIFY_RMP);
+	MLX5_COMMAND_STR_CASE(DESTROY_RMP);
+	MLX5_COMMAND_STR_CASE(QUERY_RMP);
+	MLX5_COMMAND_STR_CASE(CREATE_TIS);
+	MLX5_COMMAND_STR_CASE(MODIFY_TIS);
+	MLX5_COMMAND_STR_CASE(DESTROY_TIS);
+	MLX5_COMMAND_STR_CASE(QUERY_TIS);
+	MLX5_COMMAND_STR_CASE(CREATE_RQT);
+	MLX5_COMMAND_STR_CASE(MODIFY_RQT);
+	MLX5_COMMAND_STR_CASE(DESTROY_RQT);
+	MLX5_COMMAND_STR_CASE(QUERY_RQT);
+	MLX5_COMMAND_STR_CASE(SET_FLOW_TABLE_ROOT);
+	MLX5_COMMAND_STR_CASE(CREATE_FLOW_TABLE);
+	MLX5_COMMAND_STR_CASE(DESTROY_FLOW_TABLE);
+	MLX5_COMMAND_STR_CASE(QUERY_FLOW_TABLE);
+	MLX5_COMMAND_STR_CASE(CREATE_FLOW_GROUP);
+	MLX5_COMMAND_STR_CASE(DESTROY_FLOW_GROUP);
+	MLX5_COMMAND_STR_CASE(QUERY_FLOW_GROUP);
+	MLX5_COMMAND_STR_CASE(SET_FLOW_TABLE_ENTRY);
+	MLX5_COMMAND_STR_CASE(QUERY_FLOW_TABLE_ENTRY);
+	MLX5_COMMAND_STR_CASE(DELETE_FLOW_TABLE_ENTRY);
+	MLX5_COMMAND_STR_CASE(ALLOC_FLOW_COUNTER);
+	MLX5_COMMAND_STR_CASE(DEALLOC_FLOW_COUNTER);
+	MLX5_COMMAND_STR_CASE(QUERY_FLOW_COUNTER);
+	MLX5_COMMAND_STR_CASE(MODIFY_FLOW_TABLE);
+	MLX5_COMMAND_STR_CASE(ALLOC_PACKET_REFORMAT_CONTEXT);
+	MLX5_COMMAND_STR_CASE(DEALLOC_PACKET_REFORMAT_CONTEXT);
+	MLX5_COMMAND_STR_CASE(ALLOC_MODIFY_HEADER_CONTEXT);
+	MLX5_COMMAND_STR_CASE(DEALLOC_MODIFY_HEADER_CONTEXT);
+	MLX5_COMMAND_STR_CASE(FPGA_CREATE_QP);
+	MLX5_COMMAND_STR_CASE(FPGA_MODIFY_QP);
+	MLX5_COMMAND_STR_CASE(FPGA_QUERY_QP);
+	MLX5_COMMAND_STR_CASE(FPGA_QUERY_QP_COUNTERS);
+	MLX5_COMMAND_STR_CASE(FPGA_DESTROY_QP);
+	MLX5_COMMAND_STR_CASE(CREATE_XRQ);
+	MLX5_COMMAND_STR_CASE(DESTROY_XRQ);
+	MLX5_COMMAND_STR_CASE(QUERY_XRQ);
+	MLX5_COMMAND_STR_CASE(ARM_XRQ);
+	MLX5_COMMAND_STR_CASE(CREATE_GENERAL_OBJECT);
+	MLX5_COMMAND_STR_CASE(DESTROY_GENERAL_OBJECT);
+	MLX5_COMMAND_STR_CASE(MODIFY_GENERAL_OBJECT);
+	MLX5_COMMAND_STR_CASE(QUERY_GENERAL_OBJECT);
+	MLX5_COMMAND_STR_CASE(QUERY_MODIFY_HEADER_CONTEXT);
+	MLX5_COMMAND_STR_CASE(ALLOC_MEMIC);
+	MLX5_COMMAND_STR_CASE(DEALLOC_MEMIC);
+	MLX5_COMMAND_STR_CASE(QUERY_ESW_FUNCTIONS);
+	MLX5_COMMAND_STR_CASE(CREATE_UCTX);
+	MLX5_COMMAND_STR_CASE(DESTROY_UCTX);
+	MLX5_COMMAND_STR_CASE(CREATE_UMEM);
+	MLX5_COMMAND_STR_CASE(DESTROY_UMEM);
+	MLX5_COMMAND_STR_CASE(RELEASE_XRQ_ERROR);
+	MLX5_COMMAND_STR_CASE(MODIFY_XRQ);
+	MLX5_COMMAND_STR_CASE(QUERY_VHCA_STATE);
+	MLX5_COMMAND_STR_CASE(MODIFY_VHCA_STATE);
+	MLX5_COMMAND_STR_CASE(ALLOC_SF);
+	MLX5_COMMAND_STR_CASE(DEALLOC_SF);
+	MLX5_COMMAND_STR_CASE(SUSPEND_VHCA);
+	MLX5_COMMAND_STR_CASE(RESUME_VHCA);
+	MLX5_COMMAND_STR_CASE(QUERY_VHCA_MIGRATION_STATE);
+	MLX5_COMMAND_STR_CASE(SAVE_VHCA_STATE);
+	MLX5_COMMAND_STR_CASE(LOAD_VHCA_STATE);
+	MLX5_COMMAND_STR_CASE(SYNC_CRYPTO);
+	MLX5_COMMAND_STR_CASE(ALLOW_OTHER_VHCA_ACCESS);
+	default: return "unknown command opcode";
+	}
+}
+
+
+
+vlan header:
+#define IANA_VXLAN_UDP_PORT     4789
+#define IANA_VXLAN_GPE_UDP_PORT 4790
+
+/* VXLAN protocol (RFC 7348) header:
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |R|R|R|R|I|R|R|R|               Reserved                        |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                VXLAN Network Identifier (VNI) |   Reserved    |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *
+ * I = VXLAN Network Identifier (VNI) present.
+ */
 
