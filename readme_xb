@@ -397,6 +397,15 @@ static int probe_one
                             ...
                             cmd_exec
                                 u16 opcode = in_to_opcode(in) -> const char *mlx5_command_str(int command) -> 命令转可读字符串
+								mlx5_cmd_invoke
+									cmd_alloc_ent
+									init_completion
+									cb_timeout_handler
+									cmd_work_handler -> Mellanox ConnectX-6-dx智能网卡 openvswitch 流表卸载源码分析: https://blog.csdn.net/qq_20679687/article/details/131632198
+										...
+									wait_func
+									xa_load
+									cmd_ent_put
                     mlx5_core_set_issi -> net/mlx5：扩展 mlx5_core 以支持 ConnectX-4 以太网功能 这是 Mellanox ConnectX(R)-4 单/双端口适配器驱动程序的以太网部分，通过 VPI 支持 100Gb/s。 该驱动程序通过以太网功能扩展了现有的 mlx5 驱动程序。 该补丁包含驱动程序入口点，但不包括发送和接收（请参阅本系列中的上一个补丁）例程。 它还向 Kconfig 添加了选项 MLX5_CORE_EN 以启用/禁用以太网功能。 目前，Kconfig 被编程为使以太网和 Infiniband 功能相互排斥。 还将 MLX5_INFINIBAND 更改为依赖于 MLX5_CORE，而不是选择它，因为可以在不选择 MLX5_INFINIBAND 的情况下选择 MLX5_CORE
                         MLX5_CMD_OP_QUERY_ISSI
                     mlx5_satisfy_startup_pages -> mlx5_core：实现新的初始化序列引入enbale_hca和disable_hca命令来表示驱动程序何时启动或停止在设备上运行。 此外，驱动程序将使用引导和初始化页面计数； 需要引导页来允许固件完成引导命令，而另一个则完成 init hca。 命令接口版本已增加到 4，以强制使用支持的固件。 该补丁破坏了与旧版本固件（< 4）的兼容性； 但是，我们将发布的第一个 GA 固件将支持版本 4，因此这应该不是问题
@@ -407,6 +416,9 @@ static int probe_one
 							alloc_4k
 							alloc_system_page
 							mlx5_cmd_do
+								cmd_exec
+								op_mod = MLX5_GET(mbox_in, in, op_mod)
+								opcode = in_to_opcode(in)
 							mlx5_cmd_check
                     mlx5_tout_query_dtor -> default timeouts register (DTOR)
 						mlx5_core_access_reg
@@ -1499,4 +1511,243 @@ vlan header:
  *
  * I = VXLAN Network Identifier (VNI) present.
  */
+
+
+
+.unlocked_ioctl = ib_uverbs_ioctl
+...
+user space
+ioctl(context->cmd_fd, RDMA_VERBS_IOCTL, &cmd->hdr)
+...
+ib_uverbs_ioctl
+	unlikely(cmd != RDMA_VERBS_IOCTL)
+	copy_from_user
+	srcu_read_lock
+	ib_uverbs_cmd_verbs -> IB/uverbs：使用 uverbs_api 解组 ioctl 命令 转换 ioctl 方法系统调用路径以使用 uverbs_api 数据结构。 新的 uapi 结构包含所有相同的信息，只是以不同且更优化的方式。 - 对于与属性相关的所有内容，使用 attr_bkey 而不是 2 级基数树。 这包括属性存储、存在以及缺失强制属性的检测。 - 避免在完成时迭代所有属性存储，而是使用 find_first_bit 和 attr_bkey 来仅定位那些需要清理的属性。 - 组织事物始终运行并始终依赖清理。 这避免了一堆棘手的错误展开情况。 - 使用基数树定位方法，并使用非常高效的增量基数树查找来定位属性 - 使用预先计算的 destroy_bkey 来处理 uobject 销毁 - 使用预先计算的分配大小和预先计算的“need_stack”以避免快速路径中的数学运算。 如果用户空间不传递（许多）不支持的属性，这是最佳的。 总的来说，这为属性访问器带来了更好的代码生成，所有内容现在都存储在由 attr_bkey 索引的位图或线性数组中。 编译器可以在编译时计算所有方法属性的 attr_bkey 值，这意味着像 uverbs_attr_is_valid() 这样的东西现在编译成单指令位测试
+		radix_tree_iter_lookup
+			uapi_key_ioctl_method(hdr->method_id)
+		ib_uverbs_run_method
+			...
+			ib_uverbs_alloc_pd -> IB_USER_VERBS_CMD_ALLOC_PD
+				uverbs_request
+				uobj_alloc(UVERBS_OBJECT_PD, attrs, &ib_dev)
+				rdma_zalloc_drv_obj
+				ib_dev->ops.alloc_pd(pd, &attrs->driver_udata) -> .alloc_pd =  -> mlx5_ib_alloc_pd
+					rdma_udata_to_drv_context
+					mlx5_cmd_exec_inout(to_mdev(ibdev)->mdev, alloc_pd, in, out) -> 命令框架
+						...
+					ib_copy_to_udata
+				uobj_finalize_uobj_create
+				uverbs_response
+		bundle_destroy
+	srcu_read_unlock
+
+
+uverbs_core_api
+uverbs_def_write_intf
+
+
+uverbs
+module_init(ib_uverbs_init) -> [PATCH] IB uverbs：核心实现，添加 InfiniBand 用户空间动词实现的核心，包括创建字符设备节点、从用户空间分派请求以及将事件通知传递回用户空间
+    register_chrdev_region
+    alloc_chrdev_region
+    class_register
+    ...
+    ib_register_client(&uverbs_client)
+
+
+probe, add(dev)
+ib_register_device -> roce和IB注册的flow: https://blog.csdn.net/tiantao2012/article/details/77746141
+enable_device_and_get
+add_client_context
+    client->add(device)
+
+
+static struct ib_client uverbs_client = {
+	.name   = "uverbs",
+	.no_kverbs_req = true,
+	.add    = ib_uverbs_add_one,
+	.remove = ib_uverbs_remove_one,
+	.get_nl_info = ib_uverbs_get_nl_info,
+};
+
+ib_uverbs_add_one  -> RDMA：允许 ib_client 在调用 add() 时失败，添加客户端时不允许失败，但所有客户端在其添加例程中都有各种失败路径。 这会产生一种非常边缘的情况：添加客户端后，在添加过程中失败并且未设置 client_data。 然后，核心代码仍然会使用 NULL client_data 调用其他以 client_data 为中心的操作，例如 remove()、rename()、get_nl_info() 和 get_net_dev_by_params() - 这是令人困惑和意外的。 如果 add() 回调失败，则不要再为设备调用任何客户端操作，甚至删除。 删除操作回调中现在对 NULL client_data 的所有冗余检查。 更新所有 add() 回调以正确返回错误代码。 EOPNOTSUPP 用于 ULP 不支持 ib_device 的情况 - 例如，因为它仅适用于 IB
+参考: https://www.cnblogs.com/vlhn/p/8301427.html
+    ib_uverbs_create_uapi
+        uverbs_alloc_api
+			uapi_merge_def(uapi, ibdev, uverbs_core_api, false)
+    dev_set_name
+    cdev_init
+    cdev_device_add
+    ib_set_client_data
+
+
+
+Mellanox ConnectX-6-dx智能网卡 openvswitch 流表卸载源码分析: https://blog.csdn.net/qq_20679687/article/details/131632198
+// -------- ovs -----------------
+// --- ovs vswitchd 主线程 -----------------
+// 首包触发卸载，后续包走datapath转发或硬件转发
+dp_netdev_flow_add
+    dpcls_insert(cls, &flow->cr, &mask);  // datapath缓存流转发规则
+	// 入队 卸载任务队列
+    queue_netdev_flow_put(pmd, flow, match, actions, actions_len, DP_NETDEV_FLOW_OFFLOAD_OP_ADD);
+
+// --- ovs offload_main 卸载线程 -----
+dp_netdev_flow_offload_main    // 通过队列+poll的方式，该线程 异步处理 来自ovs主线程的卸载任务队列。
+    dp_offload_flow(offload);
+        // netdev offload
+        dp_netdev_flow_offload_put  // 单独的一个线程 dp_netdev_flow_offload_main
+        netdev_flow_put->flow_ flow_api->flow_put
+            netdev_offload_dpdk_flow_put
+                netdev_offload_dpdk_add_flow
+                    netdev_offload_dpdk_action
+                        netdev_offload_dpdk_flow_create
+                            netdev_dpdk_rte_flow_create
+                                // ---- dpdk rte_flow ----------------------
+                                rte_flow_create()
+                                 ==>mlx5_flow_create    // dpdk: drivers/net/mlx5/mlx5_flow.c
+                                        mlx5_flow_list_create
+                                            flow_idx = flow_list_create(dev, type, attr, items, original_actions, 
+                                                                        external, wks, error);
+                                                flow_drv_translate(dev, dev_flow,&attr_tx, items_tx.items,
+                                                                   actions_hairpin_tx.actions, error);
+                                                    fops->translate(dev, dev_flow, attr, items, actions, error);
+                                                     ==>flow_dv_translate(dev, dev_flow, attr, items, actions, error)  # 详见下方
+                                                flow_drv_validate()
+                                                flow_drv_apply(dev, flow, error);
+                                                    fops->apply(dev, flow, error);
+                                                     ==>flow_dv_apply     # 详见下方
+
+// 分析 flow_dv_translate 
+	for (; !actions_end ; actions++) {
+        // parse action
+    }
+	dev_flow->act_flags = action_flags;
+	flow_dv_matcher_register(dev, &matcher, &tbl_key, dev_flow, tunnel, attr->group, error)
+
+// 分析 flow_dv_apply
+flow_dv_apply
+     mlx5_flow_os_create_flow(dv_h->matcher->matcher_object,(void *)&dv->value, n,dv->actions, &dh->drv_flow);
+		*flow = mlx5_glue->dv_create_flow(matcher, match_value,num_actions, actions);
+			mlx5_glue_dv_create_flow
+                mlx5dv_dr_rule_create(matcher, match_value, num_actions,(struct mlx5dv_dr_action **)actions);
+                	==>用户态驱动 详见下小节
+	                mlx5dv_dr_rule_create(matcher, match_value, num_actions,(struct mlx5dv_dr_action **)actions);
+					==>内核态驱动 详见下下小节
+					__mlx5_glue_dv_create_flow(matcher, match_value,num_actions, actions_attr);
+
+
+
+// --- rdma-core --------
+mlx5dv_dr_rule_create(matcher, match_value, num_actions,(struct mlx5dv_dr_action **)actions);
+    dr_rule_create_rule(matcher, value, num_actions, actions);
+        dr_rule_create_rule_fdb(rule, &param,num_actions, actions);
+            dr_rule_create_rule_nic(rule, &rule->tx, &copy_param,num_actions, actions);
+                dr_rule_send_update_list(&send_ste_list, dmn, true, nic_rule->lock_index);
+                    dr_rule_handle_one_ste_in_update_list(ste_info,dmn,send_ring_idx);
+                        dr_send_postsend_ste(dmn, ste_info->ste, ste_info->data,ste_info->size,
+                                             ste_info->offset,send_ring_idx);
+                            dr_postsend_icm_data(dmn, &send_info, ring_idx);	
+                                dr_post_send(send_ring->qp, send_info);   // 走rdma通道 
+                                    /* Write. false, because we delay the post_send_db till the coming READ */
+                                    dr_rdma_segments(dr_qp, send_info->remote_addr, send_info->rkey,
+                                             &send_info->write, MLX5_OPCODE_RDMA_WRITE, false);
+                                    /* Read. true, because we send WRITE + READ together */
+                                    dr_rdma_segments(dr_qp, send_info->remote_addr, send_info->rkey,
+                                             &send_info->read, MLX5_OPCODE_RDMA_READ, true);
+
+// --- dpdk ---------------
+mlx5_glue_dv_create_flow()
+	__mlx5_glue_dv_create_flow(matcher, match_value,num_actions, actions_attr);
+// --- rdma mlx5dv_create_flow in rdma-core providers/mlx5/verbs.c ---
+	dvops->create_flow(flow_matcher,match_value,num_actions,actions_attr,NULL);
+        _mlx5dv_create_flow
+            fill_attr_in_uint32(cmd,MLX5_IB_ATTR_CREATE_FLOW_FLAGS,MLX5_IB_ATTR_CREATE_FLOW_FLAGS_DEFAULT_MISS);
+            execute_ioctl(flow_matcher->context, cmd); // call kernel ioctl
+// --- kernel space -- mlx5_ib.ko mlx_core.ko -------------
+// ib_core dispatch message to mlx5_ib
+UVERBS_HANDLER(MLX5_IB_METHOD_CREATE_FLOW)   // drivers/infiniband/hw/mlx5/fs.c
+	get_dests
+    	uverbs_get_flags32
+    		uverbs_get_flags64(&flags, attrs_bundle, idx, allowed_bits);
+            raw_fs_rule_add(dev, fs_matcher, &flow_context, &flow_act,counter_id, cmd_in, inlen, dest_id, dest_type);
+                _create_raw_flow_rule
+                    mlx5_add_flow_rules(ft, spec,flow_act, dst, dst_num);  // drivers/net/ethernet/mellanox/mlx5/core/fs_core.c
+                        rule = add_rule_fg(g, spec, flow_act, dest, dest_num, fte);
+                            handle = add_rule_fte(fte, fg, dest, dest_num,old_action != flow_act->action);
+                                root->cmds->update_fte(root, ft, fg, modify_mask, fte)
+                                    mlx5_cmd_update_fte
+                                        mlx5_cmd_set_fte(dev, opmod, modify_mask, ft, fg->id, fte);
+                                            mlx5_cmd_exec(dev, in, inlen, out, sizeof(out));
+                                                mlx5_cmd_do(dev, in, in_size, out, out_size);
+                                                    cmd_exec(dev, in, in_size, out, out_size, NULL, NULL, false);
+                                                        cmd_work_handler
+															down(sem)
+                                                            lay = get_inst(cmd, ent->idx);
+                                                                return cmd->cmd_buf + (idx << cmd->log_stride);
+                                                            memset(lay, 0, sizeof(*lay));
+                                                            memcpy(lay->in, ent->in->first.data, sizeof(lay->in));
+															lay->type = MLX5_PCI_CMD_XPORT
+                                                            lay->status_own = CMD_OWNER_HW; // transfer ownership to hardware
+															wmb()
+                                                            iowrite32be(1 << ent->idx, &dev->iseg->cmd_dbell);
+                                                            // polling reg for completion
+                                                            mlx5_cmd_comp_handler(dev, 1ULL << ent->idx, ent->ret == -ETIMEDOUT ?
+                                                                      MLX5_CMD_COMP_TYPE_FORCED : MLX5_CMD_COMP_TYPE_POLLING);
+// ovs kernel datapath 路径
+// -- user space ---
+dpif_netlink_operate
+ -->try_send_to_netdev   // 先卸载。这里会卡住。
+    dpif_netlink_operate_chunks // 再转发
+	    dpif_netlink_operate__
+    		dpif_netlink_init_flow_put  // netlink
+// -- kernel space ---
+    ovs_flow_cmd_new()
+    	ovs_flow_tbl_lookup(&dp->table, &new_flow->key);
+		ovs_flow_tbl_insert(&dp->table, new_flow, &mask);
+
+// ovs卸载路径
+// --- user space ---
+dpif_netlink_operate
+    try_send_to_netdev
+		parse_flow_put(dpif, put);
+			netdev_flow_put(dev, &match,...)
+			flow_api->flow_put(netdev,...）
+                netdev_tc_flow_put()
+					tc_replace_flower(&id, &flower);   // netlink 通信。组装tc-flow指令给tc内核模块
+// --- kernel space ------
+tc_ctl_tfilter // tc module。不属于ovs代码
+    // 代表口卸载
+    mlx5e_rep_indr_setup_tc_cb  // mlx5_core.ko
+        mlx5e_rep_indr_offload(priv->netdev, type_data, priv,flags);
+            mlx5e_configure_flower(netdev, priv, flower, flags)
+                mlx5e_tc_add_flow(priv, f, flags, dev, &flow);
+                    mlx5e_add_fdb_flow(priv, f, flow_flags,filter_dev, flow);
+                        mlx5e_tc_offload_fdb_rules
+                            mlx5_eswitch_add_offloaded_rule
+                             ==>mlx5_add_flow_rules   //与 rte_flow/ib一样的底层调用接口
+                               
+// data structure
+const struct net_device_ops mlx5e_netdev_ops = {
+    .ndo_setup_tc            = mlx5e_setup_tc,
+}
+
+udpif_revalidator()
+    revalidate(revalidator);
+        dpif_flow_dump_next
+            dpif->dpif_class->flow_dump_next(thread, flows, max_flows);
+                dpif_netdev_flow_dump_next
+                    dp_netdev_flow_to_dpif_flow
+                        get_dpif_flow_status()
+                            dpif_netdev_get_flow_offload_status()
+                                netdev_offload_dpdk_flow_get
+                                    netdev_dpdk_rte_flow_query_count
+                                     ==>rte_flow_query()
+// --- rte_flow_query in dpdk -----------
+rte_flow_query
+	flow_dv_query
+		flow_dv_query_count
+			_flow_dv_query_count(dev, cnt_idx, &pkts, &bytes);
+				cnt = flow_dv_counter_get_by_idx(dev, counter, NULL);
+					MLX5_POOL_GET_CNT(pool, idx % MLX5_COUNTERS_PER_POOL);  // 直接读硬件统计寄存器
 

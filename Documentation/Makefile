@@ -4,6 +4,7 @@
 
 # for cleaning
 subdir- := devicetree/bindings
+#srctree := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../)
 
 # Check for broken documentation file references
 ifeq ($(CONFIG_WARN_MISSING_DOCUMENTS),y)
