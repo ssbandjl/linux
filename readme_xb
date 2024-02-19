@@ -271,14 +271,163 @@ ice_module_init
 	pci_register_driver
 
 
+drivers/net/ethernet/intel/ice/ice_main.c
+.probe = ice_probe,
 ice_probe
+	struct ice_pf *pf
+	struct ice_hw *hw
+	is_kdump_kernel -> 当在 kdump 内核下时，在启用设备之前启动重置，以清除任何挂起的 DMA 事务。 这些事务可能会导致某些系统在执行下面的 pcim_enable_device() 时进行机器检查
+		pci_save_state
+		pci_clear_master
+		pcie_flr -> ice：在故障转储内核中首先重置 当系统在发生紧急情况后启动到故障转储内核时，ice 网络设备可能仍然有挂起的事务，这些事务可能会在设备重新启用时导致错误或机器检查。 这可以防止故障转储内核加载驱动程序或收集故障数据。 为了避免此问题，请在崩溃内核上启用之前，通过 PCIe 配置空间在 Ice 设备上执行功能级别重置 (FLR)。 这将清除所有未完成的事务并停止所有队列和中断。 恢复FLR后的配置空间，否则测试时发现驱动加载不成功。 以下序列导致原始问题： - 使用 modprobe ice 加载ice驱动程序 - 使用 2 个 VF 启用 SR-IOV：echo 2 > /sys/class/net/eth0/device/sriov_num_vfs - 使用 echo c > /proc 触发崩溃 /sysrq-trigger - 使用 modprobeice 再次加载 Ice 驱动程序（或让它自动加载） - 系统在 pcim_enable_device() 期间再次崩溃
+		pci_restore_state
+	pcim_enable_device -> devres 是一种资源管理机制, 类似于一种垃圾收集处理器. 而资源的处理时机在 driver 的 install / remove 时候. 这样我们在为 device 分配相关资源之后, 就不必要关心如何释放它们了. 与 device 相关的资源有 memory / dma / iomap / regmap / interrupt / gpio 等, 这些资源都可以用 devres 机制管理起来, 使用相关资源封闭的 devres 接口, 就可以让这些资源自动销毁, 设备资源管理: https://blog.csdn.net/tiantianhaoxinqing__/article/details/125959030
 	pcim_iomap_regions
-	ice_allocate_pf
+	ice_allocate_pf -> 分配物理方法, 为该设备分配一个 devlink 实例，并将私有区域作为 PF 结构返回。 通过添加一个操作在展开时将其删除，可以通过 devres 来跟踪 devlink 内存
+		devlink_alloc(&ice_devlink_ops
+		devm_add_action_or_reset(dev, ice_devlink_free, devlink)
 	dma_set_mask_and_coherent
-	pci_read_config_byte
-	netif_msg_init
+	pci_set_master
+	...
+	pcim_iomap_table
+	pci_read_config_byte PCI_REVISION_ID
+	ice_set_ctrlq_len
+	netif_msg_init -> static inline u32 netif_msg_init
+	ice_init
+		ice_init_dev
+			ice_init_hw
+				ice_set_mac_type
+				FIELD_GET(PF_FUNC_RID_FUNC_NUM_M, rd32(hw, PF_FUNC_RID)) -> 读寄存器
+				ice_reset
+					wr32(hw, GLGEN_RTRIG, val)
+					ice_check_reset
+				ice_get_itr_intrl_gran -> 带宽
+				ice_create_all_ctrlq
+					ice_init_all_ctrlq
+						ice_init_ctrlq(hw, ICE_CTL_Q_ADMIN)
+							ice_adminq_init_regs
+								ICE_CQ_INIT_REGS
+						ice_init_check_adminq
+							ice_aq_get_fw_ver
+								ice_fill_dflt_direct_cmd_desc ice_aqc_opc_get_ver
+								ice_aq_send_cmd
+									ice_sq_send_cmd_retry
+										ice_sq_send_cmd -> ATQ
+						ice_shutdown_ctrlq
+							ice_shutdown_sq
+								停止管理队列上的任务
+								ICE_FREE_CQ_BUFS
+								ice_free_cq_ring
+									dmam_free_coherent
+							ice_shutdown_rq
+						...
+						ice_init_ctrlq(hw, ICE_CTL_Q_SB)
+						ice_init_ctrlq(hw, ICE_CTL_Q_MAILBOX)
+				ice_fwlog_init -> Ice：配置固件日志记录，用户希望能够通过从 E8xx 设备检索固件日志来调试固件问题。 使用 debugfs 允许用户配置固件日志记录的日志级别和消息数量。 如果 E8xx 支持固件日志记录，则将在ice 驱动程序的 PCI 设备 ID 下创建文件“fwlog”。 如果该文件不存在，则 E8xx 不支持固件日志记录或系统上未启用 debugfs。 用户想要做的一件事是控制报告哪些事件。 用户可以读写“fwlog/modules/<模块名称>”来获取/设置日志级别。 固件中的每个模块都支持将 ht 记录为“fwlog/modules”下的文件，支持读取（查看当前日志级别是什么）和写入（更改日志级别）
+					ice_fwlog_set_supported
+						ice_aqc_opc_fw_logs_query
+					ice_fwlog_supported
+					ice_fwlog_get
+					ice_fwlog_alloc_ring_buffs
+					ice_debugfs_fwlog_init -> 创建debugfs所需的目录和文件, 关联相应的函数操作
+						debugfs_create_dir(name, ice_debugfs_root)
+						...
+				ice_clear_pf_cfg -> 清除任何现有 PF 配置（VSI、VSI 列表、交换机规则、端口配置、流量导向器过滤器等）
+					cmd ice_aqc_opc_clear_pf_cfg
+				wr32(hw, PFQF_FD_ENA, PFQF_FD_ENA_FD_ENA_M) -> 启用流过滤, Ice：初始化FlowDirector资源，FlowDirector允许基于ntuple规则进行重定向。 规则使用 ethtool set-ntuple 接口进行编程。 支持的操作包括重定向到队列和丢弃。 设置初始框架来处理 Flow Director 过滤器。 创建和分配资源来管理过滤器并将过滤器编程到硬件。 过滤器通过边带接口进行处理； 创建控制VSI来管理通过边带的通信和处理请求。 分配资源后，更新硬件表以接受完美的过滤器
+				ice_clear_pxe_mode
+				ice_init_nvm
+					无论 NVM 编程模式如何，都会存储 SR 大小，因为工厂生产线中可能会使用空白模式
+					ice_discover_flash_size -> ice：创建flash_info结构和单独的NVM版本，ice_nvm_info结构已经成为与flash版本相关的所有字段的垃圾场。 它包含 NVM 版本和 EETRACK id、OptionROM 信息结构、闪存大小、ShadowRAM 大小等。 未来的更改将添加从非活动 NVM 组读取 NVM 版本和 EETRACK ID 的功能。 为了使这更简单，将这些 NVM 版本信息字段提取到它们自己的结构中非常有用。 将ice_nvm_info重命名为ice_flash_info，并创建一个单独的ice_nvm_info结构，其中将包含eetrack和NVM映射版本。 将netlist_ver结构移动到ice_flash_info中，并重命名为ice_netlist_info以保持一致性。 修改静态ice_get_orom_ver_info以将option rom结构作为指针。 这使得硬件结构的哪一部分被修改更加明显。 对ice_get_netlist_ver_info 执行相同操作。 引入一个新的ice_get_nvm_ver_info函数，该函数将类似于ice_get_orom_ver_info和ice_get_netlist_ver_info，用于保持NVM版本提取代码共置
+						ice_acquire_nvm
+						ice_read_flat_nvm
+					ice_determine_active_flash_banks -> ice：缓存 NVM 模块库信息，ice flash 包含 NVM、Option ROM 和 Netlist 模块各两个副本。 每个存储体都有一个指针字和一个大小字。 为了正确地从活动闪存组中读取数据，驱动程序必须手动计算偏移量。 在 NVM 初始化期间，读取 Shadow RAM 控制字并确定每个 NVM 模块的哪个存储体处于活动状态。 此外，缓存大小和指针值以用于计算正确的偏移量
+					读取 Shadow RAM 控制字并确定 NVM、OROM 和网表模块的哪些存储体处于活动状态。 还读取并计算关联的指针和大小。 然后将这些值缓存到ice_flash_info结构中以供以后使用，以便计算从活动模块读取的正确偏移量
+						ice_read_sr_word
+					ice_get_nvm_ver_info -> ice：引入从闪存模块读取的功能，当从设备的闪存读取时，ice驱动程序有两个可用的接口。 首先，它可以通过允许指定模块 ID 的固件使用中介接口。 这允许从活动闪存组的特定模块读取。 第二个可用的接口是执行平面读取。 这允许对整个闪存的完全访问。 然而，使用它需要软件来处理计算模块位置并解释指针地址。 虽然大多数所需数据都可以通过方便的第一个接口访问，但某些闪存内容却不能。 这包括与选项 ROM 和 NVM 存储体相关的 CSS 标头信息，以及对用作执行闪存更新的暂存空间的“非活动”存储体的任何访问。 为了访问所有相关的闪存内容，软件必须使用平面读取。 不是强制所有流执行平面读取计算，而是引入一个用于从闪存读取的新抽象：ice_read_flash_module。 该函数提供了从请求模块的活动或非活动闪存库中读取数据的抽象。 该接口与通过固件提供的抽象非常相似，但允许访问附加模块，并提供请求访问两个闪存组的机制。 乍一看，这种抽象允许精确指定调用者希望读取的银行（第一或第二）可能是有意义的。 这实现起来更简单，但使用起来更困难。 实际上，大多数呼叫者只知道他们想要活跃的银行还是不活跃的银行。 不是强迫调用者自己确定从哪个存储体读取，而是根据“活动”与“非活动”来实现ice_read_flash_module。 这显着简化了调用者级别的实现，并且是对闪存内容的更有用的抽象。 利用这个新接口重构主要 NVM 版本信息的读取。 不使用固件中介的 ShadowRAM 函数，而是使用ice_read_flash_module 抽象。 为此，请注意 NVM 的大多数读取都将以 2 字节字块的形式进行。 为了简化这种情况下ice_read_flash_module的使用，引入了ice_read_nvm_module。 这是ice_read_flash_module的一个简单包装，它获取NVM存储体的正确指针地址，并将2字节字格式强制传递给调用者。 读取 NVM 版本时，某些字段是从 Shadow RAM 中读取的。 Shadow RAM 是闪存的第一个 64KB，在设备加载期间填充。 大多数字段是从活动 NVM 组内的部分复制的。 为了从活动和非活动 NVM 存储体中读取这些数据，我们需要的不是从闪存的前 64KB 读取，而是从正确的偏移量读取到 NVM 存储体中。 为此引入ice_read_nvm_sr_copy。 该函数包装了ice_read_nvm_module，并具有与ice_read_sr_word相同的接口，不同之处在于允许调用者指定是否读取活动或非活动闪存组。 通过此更改，现在可以轻松重构ice_get_nvm_ver_info以使用软件介导的ice_read_flash_module接口进行读取，而不是依赖于固件介导的接口。 这将在以下更改中使用，以实现对 devlink 信息报告中存储版本的支持。 此外，将使用和扩展整个ice_read_flash_module接口以支持所有三个主要闪存组，并另外支持读取闪存映像安全修订信息
+					ice_get_orom_ver_info -> ice：通过devlink信息显示存储的UNDI固件版本，就像我们最近添加了对其他存储的固件闪存版本的支持一样，支持通过devlink信息显示存储的UNDI选项ROM版本。 为此，我们需要引入一个新的ice_get_inactive_orom_ver函数。 这比其他 Flash 版本有点棘手。 选项 ROM 版本数据是从 NVM 保留字段区域的特殊“引导配置”块中读取的。 该块仅包含*活动*选项 ROM 版本数据。 当设备固件完成更新选项 ROM 时，它会被填充。 此方法在读取存储的选项 ROM 版本数据时无效。 不用从闪存的这一部分读取，而是用从选项 ROM 二进制文件中查找组合版本信息的版本提取替换此版本提取。 该数据以简单的结构化格式存储在选项 ROM 中，偏移量为 512 字节。 该结构使用简单的模 256 校验和进行完整性验证。 扫描选项 ROM 以找到 CIVD 数据部分，并提取 Combo 版本。 重构ice_get_orom_ver_info，使其采用bank select枚举参数。 使用它来实现ice_get_inactive_orom_ver。 尽管所有ice器件在NVM PFA中都有引导配置块，但并非所有器件都有有效的选项ROM。 在这种情况下，旧的ice_get_orom_ver_info将“成功”，但报告全零的版本。 新的实现将无法在选项 ROM 中找到 $CIV 部分并报告错误。 因此，我们必须确保如果ice_get_orom_ver_info失败，ice_init_nvm不会失败。 使用新的ice_get_inactive_orom_ver允许通过devlink信息报告待更新的选项ROM版本
+					ice_get_netlist_info
+						ice_read_netlist_module
+							ice_read_flash_module -> Ice：通过devlink info显示存储的网表版本，添加读取非活动网表库以获取版本信息的功能。 为了支持这一点，重构我们读取网表版本数据的方式。 不使用带有模块 ID 的固件 AQ 接口，而是使用ice_read_flash_module 从闪存中读取作为平面 NVM。 此更改需要对所使用的偏移值进行轻微调整，因为从平面 NVM 读取包括类型字段（之前已被固件剥离）。 清理宏名称并将它们移动到ice_type.h。 为了清楚地说明我们如何计算偏移量，并使程序员可以轻松地将偏移值映射到数据表，请使用包装宏来考虑偏移量调整。 使用新添加的ice_get_inactive_netlist_ver函数从待处理的网表模块更新中提取版本数据。 将存储的“fw.netlist”和“fw.netlist.build”变体添加到信息版本映射数组中。 通过此更改，我们现在将“fw.netlist”和“fw.netlist.build”版本报告到 devlink 信息报告的存储部分。 与主要 NVM 模块版本一样，如果没有挂起的更新，我们会报告存储的当前活动值
+								ice_get_flash_bank_offset
+								ice_acquire_nvm
+								ice_read_flat_nvm
+				ice_get_caps -> ice：获取交换机配置、调度程序配置和设备功能，此补丁通过获取交换机配置、调度程序配置和设备功能来添加初始化流程。 交换机配置：启动时，会在每个物理功能的固件中创建一个 L2 交换机元素。 每个物理功能还映射到其交换元件所连接的端口。 换句话说，该交换机可以被视为嵌入式 vSwitch，可以将物理功能的虚拟站接口 (VSI) 连接到出口/入口端口。 最终将创建出口/入口过滤器并将其应用到该开关元件上。 作为初始化流程的一部分，驱动程序从该开关元件获取配置数据并存储它。 调度程序配置：Tx 调度程序是负责设置和实施 QoS 的子系统。 作为初始化流程的一部分，驱动程序查询并存储给定物理功能的默认调度程序配置。 设备功能：作为初始化的一部分，驱动程序必须确定设备的功能（例如最大队列、VSI 等）。 该信息从固件获取并由驱动程序存储
+					ice_discover_dev_caps
+						ice_aq_list_caps
+						ice_parse_dev_caps
+							ice_parse_common_caps
+							ice_parse_valid_functions_cap
+							ice_parse_vsi_dev_caps
+							ice_parse_1588_dev_caps
+							ice_parse_fdir_dev_caps
+							ice_parse_sensor_reading_cap
+							...
+					ice_discover_func_caps
+						ice_aq_list_caps
+						ice_parse_func_caps
+				ice_get_initial_sw_cfg
+					ice_init_port_info
+				xa_init_flags(&hw->port_info->sched_node_ids, XA_FLAGS_ALLOC) -> ice：在ice_sched_node中引入新的参数，为了支持新的devlink-rate API，ice_sched_node结构需要存储一些额外的参数。 这包括 tx_max、tx_share、tx_weight 和 tx_priority。 将新字段添加到ice_sched_node结构中。 添加新功能以使用新参数配置硬件。 引入新的xarray来唯一标识节点
+				ice_sched_query_res_alloc
+					hw->layer_info = devm_kmemdup -> 复制内存
+				ice_sched_get_psm_clk_freq -> ice：使用 PSM 时钟频率来计算 RL 配置文件，核心时钟频率目前硬编码为 446 MHz，用于 RL 配置文件计算。 这会导致问题，因为并非所有设备都使用该时钟频率。 读取 GLGEN_CLKSTAT_SRC 寄存器以确定选择哪个 PSM 时钟频率。 这可确保速率限制器配置文件计算正确
+				ice_sched_init_port
+					ice_sched_add_root_node
+					ice_sched_add_node
+				ice_aq_get_phy_caps
+				ice_aq_get_link_info
+				ice_cfg_rl_burst_size
+				ice_aq_manage_mac_read
+				ice_aq_set_mac_cfg
+				ice_alloc_fd_res_cntr
+				ice_init_hw_tbls -> ice：初始化DDP包结构，添加函数来初始化、解析和清理表示DDP包的结构。 包下载完成后，读取DDP包内容并将其存储到这些结构中。 此配置用于识别默认行为，稍后用于更新 HW 表条目
+			if ice_is_pf_c827
+				ice_wait_for_fw
+			ice_init_feature_support -> Ice：添加功能位图、帮助程序和 DSCP 检查，DSCP 又名 L3 QoS 仅在某些设备上受支持。 为了强制执行此操作，此补丁引入了功能位图和辅助函数。 功能位图是根据驱动程序初始化时的设备 ID 设置的。 目前，DSCP 是该位图中的唯一功能，但将来会有更多功能。 在 DCB netlink 流程中，在执行 DSCP 之前检查功能位是否已设置
+				ice_set_feature_support
+				ice_is_phy_rclk_in_netlist
+				ice_is_cgu_in_netlist
+				ice_gnss_is_gps_present -> Ice：添加管理命令以访问cgu配置，添加固件管理命令以访问时钟生成单元配置，需要在驱动程序中启用扩展PTP和SyncE功能。 添加与时钟生成单元和访问数据的功能相关的输入和输出引脚的可能硬件变化的定义
+				ice：为E810T设备的GNSS模块添加TTY，添加新的ice_gnss.c文件用于保存基本的GNSS模块功能。 如果设备支持 GNSS 模块，请在适当的情况下调用新的ice_gnss_init 和ice_gnss_release 函数。 实现使用 TTY 设备从 GNSS 模块读取数据的基本功能。 添加I2C读取AQ命令。 现在需要通过 E810-T 适配器上的外部 I2C 端口扩展器来控制外部物理连接器。 未来的变化将引入写入功能
+			ice_request_fw
+			ice_init_pf
+				timer_setup(&pf->serv_tmr, ice_service_timer, 0)
+				INIT_WORK(&pf->serv_task, ice_service_task)
+				ice_mbx_init_snapshot
+			ice_init_interrupt_scheme
+			ice_req_irq_msix_misc
+		ice_alloc_vsis
+		ice_init_pf_sw
+		ice_init_wakeup
+		ice_init_link
+		ice_send_version
+		ice_verify_cacheline_size
+		ice_set_safe_mode_vlan_cfg or
+		pcie_print_link_status
+		mod_timer(&pf->serv_tmr, round_jiffies(jiffies + pf->serv_tmr_period))
+	ice_init_eth
+		ice_dcbnl_setup
+		ice_init_mac_fltr
+		ice_devlink_create_pf_port
+		ice_register_netdev
+		ice_tc_indir_block_register
+		ice_napi_add
 	ice_init_rdma
 		ice_is_rdma_ena
+		ice_alloc_rdma_qvectors -> ice：添加单独的中断分配，目前中断分配，根据某个特性是批量分配的。 此外，分配后还有一系列操作，通过该批中断分配每个 irq 设置。 尽管驱动程序尚不支持动态中断分配，但将分配的中断保留在池中并添加分配抽象逻辑以使代码更加灵活。 将每个中断信息保留在ice_q_vector结构中，这会产生ice_vsi::base_vector冗余。 此外，因此有一些功能可以删除
+			ice_alloc_irq -> ice：添加动态中断分配，目前驱动程序只能在init阶段通过调用pci_alloc_irq_vectors分配中断向量。 对此进行更改并使用新的 pci_msix_alloc_irq_at/pci_msix_free_irq API，并在启用 MSIX 后启用分配和释放更多中断。 由于并非所有平台都支持动态分配，请使用 pci_msix_can_alloc_dyn 检查。 扩展跟踪器以跟踪最初分配的中断数量，因此当所有此类向量都已使用时，会自动动态分配其他中断。 记住每个中断分配方法，然后适当地释放。 由于某些功能可能需要动态分配的中断，因此添加适当的 VSI 标志并在分配新中断时将其考虑在内
+			为给定所有者 ID 分配新的中断向量。 返回包含中断详细信息的 struct msi_map 并适当跟踪分配的中断。 该函数从 irq_tracker 保留新的 irq 条目。 如果根据跟踪器信息，使用ice_pci_alloc_irq_vectors分配的所有中断都已使用并且支持动态分配的中断，则将使用pci_msix_alloc_irq_at分配新中断。 一些调用者可能只支持动态分配的中断。 这由 dyn_only 标志指示。 失败时，返回 .index 为负的映射。 调用者应该检查返回的map索引
+				ice_get_irq_res
+				pci_msix_can_alloc_dyn
+				pci_msix_alloc_irq_at or
+				pci_irq_vector
+		ice_plug_aux_dev -> 在每个 PCIe 设备功能的辅助总线上注册ice客户端辅助 RDMA 设备，以便辅助驱动程序 (irdma) 附加到。 它允许实现单个 RDMA 驱动程序 (irdma)，该驱动程序能够通过支持 RDMA 的多代 Intel 硬件与多个 netdev 驱动程序配合使用。 ice 和 irdma 之间不存在加载顺序依赖性
+			auxiliary_device_init
+			auxiliary_device_add
+	ice_init_devlink
+	ice_init_features
+
 
 send msg:
 ice_start_xmit
@@ -1108,7 +1257,8 @@ mlx5_register_debugfs
 mlx5e_init -> net/mlx5e：将以太网部分连接到辅助总线 -> 目前，删除和重新加载流程可以与模块清理并行运行。 这种设计很容易出错。 例如：从具有不同锁定的清理和删除流中调用 aux_drivers 回调，这可能会导致死锁[1]。 因此，通过重新加载和删除来序列化模块清理
     mlx5e_build_ptys2ethtool_map
         MLX5_BUILD_PTYS2ETHTOOL_CONFIG
-    auxiliary_driver_register
+    auxiliary_driver_register -> __auxiliary_driver_register
+		
     mlx5e_rep_init -> net/mlx5e：首先取消注册 eth-reps 设备 当我们清理所有接口（即重新扫描或重新加载模块）时，我们需要先清理 eth-reps 设备，然后再清理 eth 设备。 我们将重新使用本机 NIC 端口网络设备实例作为上行链路表示器。 更改 eswitch 模式将跳过销毁 eth 设备，因此网络设备不会被销毁，而只会更改配置文件。 创建上行eth-rep将初始化representor相关资源。 从这个意义上说，当我们销毁所有设备时，我们首先需要销毁 eth-rep 设备，因此上行链路 eth-rep 将清除所有与表示器相关的资源，然后才销毁 eth 设备，这将销毁其余资源和网络设备
 mlx5_sf_driver_register -> static struct auxiliary_driver mlx5_sf_driver
 pci_register_driver(&mlx5_core_driver)
@@ -1994,6 +2144,109 @@ nldev_get_dumpit _nldev_get_dumpit
 	rdma_dev_access_netns
 	_nldev_get_dumpit
 		nlmsg_end
+
+
+
+ice intel debug logging 配置固件调试日志:
+The format to set the log levels for a module are:
+  # echo <log level> > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/<module>
+The supported log levels are:
+      *	none
+      *	error
+      *	warning
+      *	normal
+      *	verbose
+Each level includes the messages from the previous/lower level
+The modules that are supported are:
+      *	general
+      *	ctrl
+      *	link
+      *	link_topo
+      *	dnl
+      *	i2c
+      *	sdp
+      *	mdio
+      *	adminq
+      *	hdma
+      *	lldp
+      *	dcbx
+      *	dcb
+      *	xlr
+      *	nvm
+      *	auth
+      *	vpd
+      *	iosf
+      *	parser
+      *	sw
+      *	scheduler
+      *	txq
+      *	rsvd
+      *	post
+      *	watchdog
+      *	task_dispatch
+      *	mng
+      *	synce
+      *	health
+      *	tsdrv
+      *	pfreg
+      *	mdlver
+      *	all
+The module 'all' is a special module which allows the user to read or
+write to all of the modules.
+The following example command would set the DCB module to the 'normal'
+log level:
+  # echo normal > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/dcb
+If the user wants to set the DCB, Link, and the AdminQ modules to
+'verbose' then the commands are:
+  # echo verbose > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/dcb
+  # echo verbose > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/link
+  # echo verbose > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/adminq
+If the user wants to set all modules to the 'warning' level then the
+command is:
+  # echo warning > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/all
+If the user wants to disable logging for a module then they can set the
+level to 'none'. An example setting the 'watchdog' module is:
+  # echo none > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/watchdog
+If the user wants to see what the log level is for a specific module
+then the command is:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/dcb
+This will return the log level for the DCB module. If the user wants to
+see the log level for all the modules then the command is:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/all
+Writing to the module file will update the configuration, but NOT enable the
+configuration (that is a separate command).
+In addition to configuring the modules, the user can also configure the
+number of log messages (nr_messages) to include in a single Admin Receive
+Queue (ARQ) event.The range is 1-128 (1 means push every log message, 128
+means push only when the max AQ command buffer is full). The suggested
+value is 10.
+To see/change the resolution the user can read/write the
+'fwlog/nr_messages' file. An example changing the value to 50 is
+  # echo 50 > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/nr_messages
+To see the current value of 'nr_messages' then the command is:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/nr_messages
+
+ice: add ability to read and configure FW log data
+Once logging is enabled the user should read the data from the 'data'
+file. The data is in the form of a binary blob that can be sent to Intel
+for decoding. To read the data use a command like:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/data > log_data.bin
+If the user wants to clear the FW log data that has been stored in the
+driver then they can write any value to the 'data' file and that will clear
+the data. An example is:
+  # echo 34 > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/data
+In addition to being able to read the data the user can configure how
+much memory is used to store FW log data. This allows the user to
+increase/decrease the amount of memory based on the users situation.
+The data is stored such that if the memory fills up then the oldest data
+will get overwritten in a circular manner. To change the amount of
+memory the user can write to the 'log_size' file like this:
+  # echo <value> > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/log_size
+Where <value> is one of 128K, 256K, 512K, 1M, and 2M. The default value
+is 1M.
+The user can see the current value of 'log_size' by reading the file:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/log_size
+
 
 
 
