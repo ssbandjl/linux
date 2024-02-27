@@ -704,10 +704,6 @@ static int probe_one
 
 
 
-mlx5_devlink_ops
-
-
-
 init debugfs, wq, Workqueue
 /sys/kernel/debug/mlx5/
 tree -L 2 /sys/kernel/debug/mlx5/
@@ -863,6 +859,9 @@ mlx5e_open(netdev);
                mlx5e_activate_channel                              // 启用硬中断（IRQ）
                  |-mlx5e_activate_rq
                     |-mlx5e_trigger_irq
+						mlx5_wq_cyc_ctr2ix
+						mlx5e_post_nop
+						mlx5e_notify_hw
 
 中断方式针对高吞吐场景的改进是 NAPI 方式，简单来说它结合了轮询和中断两种方式。 绝大部分网卡都是这种模式，本文所用的 mlx5_core 就属于这一类
 
@@ -1249,19 +1248,108 @@ mlx5 driver:
 drivers/net/ethernet/mellanox/mlx5/core
 
 module_init(mlx5_init);
-get_random_bytes -> 这将返回任意数量的随机字节。 随机字节的质量与 /dev/urandom 一样好。 为了确保该函数提供的随机性良好，应调用函数 wait_for_random_bytes() 并在之前的任何时刻至少返回一次 0
+get_random_bytes -> void get_random_bytes -> 这将返回任意数量的随机字节。 随机字节的质量与 /dev/urandom 一样好。 为了确保该函数提供的随机性良好，应调用函数 wait_for_random_bytes() 并在之前的任何时刻至少返回一次 0
+static u32 sw_owner_id[4] -> net/mlx5：在 init HCA 期间设置软件所有者 ID，为每个主机生成唯一的 128 位标识符，并在 INIT_HCA 命令中将该值传递给固件（如果报告了 sw_owner_id 功能）。 绑定到 mlx5_core 驱动程序的每个设备都将具有相同的软件所有者 ID。 在后续补丁中，mlx5_core 设备将通过新的 VPort 命令进行绑定，以便它们可以在单个 InfiniBand 设备下一起运行。 只能绑定具有相同软件所有者 ID 的设备，以防止发往一台主机的流量到达另一台主机。 INIT_HCA 命令长度扩展了 128 位。 命令长度作为输入 FW 命令提供。 较旧的固件以新的较长形式接收此命令没有问题
 mlx5_core_verify_params -> net/mlx5：验证模块参数 验证 mlx5_core 模块参数，确保它们在预期范围内，如果未将其恢复为默认值。
     profile -> static struct mlx5_profile profile[] -> 默认配置文件 -> mlx5：将 pci 设备处理从 mlx5_ib 移至 mlx5_core 在为 VPI 的新 mlx5 设备（即端口可以是 IB 或 ETH）做准备时，请将 pci 设备功能从 mlx5_ib 移至 mlx5_core。 这涉及以下更改： 1. 将 mlx5_core_dev 结构移出 mlx5_ib_dev。 mlx5_core_dev 现在是由 mlx5_core 维护的独立结构。 mlx5_ib_dev 现在有一个指向该结构的指针。 这需要更改通过 mlx5_ib_dev 访问 core_dev 结构的很多地方（现在，这需要是指针取消引用）。 2. 所有 PCI 初始化现在都在 mlx5_core 中完成。 因此，现在是 mlx5_core 执行 pci_register_device （而不是像以前那样的 mlx5_ib）。 3. mlx5_ib 现在将自身注册为 mlx5_core 作为“接口”驱动程序。 这与 mlx4 (ConnectX) 驱动程序采用的机制非常相似。 一旦 HCA 初始化（由 mlx5_core），它就会调用接口驱动程序来进行初始化。 4. 核心注册了一个新的事件处理程序：mlx5_core_event()。 该事件处理程序调用接口注册的事件处理程序
+	{net，RDMA}/mlx5：修复其他设备对 log_max_qp 的覆盖，mlx5_core_dev 保存指向静态配置文件的指针，因此当配置文件的 log_max_qp 被某些设备覆盖时，它会影响共享相同配置文件的所有其他 mlx5 设备。 通过为每个 mlx5 设备提供一个配置文件实例来修复此问题
+	index为3的配置文件是, net/mlx5：为 SF 创建新的配置文件，为 SF 创建新的配置文件以禁用命令缓存。 每个功能命令缓存消耗约 500KB 的内存，当使用大量 SF 时，这种节省在内存受限的系统上非常显着。 使用新的配置文件来提供 SF 和 PF 之间未来的差异。 mr_cache 不用于非 PF 函数，因此从新配置文件中排除
 mlx5_register_debugfs
     debugfs_create_dir mlx5 -> 第一个参数是目录的名称，第二个参数用来指定这个目录的上级目录，如果是NULL，则表示是放在debugfs的根目录里,  /sys/kernel/debug/
 mlx5e_init -> net/mlx5e：将以太网部分连接到辅助总线 -> 目前，删除和重新加载流程可以与模块清理并行运行。 这种设计很容易出错。 例如：从具有不同锁定的清理和删除流中调用 aux_drivers 回调，这可能会导致死锁[1]。 因此，通过重新加载和删除来序列化模块清理
     mlx5e_build_ptys2ethtool_map
         MLX5_BUILD_PTYS2ETHTOOL_CONFIG
-    auxiliary_driver_register -> __auxiliary_driver_register
-		
+		...
+    auxiliary_driver_register mlx5e_driver -> __auxiliary_driver_register
     mlx5e_rep_init -> net/mlx5e：首先取消注册 eth-reps 设备 当我们清理所有接口（即重新扫描或重新加载模块）时，我们需要先清理 eth-reps 设备，然后再清理 eth 设备。 我们将重新使用本机 NIC 端口网络设备实例作为上行链路表示器。 更改 eswitch 模式将跳过销毁 eth 设备，因此网络设备不会被销毁，而只会更改配置文件。 创建上行eth-rep将初始化representor相关资源。 从这个意义上说，当我们销毁所有设备时，我们首先需要销毁 eth-rep 设备，因此上行链路 eth-rep 将清除所有与表示器相关的资源，然后才销毁 eth 设备，这将销毁其余资源和网络设备
+		auxiliary_driver_register(&mlx5e_rep_driver)
 mlx5_sf_driver_register -> static struct auxiliary_driver mlx5_sf_driver
 pci_register_driver(&mlx5_core_driver)
+
+
+static struct auxiliary_driver mlx5e_rep_driver = {
+	.name = "eth-rep",
+	.probe = mlx5e_rep_probe,
+	.remove = mlx5e_rep_remove,
+	.id_table = mlx5e_rep_id_table,
+};
+
+
+mlx5e_rep_probe
+	mlx5_eswitch_register_vport_reps(esw, &rep_ops, REP_ETH) -> net/mlx5：E-Switch，将代表 reg/unreg 集中到 eswitch 驱动程序，Eswitch 有两个用户：IB 和 ETH。 它们都在添加 mlx5 接口时注册代表器，并在删除 mlx5 接口时取消注册代表器。 理想情况下，每个驱动程序应该只处理其独有的实体。 但是，当前的 IB 和 ETH 驱动程序必须执行以下 eswitch 操作： 1. 注册时，指定要注册的 vport 数量。 对于两个驱动程序来说，这个数字是相同的，即可用 vport 总数。 2. 取消注册时，指定要取消注册的已注册 vport 的数量。 另外，卸载已经加载的代表器。 eswitch 驱动程序没有必要将上述操作的控制权交给各个驱动程序用户，因为它们对于每个驱动程序来说并不是唯一的。 相反，此类操作应集中到 eswitch 驱动程序。 这整合了 eswitch 控制流程，并简化了 IB 和 ETH 驱动程序
+		mlx5_esw_for_each_rep
+			atomic_set(&rep_data->state, REP_REGISTERED
+
+辅助设备驱动
+static struct auxiliary_driver mlx5e_driver = {
+	.name = "eth",
+	.probe = mlx5e_probe,
+	.remove = mlx5e_remove,
+	.suspend = mlx5e_suspend,
+	.resume = mlx5e_resume,
+	.id_table = mlx5e_id_table,
+};
+
+mlx5e_probe
+	mlx5e_nic_profile
+	mlx5e_create_devlink
+		devlink_alloc_ns
+		devl_nested_devlink_set
+		devlink_register
+	auxiliary_set_drvdata
+	mlx5e_devlink_port_register
+		devlink_port_attrs_set
+		devlink_port_register
+	mlx5e_create_netdev -> net/mlx5e：添加 PTP 和 QOS HTB 功能的配置文件指示，让配置文件指示支持 PTP 和 HTB (QOS) 功能。 这统一了计算功能所需的 netdev 队列数量的逻辑，并允许简化 mlx5e_create_netdev()，不再需要 rx/tx 队列数量作为参数
+		mlx5e_get_max_num_txqs -> net/mlx5e：允许对最大通道数进行特定于配置文件的限制，让 SF/VF 表示器的 netdev 对 max_nch 使用特定于配置文件的限制，以减少其内存和硬件资源消耗。 这对于内存有限和 SF 数量较多的环境尤其重要
+			mlx5e_profile_max_num_channels
+				max_nch_limit
+		mlx5e_get_max_num_rxqs
+		alloc_etherdev_mqs
+		mlx5e_priv_init -> net/mlx5e：保持最大通道数的值同步，最大通道数的值首先根据 netdev 的配置文件和当前函数资源（具体来说，MSIX 向量的数量，这取决于其他因素）计算 系统中在线核心的数量）。 然后使用该值来计算 netdev 的 rxqs/txqs 数量。 一旦创建（通过 alloc_etherdev_mqs），netdev 的 rxqs/txqs 数量是恒定的，我们不能超过它。 为了实现这一点，请在任何网络设备重新连接时保持最大数量的通道同步。 使用 mlx5e_get_max_num_channels() 计算 netdev 的 rxqs/txqs 数量。 创建 netdev 后，使用 mlx5e_calc_max_nch()（它创建核心设备资源、配置文件和 netdev）来初始化或更新 priv->max_nch。 在此补丁之前，priv->max_nch 的值可能会不同步，从而错误地允许访问越界对象，从而导致系统崩溃。 跟踪在单独字段中使用的通道统计结构的数量，因为它们持续挂起/恢复操作。 应保留曾经存在的每个通道索引的所有收集的统计数据。 仅当 struct mlx5e_priv 在 mlx5e_priv_cleanup()（配置文件更改流程的一部分）中时，它们才会重置。 由于 mlx5e_netdev_change_profile() 中的 max_nch 不匹配，阻止配置文件更改已没有任何意义。 解除限制
+			mlx5e_calc_max_nch
+			alloc_cpumask_var
+			mlx5e_selq_init -> net/mlx5e：引入select队列参数，ndo_select_queue可以随时调用，并且没有办法阻止内核调用它来同步配置更改（real_num_tx_queues、num_tc）。 此提交引入了 mlx5e 中的一种内部方法，用于将 mlx5e_select_queue() 与这些更改同步。 该函数所需的配置存储在 struct mlx5e_selq_params 中，可以使用 RCU 方法以原子方式修改和访问该结构。 整个 ndo_select_queue 在 RCU 锁下调用，提供必要的保证。 存储在新结构 mlx5e_selq_params 中的参数只能在 mlx5e_select_queue 内部使用。 这是 mlx5e_select_queue 有效完成其工作所需的最小参数集，源自存储在其他地方的参数。 这意味着当配置更改时，mlx5e_selq_params 可能需要更新。 在这种情况下，应使用 mlx5e_selq_prepare/mlx5e_selq_apply API。 struct mlx5e_selq 包含两个参数槽：活动和备用。 mlx5e_selq_prepare 更新备用插槽，mlx5e_selq_apply 使用 RCU API 以安全原子方式交换插槽。 它与配置更改流程的打开/激活阶段很好地集成
+				rcu_assign_pointer
+			INIT_WORK(&priv->update_carrier_work, mlx5e_update_carrier_work);
+			INIT_WORK(&priv->set_rx_mode_work, mlx5e_set_rx_mode_work);
+			INIT_WORK(&priv->tx_timeout_work, mlx5e_tx_timeout_work);
+			INIT_WORK(&priv->update_stats_work, mlx5e_update_stats_work);
+		netif_carrier_off
+		netif_tx_disable
+		dev_net_set
+	mlx5e_build_nic_netdev
+	profile->init(mdev, netdev)
+	mlx5e_resume
+	register_netdev
+	mlx5e_dcbnl_init_app
+	mlx5_core_uplink_netdev_set
+	mlx5e_params_print_info
+
+
+static const struct mlx5e_profile mlx5e_nic_profile = {
+	.init		   = mlx5e_nic_init,
+	.cleanup	   = mlx5e_nic_cleanup,
+	.init_rx	   = mlx5e_init_nic_rx,
+	.cleanup_rx	   = mlx5e_cleanup_nic_rx,
+	.init_tx	   = mlx5e_init_nic_tx,
+	.cleanup_tx	   = mlx5e_cleanup_nic_tx,
+	.enable		   = mlx5e_nic_enable,
+	.disable	   = mlx5e_nic_disable,
+	.update_rx	   = mlx5e_update_nic_rx,
+	.update_stats	   = mlx5e_stats_update_ndo_stats,
+	.update_carrier	   = mlx5e_update_carrier,
+	.rx_handlers       = &mlx5e_rx_handlers_nic,
+	.max_tc		   = MLX5_MAX_NUM_TC,
+	.stats_grps	   = mlx5e_nic_stats_grps,
+	.stats_grps_num	   = mlx5e_nic_stats_grps_num,
+	.features          = BIT(MLX5E_PROFILE_FEATURE_PTP_RX) |
+		BIT(MLX5E_PROFILE_FEATURE_PTP_TX) |
+		BIT(MLX5E_PROFILE_FEATURE_QOS_HTB) |
+		BIT(MLX5E_PROFILE_FEATURE_FS_VLAN) |
+		BIT(MLX5E_PROFILE_FEATURE_FS_TC),
+};
+
 
 
 核心驱动:
@@ -1680,13 +1768,22 @@ ib_uverbs_ioctl
 			...
 			ib_uverbs_alloc_pd -> IB_USER_VERBS_CMD_ALLOC_PD
 				uverbs_request
+					copy_from_user
 				uobj_alloc(UVERBS_OBJECT_PD, attrs, &ib_dev)
+					...
+					rdma_alloc_begin_uobject
+						obj->type_class->alloc_begin
 				rdma_zalloc_drv_obj
+				rdma_restrack_new
+				rdma_restrack_set_name
 				ib_dev->ops.alloc_pd(pd, &attrs->driver_udata) -> .alloc_pd =  -> mlx5_ib_alloc_pd
 					rdma_udata_to_drv_context
 					mlx5_cmd_exec_inout(to_mdev(ibdev)->mdev, alloc_pd, in, out) -> 命令框架
 						...
 					ib_copy_to_udata
+				rdma_restrack_add
+					xa_insert
+					or xa_alloc_cyclic
 				uobj_finalize_uobj_create
 				uverbs_response
 		bundle_destroy
@@ -2247,6 +2344,163 @@ is 1M.
 The user can see the current value of 'log_size' by reading the file:
   # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/log_size
 
+
+
+
+.port_new = mlx5_devlink_sf_port_new
+mlx5_sf_add
+	mlx5_eswitch_load_sf_vport
+
+
+struct devlink_port {
+	...
+}
+引入 devlink 基础设施，为驱动程序引入 devlink 基础设施，以通过通用 Netlink 接口注册并公开给用户空间。 定义了两个基本对象： 
+devlink - 每个“父设备”都有一个实例，例如交换机 ASIC (芯片)
+devlink_port - 设备的每个物理端口都有一个实例。 这个初始部分实现了将对象基本获取/转储到用户空间。 此外，还实现了端口分配器和端口类型设置
+
+makefile:
+obj-$(CONFIG_NET_DEVLINK)	+= devlink/
+
+code_style:
+devlink：将代码移动到专用目录，devlink 代码很难在一个文件中使用 13kLoC 进行导航。 我真的很喜欢 Michal 将 ethtool 分成每个命令文件和核心的方式。 将其全部拆分可能太多了，但我们至少可以将核心部分从每个 cmd 实现中分离出来，并将其放在一个目录中，以便新命令可以是单独的文件。 移动代码，后续commit会做部分分割
+
+core_code:
+drivers/net/ethernet/mellanox/mlx5/core/devlink.c
+
+
+mlx5_devlink_ops
+
+
+
+create_cq:
+IB_USER_VERBS_CMD_CREATE_COMP_CHANNEL -> ib_uverbs_create_comp_channel
+ib_uverbs_init_event_queue
+
+
+
+ovs:
+module_init(dp_init) -> net：添加 Open vSwitch 内核组件。 Open vSwitch 是一款针对虚拟化环境的多层以太网交换机。 除了支持传统硬件交换机所期望的各种功能之外，它还支持细粒度的编程扩展和基于流的网络控制。 这种控制在各种应用程序中都很有用，但在多服务器虚拟化部署中尤其重要，多服务器虚拟化部署的特点通常是高度动态的端点以及需要维护多个租户的逻辑抽象。 Open vSwitch 数据路径为数据包转发提供了内核内快速路径。 它由用户空间守护进程 ovs-vswitchd 进行补充，该守护进程能够接受来自各种来源的配置并将其转换为数据包处理规则。 请参阅 http://openvswitch.org 了解更多信息和用户空间实用程序
+action_fifos_init
+...
+
+
+int netif_rx(struct sk_buff *skb)
+
+skeleton.c
+
+
+set_64bit_val
+
+ibv_reg_mr:
+IB_USER_VERBS_CMD_REG_MR
+ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr
+	...
+	irdma_alloc_iwmr
+		ib_umem_num_dma_blocks
+	case IRDMA_MEMREG_TYPE_QP
+	...
+UVERBS_OBJECT_MR
+ib_check_mr_access
+uobj_get_obj_read
+reg_user_mr
+
+
+
+module_init(irdma_init_module);
+	auxiliary_driver_register i40iw_auxiliary_drv
+		.probe = i40iw_probe
+	auxiliary_driver_register(&irdma_auxiliary_drv.adrv)
+	irdma_register_notifiers
+		register_inetaddr_notifier
+		register_inet6addr_notifier
+		register_netevent_notifier
+		register_netdevice_notifier
+...		
+irdma_probe <- irdma_auxiliary_drv
+irdma_ib_register_device
+irdma_init_rdma_device
+irdma_init_roce_device
+	ib_set_device_ops(&iwdev->ibdev, &irdma_roce_dev_ops);
+
+
+ibv_modify_qp -> IB_USER_VERBS_EX_CMD_MODIFY_QP -> ib_uverbs_ex_modify_qp
+	modify_qp
+		uobj_get_obj_read UVERBS_OBJECT_QP
+		校验参数
+		...
+		ib_modify_qp_with_udata
+			_ib_modify_qp -> IB/core：将 DMAC 解析限制为用户空间 QP，当前 ah_attr 由 ib_cm 层针对基于 rdma_cm 的应用程序进行初始化。 对于 RoCE 传输，ah_attr.roce.dmac 已由 ib_cm、rdma_cm 从 wc、路径记录、路由解析、显式路径记录设置（取决于主动方或被动方 QP）初始化。 因此避免为内核消费者的 QP 解析 DMAC
+				attr_mask & IB_QP_AV -> IBV_QP_AV，主要用来指示内核做地址解析，对于RoCE，则进行L3到MAC地址的转换
+				rdma_fill_sgid_attr
+					rdma_check_ah_attr
+					rdma_ah_retrieve_grh
+					rdma_get_gid_attr
+						rdma_gid_table
+						get_gid_entry
+				ib_resolve_eth_dmac -> 调用ib_resolve_eth_dmac解析remote gid对应的MAC地址
+					...
+					rdma_resolve_ip resolve_cb
+						complete -> IB/core：verbs/cm 结构中的以太网 L2 属性 ，此补丁添加了对 verbs/cm/cma 结构中的以太网 L2 属性的支持。 在处理 L2 以太网时，我们应该以与使用 IB L2（和 L4 PKEY）属性类似的方式使用 smac、dmac、vlan ID 和优先级。 因此，这些属性被添加到以下结构中： * ib_ah_attr - 添加了 dmac * ib_qp_attr - 添加了 smac 和 vlan_id，（sl 保留 vlan 优先级） * ib_wc - 添加了 smac、vlan_id * ib_sa_path_rec - 添加了 smac、dmac、vlan_id * cm_av - 添加了 smac 和 vlan_id 对于路径记录结构，在将其打包为有线格式时特别注意避免新字段，因此我们不会破坏 IB CM 和 SA 有线协议。 在主动侧，CM 被填充。 其内部结构来自 ULP 提供的路径。 我们添加了 ETH L2 属性并将它们放入 CM 地址句柄（struct cm_av）中。 在被动侧，CM 从与 REQ 消息关联的 WC 中填充其内部结构。 我们添加了从 WC 获取 ETH L2 属性的内容。 当硬件驱动程序在 WC 中提供所需的 ETH L2 属性时，它们会设置 IB_WC_WITH_SMAC 和 IB_WC_WITH_VLAN 标志。 IB 核心代码检查这些标志是否存在，如果没有，则从 ib_init_ah_from_wc() 辅助函数进行地址解析。 ib_modify_qp_is_ok 也被更新以考虑链路层。 有些参数对于以太网链路层是必需的，而对于IB来说则无关。 修改供应商驱动程序以支持新的函数签名
+				rdma_lag_get_ah_roce_slave
+					rdma_read_gid_attr_ndev_rcu
+					rdma_get_xmit_slave_udp
+						rdma_build_skb
+						netdev_get_xmit_slave RDMA_LAG_FLAGS_HASH_ALL_SLAVES
+				rdma_counter_bind_qp_auto
+				ib_security_modify_qp -> IB/核心：在 QP 上强制执行 PKey 安全性，添加新的 LSM 挂钩以分配和释放安全上下文并检查访问 PKey 的权限。 创建和销毁 QP 时分配和释放安全上下文。 此上下文用于控制对 PKey 的访问。 当请求修改 QP 来更改端口、PKey 索引或备用路径时，请检查 QP 是否具有对该端口子网前缀上的 PKey 表索引中的 PKey 的权限。 如果 QP 是共享的，请确保 QP 的所有句柄也具有访问权限。 存储 QP 正在使用的端口和 PKey 索引。 重置到初始化转换后，用户可以独立修改端口、PKey 索引和备用路径。 因此，端口和 PKey 设置更改可以是先前设置和新设置的合并。 为了在 PKey 表或子网前缀更改时维持访问控制，请保留每个端口上使用每个 PKey 索引的所有 QP 的列表。 如果发生更改，则使用该设备和端口的所有 QP 都必须强制执行新缓存设置的访问权限。 这些更改将事务添加到 QP 修改过程中。 如果修改失败，则必须保持与旧端口和 PKey 索引的关联；如果修改成功，则必须将其删除。 必须在修改之前建立与新端口和 PKey 索引的关联，如果修改失败则将其删除。 1. 当 QP 被修改为特定端口时，PKey 索引或备用路径将该 QP 插入到适当的列表中。 2. 检查访问新设置的权限。 3. 如果步骤 2 授予访问权限，则尝试修改 QP。 4a. 如果步骤 2 和 3 成功，则删除任何先前的关联。 4b. 如果以太失败，请删除新的设置关联。 如果 PKey 表或子网前缀发生更改，则遍历 QP 列表并检查它们是否具有权限。 如果没有，则将 QP 发送到错误状态并引发致命错误事件。 如果它是共享 QP，请确保共享 real_qp 的所有 QP 也具有权限。 如果拥有安全结构的 QP 被拒绝访问，则安全结构将被标记为此类，并且 QP 将被添加到 error_list 中。 一旦将 QP 移至错误完成，安全结构标记就会被清除。 正确维护列表会将 QP 销毁转变为事务。 设备的硬件驱动程序释放 ib_qp 结构，因此当销毁正在进行时，ib_qp_security 结构中的 ib_qp 指针未定义。 当销毁过程开始时，ib_qp_security 结构被标记为正在销毁。 这可以防止对 QP 指针采取任何操作。 QP 成功销毁后，它仍然可以列在 error_list 上，等待该流处理它，然后再清理结构。 如果销毁失败，则 QP 端口和 PKey 设置将重新插入到适当的列表中，销毁标志将被清除，并强制执行访问控制，以防在销毁流程期间发生任何缓存更改。 为了保持安全更改隔离，使用新文件来保存与安全相关的功能
+					port_pkey_list_insert -> 在检查权限之前，将此 QP 添加到新端口和 pkey 设置的列表中，以防发生并发缓存更新。 遍历列表进行缓存更改不会获取安全互斥体，除非将 QP 发送到错误
+					check_qp_port_pkey_settings
+						get_pkey_and_subnet_prefix
+							ib_get_cached_pkey
+							ib_get_cached_subnet_prefix
+						enforce_qp_pkey_security
+					modify_qp -> .modify_qp = irdma_modify_qp_roce
+				rdma_lag_put_ah_roce_slave
+		release_qp:
+		rdma_lookup_put_uobject
+
+irdma_modify_qp
+irdma_modify_qp_roce
+	irdma_query_pkey
+	rdma_get_udp_sport -> 根据 grh.flow_label 或 lqpn/rqrpn 获取 QP 的源 udp 端口号。 这可以更好地跨 NIC RX 队列传播流量
+	irdma_qp_rem_qos
+	dev->ws_remove
+	rdma_read_gid_l2_fields
+	irdma_roce_get_vlan_prio
+		vlan_dev_get_egress_qos_mask
+	irdma_qp_add_qos
+		list_add(&qp->list, &vsi->qos[qp->user_pri].qplist)
+	ib_modify_qp_is_ok
+		qp_state_table[cur_state][next_state].valid) -> IB：添加 ib_modify_qp_is_ok() 库函数，内核中的 mthca 驱动程序包含一个表，其中的属性对于每个队列对状态转换都有效。 事实证明，正在准备合并的其他两个 IB 驱动程序（ipath 和 ehca）都复制了该表、错误等。 为了防止代码重复，请将此表和用于检查参数的代码移动到中间层库函数 ib_modify_qp_is_ok() 中
+		qp状态表及参数: qp_state_table[IB_QPS_ERR + 1][IB_QPS_ERR + 1]
+	switch (attr->qp_state) -> QP状态机
+	...
+	irdma_flush_wqes
+		irdma_hw_flush_wqes
+			cqp_request->callback_fcn = irdma_hw_flush_wqes_callback
+			cqp_info->cqp_cmd = IRDMA_OP_QP_FLUSH_WQES
+			irdma_handle_cqp_op -> cqp 控制QP
+				irdma_process_cqp_cmd
+					irdma_exec_cqp_cmd
+						switch (pcmdinfo->cqp_cmd) -> 判断控制QP命令类型
+						case IRDMA_OP_CEQ_CREATE -> 驱动程序将特权命令发布到硬件管理队列（控制 QP 或 CQP），以请求硬件执行管理操作。 实现 CQP 的创建/销毁以及支持函数、数据结构和标头以处理不同的 CQP 命令
+							irdma_sc_cq_create
+								irdma_sc_cqp_get_next_send_wqe
+								set_64bit_val(wqe, 0, cq->cq_uk.cq_size) -> 按位设置其值(每8字节)
+								dma_wmb()
+								irdma_sc_cqp_post_sq
+									writel(IRDMA_RING_CURRENT_HEAD(cqp->sq_ring), cqp->dev->cqp_db) -> 写寄存器(往内存映射的 I/O 空间上写4字节数据)
+						...
+	irdma_sc_qp_setctx_roce
+void irdma_sc_qp_setctx_roce(struct irdma_sc_qp *qp, __le64 *qp_ctx,
+	set_64bit_val rq_wqe_size
+	...
+
+
+irdma_uk_rdma_write
+irdma_uk_rdma_read
+irdma_uk_cq_poll_cmpl
 
 
 
