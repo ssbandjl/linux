@@ -2395,11 +2395,90 @@ set_64bit_val
 ibv_reg_mr:
 IB_USER_VERBS_CMD_REG_MR
 ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr
-	...
+	region = ib_umem_get -> pin住以及通过DMA映射用户空间内存, IB/uverbs：将 ib_umem_get()/ib_umem_release() 导出到模块，导出 ib_umem_get()/ib_umem_release() 并让低级驱动程序控制何时调用 ib_umem_get() 来pin和 DMA 映射用户空间，而不是总是调用它 在调用低级驱动程序的 reg_user_mr 方法之前在 ib_uverbs_reg_mr() 中。 还将这些函数移至 ib_core 模块而不是 ib_uverbs 中，以便使用它们的驱动程序模块不依赖于 ib_uverbs。 这具有许多优点： - 从使通用代码成为可以根据特定设备的详细信息指示由设备特定代码使用或覆盖的库的角度来看，这是更好的设计。 - 不需要固定用户空间内存区域的驱动程序不需要承受调用 ib_mem_get() 的性能损失。 例如，虽然我没有尝试在此补丁中实现它，但 ipath 驱动程序应该能够避免固定内存并仅使用 copy_{to,from}_user() 来访问用户空间内存区域。 - 需要特殊映射处理的缓冲区可以由低级驱动程序识别。 例如，通过使用额外标志映射 CQ 缓冲区，可以解决用户空间中 mthca CQ 的一些特定于 Altix 的内存排序问题。 - 需要为内存区域以外的内容固定和 DMA 映射用户空间内存的驱动程序可以直接使用 ib_umem_get()，而不是使用其 reg_phys_mr 方法的额外参数进行黑客攻击。 例如，待合并的 mlx4 驱动程序需要引脚和 DMA 映射 QP 和 CQ 缓冲区，但不需要为这些缓冲区创建内存密钥。 因此，最干净的解决方案是 mlx4 在 create_qp 和 create_cq 方法中调用 ib_umem_get() -> 调用 ib_umem_get 来完成内存页面pin操作 + 将pin住的内存页面组织为DMA SG List
+		can_do_mlock -> [PATCH] IB uverbs：内存固定实现(pin)，添加对固定用户空间内存区域并返回该区域中的页面列表的支持。 这包括根据 vm_locked 跟踪固定内存并防止非特权用户超过 RLIMIT_MEMLOCK
+		mmgrab(mm) -> 抓住内存(引用+1)
+		__get_free_page
+		npages = ib_umem_num_pages(umem)
+			ib_umem_num_dma_blocks(umem, PAGE_SIZE) -> RDMA/umem：将 ib_umem_num_pages() 拆分为 ib_umem_num_dma_blocks()，ib_umem_num_pages() 只能由直接在 CPU 页面中使用 SGL 的事物使用。 构建 DMA 列表的驱动程序应使用新的 ib_num_dma_blocks()，它返回 rdma_umem_for_each_block() 将返回的块数。 要使 DMA 驱动程序通用，需要不同的实现。 仅当请求的页面大小为 < PAGE_SIZE 和/或 IOVA == umem->address 时，基于 umem->address 计算 DMA 块计数才有效。 相反，DMA 页数应在 IOVA 地址空间中计算，而不是 umem->address。 因此，IOVA 必须存储在 umem 内，以便可以用于这些计算。 现在默认将其设置为 umem->address 并在调用 ib_umem_find_best_pgsz() 时修复它。 这允许驱动程序安全地转换为 ib_umem_num_dma_blocks()
+		cond_resched -> RDMA/umem：在 ib_umem_get() 中添加一个调度点，映射小至 64GB 可能需要 10 秒以上，触发 CONFIG_PREEMPT_NONE=y 的内核问题。 ib_umem_get() 已经在 x86_64 上以 2MB 为单位分割工作，在持久循环中添加 cond_resched() 足以解决问题。 请注意，sg_alloc_table() 仍然可以使用超过 100 毫秒，这也是有问题的。 这可能稍后在 ib_umem_add_sg_table() 中解决，按需在 sql 中添加新块. 在一些比较耗时的处理中如文件系统和内存回收的一些路径会调用cond_resched, 用cond_resched来进行检查是否具备调度时机, 对于非抢占式内核来说，在内核的很多地方，特别是文件系统操作和内存管理相关的一些耗时路径中，都已经被内核开发者识别出来，并使用cond_resched来减小延迟, cond_resched() 函数，它的功能是主动放权，等待下一次的调度运行, 参考: https://www.zhihu.com/question/35004859
+		pin_user_pages_fast
+		sg_alloc_append_table_from_pages
+		ib_dma_map_sgtable_attrs
+	ib_copy_from_udata(&req, udata, min(sizeof(req), udata->inlen)
 	irdma_alloc_iwmr
+		ib_umem_find_best_pgsz
 		ib_umem_num_dma_blocks
 	case IRDMA_MEMREG_TYPE_QP
-	...
+		irdma_reg_user_mr_type_qp(req, udata, iwmr)
+			irdma_handle_q_mem(iwdev, &req, iwpbl, lvl)
+				irdma_setup_pbles -> 将用户页拷贝到PBLE中
+				case IRDMA_MEMREG_TYPE_QP
+					irdma_check_mem_contiguous
+			rdma_udata_to_drv_context
+			list_add_tail(&iwpbl->list, &ucontext->qp_reg_mem_list)
+	case IRDMA_MEMREG_TYPE_MEM
+		irdma_reg_user_mr_type_mem
+			irdma_setup_pbles -> 使用位掩码重构 PBLE 函数来表示所需的 PBLE 级别，而使用 2 个参数 use_pble 和 lvl_one_only 使代码变得混乱
+			HW 使用主机内存作为许多协议上下文对象和队列状态跟踪的后备存储。 主机内存缓存 (HMC) 是负责管理存储在主机内存中的这些对象的组件。 添加函数和数据结构来管理 HMC 为各种对象使用的支持页面的分配, 本文主要分析inux内核intel/hns3/mlx5等RDMA驱动上下文内存管理机制优缺点: https://zhuanlan.zhihu.com/p/610503666, 实现物理缓冲区列表条目 (PBLE) 资源管理器来管理 PBLE HMC 资源对象池, 
+				irdma_get_pble ?
+					get_lvl1_lvl2_pble
+						get_lvl1_pble
+							irdma_prm_get_pbles
+								bitmap_find_next_zero_area
+								bitmap_set
+						get_lvl2_pble
+							...
+					add_pble_prm -> Host Memory Cache (HMC) 主机内存缓存, prm 页资源管理
+						irdma_get_type
+						add_sd_direct
+							irdma_add_sd_table_entry
+							dma_alloc_coherent
+							memcpy(&sd_entry->u.pd_table.pd_page_addr, &dma_mem,
+						add_bp_pages -> 为段描述添加后端内存页
+							irdma_pble_get_paged_mem
+								irdma_map_vm_page_list
+									vmalloc_to_page -> 找到由vmalloc( )所分配的内存的虚拟地址所映射的物理页，并返回该页的指针描述符
+									dma_map_page -> 将一页物理内存进行映射
+							irdma_add_sd_table_entry
+							irdma_add_pd_table_entry
+								dma_alloc_coherent
+								memcpy(&pd_entry->bp.addr, page, sizeof(pd_entry->bp.addr))
+								memcpy(pd_addr, &page_desc, sizeof(*pd_addr))
+								irdma_invalidate_pf_hmc_pd -> 使 PF 硬件中的 pd 缓存无效
+									writel(val, dev->hw_regs[IRDMA_PFHMC_PDINV])
+						irdma_prm_add_pble_mem
+							bitmap_zalloc
+						irdma_hmc_sd_one
+							irdma_set_sd_entry
+							or irdma_clr_sd_entry
+							dev->cqp->process_cqp_sds(dev, &sdinfo) -> irdma_update_sds_noccq
+								cqp_sds_wqe_fill
+								irdma_get_cqp_reg_info
+								irdma_sc_cqp_post_sq
+								irdma_cqp_poll_registers
+						list_add(&chunk->list, &pble_rsrc->pinfo.clist)
+					get_lvl1_lvl2_pble
+				irdma_copy_user_pgaddrs -> 将用户页面地址复制到本地 pble 的操作系统
+					sg_page -> 获取scatterlist所对应的page指针
+					rdma_umem_for_each_dma_block
+						rdma_block_iter_dma_address -> 获取块迭代器持有的当前块的对齐 dma 地址
+						irdma_next_pbl_addr
+			irdma_check_mr_contiguous
+				irdma_check_mem_contiguous
+			irdma_create_stag -> 随机stag
+				get_random_bytes
+				irdma_alloc_rsrc -> RDMA/irdma：注册辅助驱动程序并实现私有通道 OP，注册可以从 Intel PCI netdev 驱动程序 i40e 和ice 连接到辅助 RDMA 设备的辅助驱动程序。 实现私有通道操作，并注册网络通知程序
+			irdma_hwreg_mr -> 发送cqp命令进行内存注册
+				irdma_alloc_and_get_cqp_request
+				irdma_get_mr_access
+				cqp_info->cqp_cmd = IRDMA_OP_MR_REG_NON_SHARED -> irdma_sc_mr_reg_non_shared
+					irdma_sc_cqp_get_next_send_wqe
+					...
+					set_64bit_val(wqe, 32, info->reg_addr_pa)
+					irdma_sc_cqp_post_sq
+				irdma_handle_cqp_op
+				irdma_put_cqp_request
 UVERBS_OBJECT_MR
 ib_check_mr_access
 uobj_get_obj_read
@@ -2489,7 +2568,7 @@ irdma_modify_qp_roce
 								irdma_sc_cqp_get_next_send_wqe
 								set_64bit_val(wqe, 0, cq->cq_uk.cq_size) -> 按位设置其值(每8字节)
 								dma_wmb()
-								irdma_sc_cqp_post_sq
+								irdma_sc_cqp_post_sq -> no msleep(300)
 									writel(IRDMA_RING_CURRENT_HEAD(cqp->sq_ring), cqp->dev->cqp_db) -> 写寄存器(往内存映射的 I/O 空间上写4字节数据)
 						...
 	irdma_sc_qp_setctx_roce
@@ -2502,5 +2581,55 @@ irdma_uk_rdma_write
 irdma_uk_rdma_read
 irdma_uk_cq_poll_cmpl
 
+
+/proc/pid/pagemap - an array mapping virtual pages to pfns, 如果页面不存在但在交换中，则 PFN 包含交换文件号的编码以及页面在交换中的偏移量。 未映射的页面返回空 PFN。 这允许精确确定哪些页面被映射（或在交换中）并比较进程之间的映射页面。 * 此接口的高效用户将使用 /proc/pid/maps 来确定实际映射的内存区域，并使用 llseek 跳过未映射的区域
+pagemap_read -> Maps4：添加 /proc/pid/pagemap 接口，该接口为地址空间中的每个页面提供到其物理页帧号的映射，允许精确确定哪些页面被映射以及哪些页面在进程之间共享。 此版本中的新增内容： - 标头再次消失（根据 Dave Hansen 和 Alan Cox 的建议） - 64 位条目（根据与 Andi Kleen 的讨论） - 交换导出的 pte 信息（来自 Dave Hansen） - 页面遍历器回调以查找漏洞（来自 Dave Hansen） - 直接 put_user I/O（根据 Rusty Russell 的建议）此补丁折叠在清理中并交换 Dave Hansen 的 PTE 支持
+	file_ns_capable
+	mmap_read_lock_killable
+	untagged_addr_remote
+	mmap_read_lock_killable
+	walk_page_range(mm, start_vaddr, end, &pagemap_ops, &pm) -> walk_page_range - 使用回调遍历内存映射的页表：起始地址：结束地址：为树的每个级别调用的回调集递归地遍历 VMA 中内存区域的页表，调用提供的回调。 回调按顺序调用（第一个 PGD、第一个 PUD、第一个 PMD、第一个 PTE、第二个 PTE...第二个 PMD 等）。 如果省略较低级别的回调，则行走深度会减少。 每个回调接收一个入口指针以及关联范围的开始和结束，以及用于访问 ->private 或 ->mm 字段的原始 mm_walk 的副本。 通常不加锁，但分割透明大页可能会加页表锁。 如果需要，底层迭代器将从 highmem 映射 PTE 目录。 如果任何回调返回非零值，则遍历将中止并将返回值传播回调用者。 否则返回 0。 如果 walk->hugetlb_entry 为 !NULL，则 walk->mm->mmap_sem 必须至少保持读取状态
+	copy_to_user
+
+static const struct mm_walk_ops pagemap_ops = {
+	.pmd_entry	= pagemap_pmd_range,
+	.pte_hole	= pagemap_pte_hole,
+	.hugetlb_entry	= pagemap_hugetlb_range,
+	.walk_lock	= PGWALK_RDLOCK,
+};
+
+pagemap_pmd_range -> pagemap：将 mm 传递给 pagewalkers ，我们现在至少需要这个来检测大页，因为 powerpc 需要 vm_area_struct 来确定虚拟地址是否引用大页（它的 pmd_huge() 不起作用）。 对于其他一些用户来说它也可能派上用场
+	pmd_trans_huge_lock
+	...
+	for pte
+		内核态实现pagemap proc接口的代码位于: fs/proc/task_mmu.c, 把PTE转换为pagemap_entry
+		pte_to_pagemap_entry -> proc：报告 /proc/pid/pagemap 中的文件/匿名位，这是安德鲁提议的实现，扩展页面映射文件位以报告任务工作集缺少的内容。 工作集检测的问题是多方面的。 在 criu（检查点/恢复）项目中，我们将任务的内存转储到图像文件中，为了正确执行此操作，我们需要检测映射中的哪些页面真正在使用。 我虽然可以帮助解决这个问题，但 mincore 系统调用却没有。 首先，它不报告交换的页面，因此我们无法找出要转储的匿名映射的哪些部分。 接下来，它会报告页面缓存中存在的页面，即使它们没有被映射，但这并不意味着它们没有受到威胁。 请注意，交换页的问题至关重要——我们必须将交换页转储到映像文件。 但是文件页面的问题是优化 - 我们可以将所有文件页面进行映像，这是正确的，但是如果我们知道页面未映射或未受到限制，我们可以将它们从转储文件中删除。 转储仍然是自洽的，尽管大小明显较小（在实际应用程序中最多小 10 倍）。 Andrew 注意到，proc pagemap 文件解决了上述 3 个问题中的 2 个——它报告页面是否存在或交换，并且不报告未映射的页面缓存页面。 但是，它无法区分受限制的文件页面和不受限制的文件页面。 我想在此文件中最后一个未使用的位来报告映射到相应 pte 的页面是否为 PageAnon
+			pte_present(pte)
+			frame = pte_pfn(pte) -> 
+			make_pme(frame, flags)
+		add_to_pagemap
+	...
+
+
+
+
+smap: 基于映射的扩展，显示每个映射的内存消耗以及与其关联的标志, scan page table
+static const struct mm_walk_ops smaps_walk_ops = {
+	.pmd_entry		= smaps_pte_range,
+	.hugetlb_entry		= smaps_hugetlb_range,
+	.walk_lock		= PGWALK_RDLOCK,
+};
+smaps_pte_range
+	smaps_pte_entry
+
+
+show_smap
+	smap_gather_stats
+	show_map_vma
+	__show_smap
+	seq_printf
+
+
+irdma：为英特尔(R) 以太网控制器 E810 添加 RDMA 驱动程序，这是针对英特尔(R) 以太网控制器 E810 的 RDMA FreeBSD 驱动程序（称为 irdma）的初始提交。 以每 PF 方式支持 RoCEv2 和 iWARP 协议，RoCEv2 为默认协议。 测试已使用 krping 工具、perftest、ucmatose、rping、ud_pingpong、rc_pingpong 等完成, https://cgit.freebsd.org/src/commit/?id=42bad04a2156
 
 
