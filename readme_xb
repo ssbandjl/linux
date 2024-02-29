@@ -2461,7 +2461,7 @@ ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr
 					get_lvl1_lvl2_pble
 				irdma_copy_user_pgaddrs -> 将用户页面地址复制到本地 pble 的操作系统
 					sg_page -> 获取scatterlist所对应的page指针
-					rdma_umem_for_each_dma_block
+					rdma_umem_for_each_dma_block -> 迭代 umem 的连续 DMA 块
 						rdma_block_iter_dma_address -> 获取块迭代器持有的当前块的对齐 dma 地址
 						irdma_next_pbl_addr
 			irdma_check_mr_contiguous
@@ -2469,7 +2469,7 @@ ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr
 			irdma_create_stag -> 随机stag
 				get_random_bytes
 				irdma_alloc_rsrc -> RDMA/irdma：注册辅助驱动程序并实现私有通道 OP，注册可以从 Intel PCI netdev 驱动程序 i40e 和ice 连接到辅助 RDMA 设备的辅助驱动程序。 实现私有通道操作，并注册网络通知程序
-			irdma_hwreg_mr -> 发送cqp命令进行内存注册
+			irdma_hwreg_mr(iwdev, iwmr, access) -> 发送cqp命令进行内存注册
 				irdma_alloc_and_get_cqp_request
 				irdma_get_mr_access
 				cqp_info->cqp_cmd = IRDMA_OP_MR_REG_NON_SHARED -> irdma_sc_mr_reg_non_shared
@@ -2477,6 +2477,7 @@ ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr
 					...
 					set_64bit_val(wqe, 32, info->reg_addr_pa)
 					irdma_sc_cqp_post_sq
+				stag_info->reg_addr_pa = iwmr->pgaddrmem[0]
 				irdma_handle_cqp_op
 				irdma_put_cqp_request
 UVERBS_OBJECT_MR
@@ -2485,7 +2486,8 @@ uobj_get_obj_read
 reg_user_mr
 
 
-
+intel irdma/ice/e810 driver:
+drivers/infiniband/hw/irdma/main.c
 module_init(irdma_init_module);
 	auxiliary_driver_register i40iw_auxiliary_drv
 		.probe = i40iw_probe
@@ -2501,6 +2503,20 @@ irdma_ib_register_device
 irdma_init_rdma_device
 irdma_init_roce_device
 	ib_set_device_ops(&iwdev->ibdev, &irdma_roce_dev_ops);
+
+static const struct ib_device_ops irdma_roce_dev_ops = {
+	.attach_mcast = irdma_attach_mcast,
+	.create_ah = irdma_create_ah,
+	.create_user_ah = irdma_create_user_ah,
+	.destroy_ah = irdma_destroy_ah,
+	.detach_mcast = irdma_detach_mcast,
+	.get_link_layer = irdma_get_link_layer,
+	.get_port_immutable = irdma_roce_port_immutable,
+	.modify_qp = irdma_modify_qp_roce,
+	.query_ah = irdma_query_ah,
+	.query_pkey = irdma_query_pkey,
+};
+
 
 
 ibv_modify_qp -> IB_USER_VERBS_EX_CMD_MODIFY_QP -> ib_uverbs_ex_modify_qp
@@ -2571,6 +2587,9 @@ irdma_modify_qp_roce
 								irdma_sc_cqp_post_sq -> no msleep(300)
 									writel(IRDMA_RING_CURRENT_HEAD(cqp->sq_ring), cqp->dev->cqp_db) -> 写寄存器(往内存映射的 I/O 空间上写4字节数据)
 						...
+						case IRDMA_OP_QP_CREATE
+							irdma_sc_qp_create -> 创建QP判断对应QP HMC是否已准备好
+						...
 	irdma_sc_qp_setctx_roce
 void irdma_sc_qp_setctx_roce(struct irdma_sc_qp *qp, __le64 *qp_ctx,
 	set_64bit_val rq_wqe_size
@@ -2632,4 +2651,75 @@ show_smap
 
 irdma：为英特尔(R) 以太网控制器 E810 添加 RDMA 驱动程序，这是针对英特尔(R) 以太网控制器 E810 的 RDMA FreeBSD 驱动程序（称为 irdma）的初始提交。 以每 PF 方式支持 RoCEv2 和 iWARP 协议，RoCEv2 为默认协议。 测试已使用 krping 工具、perftest、ucmatose、rping、ud_pingpong、rc_pingpong 等完成, https://cgit.freebsd.org/src/commit/?id=42bad04a2156
 
+
+struct ice_vsi
+
+
+
+irdma_probe
+	ib_alloc_device -> #define ib_alloc_device(drv_struct, member) -> struct ib_device *_ib_alloc_device(size_t size)
+		device = kzalloc(size, GFP_KERNEL)
+		rdma_restrack_init
+		rdma_init_coredev -> RDMA/core：在net命名空间中实现compat device/sysfs树，实现ib_core的兼容层sysfs条目，以便非init_net net命名空间也可以发现rdma设备。 每个非 init_net 网络命名空间都在其中创建了 ib_core_device。 这样的 ib_core_device sysfs 树类似于 init_net 命名空间中找到的 rdma 设备。 这允许通过 sysfs 条目在多个非 init_net 网络命名空间中发现 rdma 设备，并且对 rdma-core 用户空间很有帮助
+			此 BUILD_BUG_ON 旨在捕获 ib_core_device 和 device 联合的布局更改。 dev 必须是第一个元素，因为 ib_core 和提供程序驱动程序使用它。 在 ib_core_device 中的 device 之前添加任何内容都会打破这个假设
+			coredev->dev.class = &ib_class
+			device_initialize
+			INIT_LIST_HEAD(&coredev->port_list) -> RDMA/core：引入 ib_core_device 来保存设备，为了支持 rdma 设备的多个网络命名空间中的 sysfs 条目，引入一个 ib_core_device ，其范围仅限于保存核心设备和每个端口 sysfs 相关条目。 这是准备补丁，以便在后续补丁中可以在每个网络命名空间中创建多个 ib_core_device，这些设备都可以共享 ib_device。 (a) 将 sysfs 特定字段移至 ib_core_device。 (b) 使 sysfs 和设备生命周期相关例程在 ib_core_device 上工作。 (c) 引入并使用 rdma_init_coredev() 帮助程序来初始化 coredev 字段
+			write_pnet(&coredev->rdma_net, net)
+		INIT_LIST_HEAD(&device->event_handler_list)
+		init_rwsem(&device->event_handler_rwsem) -> init_rwsem()的功能是初始化读写信号量，将信号量的count字段设置为0
+		xa_init_flags(&device->client_data, XA_FLAGS_ALLOC) -> 初始化数组
+		init_completion(&device->unreg_completion) -> RDMA/核心：使用 netlink 命令同步取消注册, -> 初始化动态分配的完成对象 -> 参考: https://zhuanlan.zhihu.com/p/504938832
+		device->uverbs_cmd_mask = -> IB_USER_VERBS_CMD_ALLOC_MW... -> 设置命令掩码/比特位
+	irdma_fill_device_info -> 填充设备信息,默认配置
+	irdma_ctrl_init_hw -> 初始化硬件的控制部分
+		irdma_setup_init_state
+			irdma_save_msix_info
+			dma_alloc_coherent
+			irdma_initialize_dev
+				irdma_obj_aligned_mem
+				irdma_sc_dev_init
+		irdma_create_cqp
+		irdma_hmc_setup
+			irdma_create_hmc_objs -> 初始化时驱动会按照支持QP数量规格把HMC准备好
+				irdma_cfg_fpm_val
+					irdma_sc_cfg_iw_fpm
+						irdma_sc_parse_fpm_commit_buf
+							irdma_sc_decode_fpm_commit
+								obj_info[rsrc_idx].cnt = (u32)FIELD_GET(IRDMA_COMMIT_FPM_QPCNT, temp) -> 初始化时获取支持的QP数量规格
+		irdma_initialize_hw_rsrc
+		irdma_create_ccq
+		irdma_setup_ceq_0
+		INIT_WORK(&rf->cqp_cmpl_work, cqp_compl_worker)
+		irdma_sc_ccq_arm
+	ice_get_qos_params
+	irdma_fill_qos_info
+	irdma_rt_init_hw -> 初始化硬件运行时, ILQ, IEQ, CEQs and PBLEs
+		irdma_initialize_ieq
+			irdma_puda_create_rsrc
+				irdma_puda_qp_create
+					irdma_cqp_qp_create_cmd
+						cqp_info->cqp_cmd = IRDMA_OP_QP_CREATE
+	irdma_ib_register_device
+	ice_rdma_update_vsi_filter
+	auxiliary_set_drvdata
+
+
+
+
+static struct class ib_class = {
+	.name    = "infiniband",
+	.dev_release = ib_device_release,
+	.dev_uevent = ib_device_uevent,
+	.ns_type = &net_ns_type_operations,
+	.namespace = net_namespace,
+};
+
+
+
+iavf_register_client
+
+
+drivers/net/ethernet/hisilicon/Makefile
+net：添加海思网络子系统hnae框架支持，HNAE（海思网络加速引擎）是为海思网络加速引擎提供统一环形缓冲区接口的框架。 通过该接口，上层可以有意地充当以太网驱动程序、ODP驱动程序或其他服务驱动程序
 
