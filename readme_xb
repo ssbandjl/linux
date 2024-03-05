@@ -2700,6 +2700,13 @@ irdma_probe
 				irdma_puda_qp_create
 					irdma_cqp_qp_create_cmd
 						cqp_info->cqp_cmd = IRDMA_OP_QP_CREATE
+		...
+		irdma_setup_ceqs
+		irdma_setup_aeq
+			irdma_create_aeq
+			irdma_cfg_aeq_vector
+			irdma_ena_intr
+		...
 	irdma_ib_register_device
 	ice_rdma_update_vsi_filter
 	auxiliary_set_drvdata
@@ -2723,3 +2730,177 @@ iavf_register_client
 drivers/net/ethernet/hisilicon/Makefile
 net：添加海思网络子系统hnae框架支持，HNAE（海思网络加速引擎）是为海思网络加速引擎提供统一环形缓冲区接口的框架。 通过该接口，上层可以有意地充当以太网驱动程序、ODP驱动程序或其他服务驱动程序
 
+
+capability:
+pci_find_capability
+
+read pcie config space of device:
+u32 read_pci_config
+	outl(0x80000000 | (bus<<16) | (slot<<11) | (func<<8) | offset, 0xcf8);
+
+
+
+drivers/dma/dmatest.c
+late_initcall(dmatest_init);
+
+
+三星:
+drivers/dma/pl330.c
+pd->device_issue_pending = pl330_issue_pending;
+dma_async_issue_pending
+	device_issue_pending
+xdev->common.device_issue_pending = xilinx_dma_issue_pending;
+chan->start_transfer = xilinx_dma_start_transfer
+
+struct dma_device
+
+desc->txd.tx_submit = pl330_tx_submit;
+
+
+module_amba_driver(pl330_driver);
+dma_async_device_register
+
+
+Xilinx media platform drivers
+drivers/media/platform/xilinx/xilinx-dma.c
+dmaengine_prep_interleaved_dma
+
+
+dmaengine_prep_interleaved_dma
+dmaengine_submit
+
+
+https://www.kernel.org/doc/html/v4.9/media/kapi/v4l2-videobuf2.html
+static const struct vb2_ops xvip_dma_queue_qops = {
+	.queue_setup = xvip_dma_queue_setup,
+	.buf_prepare = xvip_dma_buffer_prepare,
+	.buf_queue = xvip_dma_buffer_queue,
+	.wait_prepare = vb2_ops_wait_prepare,
+	.wait_finish = vb2_ops_wait_finish,
+	.start_streaming = xvip_dma_start_streaming,
+	.stop_streaming = xvip_dma_stop_streaming,
+};
+
+xvip_dma_buffer_queue
+
+
+static struct platform_driver xvip_composite_driver = {
+	.driver = {
+		.name = "xilinx-video",
+		.of_match_table = xvip_composite_of_id_table,
+	},
+	.probe = xvip_composite_probe,
+	.remove_new = xvip_composite_remove,
+};
+
+module_platform_driver(xvip_composite_driver);
+xvip_graph_init
+xvip_graph_dma_init
+xvip_graph_dma_init_one
+	xvip_dma_init
+		...
+		dma->queue.ops = &xvip_dma_queue_qops;
+		dma->dma = dma_request_chan(dma->xdev->dev, name);
+
+
+https://github.com/Xilinx/linux-xlnx/tree/xilinx-v14.4
+
+
+
+drivers/infiniband/core/ucma.c
+static ssize_t (*ucma_cmd_table[])(struct ucma_file *file,
+				   const char __user *inbuf,
+				   int in_len, int out_len) = {
+	[RDMA_USER_CM_CMD_CREATE_ID] 	 = ucma_create_id,
+	[RDMA_USER_CM_CMD_DESTROY_ID]	 = ucma_destroy_id,
+	[RDMA_USER_CM_CMD_BIND_IP]	 = ucma_bind_ip,
+	[RDMA_USER_CM_CMD_RESOLVE_IP]	 = ucma_resolve_ip,
+	[RDMA_USER_CM_CMD_RESOLVE_ROUTE] = ucma_resolve_route,
+	[RDMA_USER_CM_CMD_QUERY_ROUTE]	 = ucma_query_route,
+	[RDMA_USER_CM_CMD_CONNECT]	 = ucma_connect,
+	[RDMA_USER_CM_CMD_LISTEN]	 = ucma_listen,
+	[RDMA_USER_CM_CMD_ACCEPT]	 = ucma_accept,
+	[RDMA_USER_CM_CMD_REJECT]	 = ucma_reject,
+	[RDMA_USER_CM_CMD_DISCONNECT]	 = ucma_disconnect,
+	[RDMA_USER_CM_CMD_INIT_QP_ATTR]	 = ucma_init_qp_attr,
+	[RDMA_USER_CM_CMD_GET_EVENT]	 = ucma_get_event,
+	[RDMA_USER_CM_CMD_GET_OPTION]	 = NULL,
+	[RDMA_USER_CM_CMD_SET_OPTION]	 = ucma_set_option,
+	[RDMA_USER_CM_CMD_NOTIFY]	 = ucma_notify,
+	[RDMA_USER_CM_CMD_JOIN_IP_MCAST] = ucma_join_ip_multicast,
+	[RDMA_USER_CM_CMD_LEAVE_MCAST]	 = ucma_leave_multicast,
+	[RDMA_USER_CM_CMD_MIGRATE_ID]	 = ucma_migrate_id,
+	[RDMA_USER_CM_CMD_QUERY]	 = ucma_query,
+	[RDMA_USER_CM_CMD_BIND]		 = ucma_bind,
+	[RDMA_USER_CM_CMD_RESOLVE_ADDR]	 = ucma_resolve_addr,
+	[RDMA_USER_CM_CMD_JOIN_MCAST]	 = ucma_join_multicast
+};
+
+UCMA_CMD_CONNECT -> static ssize_t (*ucma_cmd_table[]) -> static ssize_t ucma_connect
+	copy_from_user
+	ucma_get_ctx_dev
+	ucma_copy_conn_param -> RDMA/cma：为AF_IB设置qkey，允许用户在使用AF_IB时指定qkey。 qkey 被添加到 struct rdma_ucm_conn_param 中代替保留字段，但为了向后兼容，仅当关联的 rdma_cm_id 使用 AF_IB 时才可访问
+		...
+		dst->qkey = (id->route.addr.src_addr.ss_family == AF_IB) ? src->qkey : 0;
+	rdma_connect_ece -> RDMA/ucma：扩展ucma_connect以接收ECE参数，CMID的主动方通过librdmacm的rdma_connect()和内核的ucma_connect()发起连接。 扩展 UCMA 接口来处理这些新参数
+		rdma_connect(id, conn_param) -> rdma_connect_locked
+			cma_comp_exch(id_priv, RDMA_CM_ROUTE_RESOLVED, RDMA_CM_CONNECT)
+			rdma_cap_ib_cm(id->device, id->port_num) -> rdma_cap_ib_cm - 检查设备端口是否具有 Infiniband Communication Manager 功能。 @device：要检查的设备 @port_num：要检查的端口号 InfiniBand 通信管理器是通过通用服务接口 (GSI) 访问的许多预定义通用服务代理 (GSA) 之一。 它的作用是促进节点之间连接的建立以及已建立的连接的其他管理相关任务。 返回：如果端口支持 IB CM，则返回 true（但这并不能保证 CM 实际正在运行）
+				RDMA_CORE_CAP_IB_CM
+			if (id->qp_type == IB_QPT_UD) -> cma_resolve_ib_udp -> RDMA/cma：添加对 RDMA_PS_UDP 的支持，允许通过 rdma_cm 使用 UD QP，以便为使用 SIDR 解析数据报消息的 IB 地址提供地址转换服务
+			or cma_connect_ib
+				check_add_overflow
+				ib_create_cm_id(id_priv->id.device, cma_ib_handler, id_priv)
+					cm_alloc_id_priv -> RDMA/cm：简化建立监听cm_id
+						RB_CLEAR_NODE(&cm_id_priv->service_node) -> rb_tree
+						init_completion(&cm_id_priv->comp)
+						xa_alloc_cyclic -> 在 XArray 中找到存储此条目的位置
+				trace_cm_send_req
+				ib_send_cm_req
+					msg->context[1] = (void *)(unsigned long)IB_CM_REQ_SENT
+					ib_post_send_mad -> [IB] 修复 MAD 层 DMA 映射，以避免在映射后触及数据缓冲区。MAD 层在 DMA 映射完成后触及用于发送的数据缓冲区，从而违反了 DMA API。 这会导致非缓存一致性架构出现问题，因为执行 DMA 的设备不会看到仅存在于 CPU 缓存中的有效负载缓冲区的更新。 通过让所有 MAD 使用者使用 ib_create_send_mad() 分配其发送缓冲区，并将 DMA 映射移动到 MAD 层，以便可以在调用 send 之前（以及 MAD 层对发送缓冲区进行任何修改之后）完成此操作，可以解决此问题。 在非缓存一致性 PowerPC 440SPe 系统上进行测试
+						ib_mad_enforce_security -> IB/核心：在管理数据报上强制执行安全性，在创建和销毁 MAD 代理时分配和释放安全上下文。 该上下文用于控制对 PKey 的访问以及发送和接收 SMP。 发送或接收 MAD 时，检查代理是否有权访问端口子网前缀的 PKey。 在 SMI QP 的 MAD 和监听代理注册期间，检查调用进程是否有权访问管理子网并向 LSM 注册回调以获取策略更改通知。 当发生策略更改通知时，重新检查权限并设置一个标志，指示允许发送和接收 SMP。 发送和接收 MAD 时，如果代理位于 SMI QP 上，请检查代理是否有权访问 SMI。 由于安全策略可以更改，因此在创建代理时可能允许许可，但不再允许
+							rdma_protocol_ib
+							ib_security_pkey_access
+						ib_is_mad_class_rmpp
+						handle_outgoing_dr_smp
+						ib_mad_kernel_rmpp_agent
+						ib_send_rmpp_mad
+						ib_send_mad
+							ib_dma_map_single
+								ib_uses_virt_dma
+								dma_map_single
+							ib_post_send
+								.post_send = mlx5_ib_post_send_nodrain,
+			or cma_connect_iw
+	ucma_put_ctx
+
+
+
+mlx5_ib_post_send_nodrain -> mlx5_ib_post_send
+	begin_wqe
+	...
+
+
+
+cm状态机:
+enum rdma_cm_state {
+	RDMA_CM_IDLE,
+	RDMA_CM_ADDR_QUERY,
+	RDMA_CM_ADDR_RESOLVED,
+	RDMA_CM_ROUTE_QUERY,
+	RDMA_CM_ROUTE_RESOLVED,
+	RDMA_CM_CONNECT,
+	RDMA_CM_DISCONNECT,
+	RDMA_CM_ADDR_BOUND,
+	RDMA_CM_LISTEN,
+	RDMA_CM_DEVICE_REMOVAL,
+	RDMA_CM_DESTROYING
+};
+
+
+cma_ib_handler
+switch (ib_event->event)
+case IB_CM_REP_RECEIVED
+	ib_send_cm_mra(cm_id, CMA_CM_MRA_SETTING, NULL, 0) -> IB/cma：为回复消息发送MRA，RDMA_CM的当前实现仅针对请求消息发送MRA（消息接收确认），而不针对响应消息发送MRA。 因此，连接的缓慢主动方可能会在延迟太长的情况下向被动方发送就绪消息，而被动方无法等待。 该补丁在收到响应消息时添加了对 ib_send_cm_mra() 的调用，从而告诉对方将服务超时修改为更大的值，是之前的 16 倍。 与请求情况一样，仅当重复响应到达时才会发送用于回复的 MRA
+		...
