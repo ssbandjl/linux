@@ -431,6 +431,16 @@ ice_probe
 
 send msg:
 ice_start_xmit
+    ice_xmit_frame_ring
+        ice_xmit_desc_count
+        ...
+        ice_tx_map
+            dma_map_single -> 线性区的 skb->data 做 dma 映射，得到 硬件可以读取操作 dma 地址
+            skb_frag_dma_map
+            ...
+            wmb()
+            __netdev_tx_sent_queue
+
 	
 
 
@@ -701,6 +711,9 @@ static int probe_one
     mlx5_hwmon_dev_register -> net/mlx5：通过硬件监控内核 API 暴露 NIC 温度 通过实现 hwmon 内核 API 暴露 NIC 温度，这会将当前热区内核 API 变为冗余。 对于每个受支持和公开的热二极管传感器，公开以下属性： 1) 输入温度。 2) 最高温度。 3) 温度标签：取决于固件功能，如果固件不支持传感器命名，则后备命名约定为：“sensorX”，其中 X 是硬件规格（MTMP 寄存器）传感器索引。 4) 温度临界最大值：指警告事件的高阈值。 将公开为 `tempY_crit` hwmon 属性（RO 属性）。 例如，对于 ConnectX5 HCA，该温度值为 105 摄氏度，比硬件关闭温度低 10 度。 5) 温度重置历史记录：重置最高温度。 例如，对于具有单个 IC 热二极管传感器的双端口 ConnectX5 NIC，将在“/sys/class/hwmon/hwmon[X,Y]”下有 2 个 hwmon 目录（每个 PCI 功能一个）。 列出上面的目录之一 (hwmonX/Y) 会生成以下相应的输出：grep -H -d skip . /sys/class/hwmon/hwmon0/*, sensors
     pci_save_state
     devlink_register
+	mlx5_devlink_alloc
+    mlx5_adev_idx_alloc
+    mlx5_mdev_init
 
 
 
@@ -964,7 +977,7 @@ mlx5e_xmit
 
 
 
-code:
+code struct:
 net/mlx5：以太网数据路径文件
 en_[rt]x.c 包含特定于 tx 或 rx 的数据路径相关代码。
 en_txrx.c 包含 rx 和 tx 通用的数据路径代码，这主要是 napi 相关代码。
@@ -1518,6 +1531,18 @@ static const int types[] = {
 
 
 
+module_init(mlx5_dpll_init); -> mlx5：使用 DPLL 基础设施实现 SyncE 支持 使用新引入的 DPLL 支持实现 SyncE 支持。 确保使用适当功能探测的每个 PF/VF/SF 将生成 dpll 辅助设备并注册适当的 dpll 设备和引脚实例
+
+
+
+该产品组合包括符合 ITU-T/IEEE 标准的数字锁相环 (DPLL)，用于网络同步，其性能满足 SyncE 和 IEEE 1588 严格的 10G/40G/100G 接口要求。
+
+
+mlx5_tout_init
+
+
+The defaults of the enable_* devlink params of these SFs are set to
+false.
 
 Usage example:
 Create SF:
@@ -2343,6 +2368,72 @@ Where <value> is one of 128K, 256K, 512K, 1M, and 2M. The default value
 is 1M.
 The user can see the current value of 'log_size' by reading the file:
   # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/log_size
+At this point the user have SF devlink instance with auxiliary device
+for the Ethernet functionality only.
+
+
+
+timeout type:
+enum mlx5_timeouts_types {
+	/* pre init timeouts (not read from FW) */
+	MLX5_TO_FW_PRE_INIT_TIMEOUT_MS,
+	MLX5_TO_FW_PRE_INIT_ON_RECOVERY_TIMEOUT_MS,
+	MLX5_TO_FW_PRE_INIT_WARN_MESSAGE_INTERVAL_MS,
+	MLX5_TO_FW_PRE_INIT_WAIT_MS,
+
+	/* init segment timeouts */
+	MLX5_TO_FW_INIT_MS,
+	MLX5_TO_CMD_MS,
+
+	/* DTOR timeouts */
+	MLX5_TO_PCI_TOGGLE_MS,
+	MLX5_TO_HEALTH_POLL_INTERVAL_MS,
+	MLX5_TO_FULL_CRDUMP_MS,
+	MLX5_TO_FW_RESET_MS,
+	MLX5_TO_FLUSH_ON_ERROR_MS,
+	MLX5_TO_PCI_SYNC_UPDATE_MS,
+	MLX5_TO_TEARDOWN_MS,
+	MLX5_TO_FSM_REACTIVATE_MS,
+	MLX5_TO_RECLAIM_PAGES_MS,
+	MLX5_TO_RECLAIM_VFS_PAGES_MS,
+	MLX5_TO_RESET_UNLOAD_MS,
+
+	MAX_TIMEOUT_TYPES
+};
+
+default timeout:
+static const u32 tout_def_sw_val[MAX_TIMEOUT_TYPES] = {
+	[MLX5_TO_FW_PRE_INIT_TIMEOUT_MS] = 120000,
+	[MLX5_TO_FW_PRE_INIT_ON_RECOVERY_TIMEOUT_MS] = 7200000,
+	[MLX5_TO_FW_PRE_INIT_WARN_MESSAGE_INTERVAL_MS] = 20000,
+	[MLX5_TO_FW_PRE_INIT_WAIT_MS] = 2,
+	[MLX5_TO_FW_INIT_MS] = 2000,
+	[MLX5_TO_CMD_MS] = 60000,
+	[MLX5_TO_PCI_TOGGLE_MS] =  2000,
+	[MLX5_TO_HEALTH_POLL_INTERVAL_MS] =  2000,
+	[MLX5_TO_FULL_CRDUMP_MS] = 60000,
+	[MLX5_TO_FW_RESET_MS] = 60000,
+	[MLX5_TO_FLUSH_ON_ERROR_MS] = 2000,
+	[MLX5_TO_PCI_SYNC_UPDATE_MS] = 5000,
+	[MLX5_TO_TEARDOWN_MS] = 3000,
+	[MLX5_TO_FSM_REACTIVATE_MS] = 5000,
+	[MLX5_TO_RECLAIM_PAGES_MS] = 5000,
+	[MLX5_TO_RECLAIM_VFS_PAGES_MS] = 120000,
+	[MLX5_TO_RESET_UNLOAD_MS] = 300000
+};
+
+
+mlx5_function_setup
+
+
+
+ip分片:
+net/ipv4/ip_output.c
+int ip_do_fragment
+
+
+
+dev_alloc_pages 函数，用于分配多个连续的物理内存页，分配数量只能是2的非负整数次幂
 
 
 
