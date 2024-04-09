@@ -1,0 +1,804 @@
+server: 服务端创建事件通道,创建通信标识ID, 启动RDMA监听
+rdma_create_event_channel <- vrb_eq_open <- fi_eq_open
+rdma_create_id <- vrb_create_ep <- vrb_open_ep <- fi_endpoint, librdmacm/cma.c -> rdma_create_event_channel HG创建端点 na_ofi_basic_ep_open
+rdma_listen -> fi_listen -> .listen = vrb_pep_listen -> vrb_pep_listen -> rdma_listen, na_ofi_basic_ep_open -> fi_enable -> rxm_ep_ctrl -> rxm_start_listen -> fi_listen
+
+if (ofi_epoll_add(_eq->epollfd, _eq->channel->fd, OFI_EPOLL_IN, NULL)) -> 将rdma事件通道的fd关联到eq的epollfd
+
+client:客户端创建事件通道,创建通信标识ID, 解析服务端地址, 发送数据时, 获取连接, 解析路由
+rdma_create_event_channel
+rdma_create_id
+rdma_resolve_addr -> RDMA_CM_EVENT_ADDRESS_RESOLVED ->  rxm_open_conn -> fi_endpoint (vrb_open_ep) -> rdma_resolve_addr HG -> HG_Trigger -> hg_op_id->callback(&hg_cb_info) 查询地址设置的回调 lookup_callback ->  HG_Forward -> NA_Msg_send_unexpected -> fi_senddata -> rxm_get_conn -> fi_endpoint -> vrb_open_ep -> vrb_create_ep -> rdma_resolve_addr
+rdma_resolve_route -> RDMA_CM_EVENT_ROUTE_RESOLVED -> rxm_send_connect -> fi_connect -> rdma_resolve_route 也是HG发送的时候建立连接
+------------------ 
+分配RDMA结构(服务端和客户端对等, 均要执行), 查询网卡, 分配保护域, 创建完成通道,完成队列, 通知完成队列准备好接收完成事件, 创建队列对, 注册内存
+ibv_query_device <- fi_getinfo -> vrb_getinfo -> ibv_query_device
+ibv_alloc_pd <- fi_domain -> rxm_domain_open -> ibv_alloc_pd
+ibv_create_comp_channel -> na_ofi_eq_open -> fi_cq_open -> vrb_cq_open -> ibv_create_comp_channel
+ibv_create_cq -> na_ofi_eq_open -> fi_cq_open -> vrb_cq_open -> ibv_create_cq
+ibv_req_notify_cq -> na_ofi_poll_try_wait -> fi_trywait -> vrb_trywait -> vrb_cq_trywait
+rdma_create_qp -> na_ofi_context_create -> fi_enable -> rdma_create_qp
+ibv_reg_mr -> NA_Mem_register -> na_ofi_mem_register -> fi_mr_regv -> ibv_reg_mr
+------------------
+轮训完成队列
+ibv_poll_cq -> na_ofi_msg_send_unexpected -> fi_senddata -> fi_send -> vrb_flush_cq -> ibv_poll_cq
+
+接收端提前往接收队列放置工作请求WR
+ibv_post_recv -> rxm_open_conn -> ibv_post_recv | na_ofi_tag_recv, na_ofi_msg_multi_recv -> fi_trecv -> ibv_post_recv
+
+客户端与服务端建立连接
+rdma_connect -> server -> RDMA_CM_EVENT_CONNECT_REQUEST, -> fi_senddata -> rxm_get_conn -> rdma_connect
+
+server:
+case RDMA_CM_EVENT_CONNECT_REQUEST
+------------------ 
+分配RDMA结构
+ibv_query_device
+ibv_alloc_pd
+ibv_create_comp_channel
+ibv_create_cq
+ibv_req_notify_cq
+rdma_create_qp
+ibv_reg_mr
+------------------
+ibv_post_recv
+rdma_accept
+RDMA_CM_EVENT_ESTABLISHED
+ibv_post_send
+
+clinet: 客户端发送非预期消息
+RDMA_CM_EVENT_ESTABLISHED
+ibv_post_send -> na_ofi_msg_send_unexpected -> ibv_post_send
+
+销毁资源
+server:
+rdma_disconnect
+
+ibv_dereg_mr
+ibv_destroy_cq
+ibv_destroy_comp_channel
+rdma_destroy_qp
+
+rdma_destroy_id
+rdma_destroy_event_channel
+
+client:
+rdma_disconnect
+
+ibv_dereg_mr
+ibv_destroy_cq
+ibv_destroy_comp_channel
+rdma_destroy_qp
+
+rdma_destroy_id
+rdma_destroy_event_channel
+
+
+
+以下是部分接口详解:
+创建事件通道:
+rdma_create_event_channel - 打开用于报告通信事件的通道。 描述：异步事件通过事件通道上报给用户。 每个事件通道映射到一个文件描述符。 注意：所有创建的事件通道必须通过调用 rdma_destroy_event_channel 销毁。 用户应调用 rdma_get_cm_event 来检索事件通道上的事件。 另请参见：rdma_get_cm_event、rdma_destroy_event_channel, 流程: 查询获取所有IB设备，存放在cma_dev_array全局数组中；检测是否支持AF_IB协议, 打开CM的fd, 返回事件
+struct rdma_event_channel *rdma_create_event_channel(void)
+  ucma_init()
+  channel->fd = open_cdev(dev_name, dev_cdev) -> 打开fd /dev/infiniband/rdma_cm
+  返回通道
+
+
+
+分配通信标识
+int rdma_create_id(struct rdma_event_channel *channel, struct rdma_cm_id **id, void *context, enum rdma_port_space ps)
+cmd = UCMA_CMD_CREATE_ID
+ret = write(id_priv->id.channel->fd, &cmd, sizeof cmd) -> 通知内核
+ucma_insert_id(id_priv)
+  idm_set -> librdmacm：定义通过 RDMA 接口 (rsockets) 的流式传输，引入了一组新的 API，支持 RDMA 设备上的字节流接口。 新接口与套接字匹配，只是所有函数调用都以“r”为前缀。 定义了以下函数： rsocket rbind、rlisten、raccept、rconnect rshutdown、rclose rrecv、rrecvfrom、rrecvmsg、rread、rreadv rsend、rsendto、rsendmsg、rwrite、rwritev rpoll、rselect rgetpeername、rgetsockname rsetsockopt、rgetsockopt、rfcntl 函数采用相同的方法 参数与用于套接字的参数相同。 目前支持以下功能和标志： PF_INET、PF_INET6、SOCK_STREAM、IPPROTO_TCP MSG_DONTWAIT、MSG_PEEK SO_REUSEADDR、TCP_NODELAY、SO_ERROR、SO_SNDBUF、SO_RCVBUF O_NONBLOCK rpoll 调用支持轮询 rsockets 和普通 fd, 
+  index_map(二级指针): 索引映射 - 将结构与索引关联起来。 同步必须由调用者提供。 调用者必须通过将索引映射设置为 0 来初始化它
+  提供一组索引操作接口, 设置,插入(idx_insert),增长(idx_grow),替换,移除,清理等
+  rsocket是附在rdma_cm库中的一个子模块，提供了完全类似于socket接口的rdma调用
+  对于rdma编程，目前主流实现是利用rdma_cm来建立连接，然后利用verbs来传输数据。  rdma_cm和ibverbs分别会创建一个fd，这两个fd的分工不同。rdma_cm fd主要用于通知建连相关的事件，verbs fd则主要通知有新的cqe发生。当直接对rdma_cm fd进行poll/epoll监听时，此时只能监听到POLLIN事件，这意味着有rdma_cm事件发生。当直接对verbs fd进行poll/epoll监听时，同样只能监听到POLLIN事件，这意味着有新的cqe  作者：异客z 链接：https://www.jianshu.com/p/4d71f1c8e77c
+
+
+
+监听客户端的连接请求, 给内核发送监听命令, 查询地址/路由
+int rdma_listen(struct rdma_cm_id *id, int backlog)
+cmd = UCMA_CMD_LISTEN
+write(id->channel->fd, &cmd, sizeof cmd)
+
+
+
+解析地址
+int rdma_resolve_addr(struct rdma_cm_id *id, struct sockaddr *src_addr, struct sockaddr *dst_addr, int timeout_ms)
+
+
+
+ibv_query_device
+  mlx5_query_device_ex
+  IB_USER_VERBS_EX_CMD_QUERY_DEVICE
+
+
+发起连接请求
+int rdma_connect(struct rdma_cm_id *id, struct rdma_conn_param *conn_param)
+ucma_valid_param
+CMA_INIT_CMD(&cmd, sizeof cmd, CONNECT)
+cmd = UCMA_CMD_CONNECT -> kernel -> static ssize_t (*ucma_cmd_table[]) -> ucma_connect
+ucma_copy_conn_param_to_kern
+  dst->retry_count = 7;   // 无限次重试
+    dst->rnr_retry_count = 7; // 无限次重试
+ucma_copy_ece_param_to_kern_req
+ret = write(id->channel->fd, &cmd, sizeof cmd)
+
+
+
+
+
+
+
+ibv_advise_mr
+ibv_alloc_dm
+ibv_open_device
+ibv_get_device_list
+ibv_get_device_guid
+ibv_query_device_ex
+ibv_get_device_name
+ibv_req_notify_cq
+ibv_query_gid
+ibv_memcpy_to_dm
+ibv_get_cq_event
+ibv_start_poll
+ibv_end_poll
+ibv_next_poll
+ibv_wc_read_completion_ts
+ibv_ack_cq_events
+ibv_free_device_list
+ibv_cq_ex_to_cq
+ibv_create_qp
+ibv_modify_qp
+
+ibv_modify_qp
+.modify_qp = irdma_umodify_qp,
+    ibv_cmd_modify_qp_ex
+        copy_modify_qp_fields
+            ...
+            cmd->retry_cnt = attr->retry_cnt
+            ...
+        execute_cmd_write_ex IB_USER_VERBS_EX_CMD_MODIFY_QP -> to kernel
+    irdma_mmap
+    or ibv_cmd_modify_qp
+
+
+
+ibv_create_qp
+.create_qp = irdma_ucreate_qp,
+...
+info.abi_ver = iwvctx->abi_ver -> 设置参数
+...
+irdma_uk_calc_depth_shift_sq -> 提供商/irdma：允许准确报告 QP 最大发送/接收 WR ，目前，在创建 QP 期间从用户空间发送的属性 cap.max_send_wr 和 cap.max_recv_wr 是提供商计算的 SQ/RQ 深度，而不是从应用程序传递的原始值。 这会禁止在内核中计算该 QP 的 max_send_wr 和 max_recv_wr 的准确值，该值与用户创建 QP 中返回的值相匹配。 此外，这些功能还需要在查询 QP 中从驱动程序报告。 通过扩展 ABI 添加支持，以允许从用户空间传递原始 cap.max_send_wr 和 cap.max_recv_wr，同时保持对旧方案的兼容性。 添加新的助手来协助完成此操作：irdma_uk_calc_depth_shift_sq、irdma_uk_calc_depth_shift_rq
+    irdma_get_wqe_shift
+    irdma_get_sqdepth
+iwuqp = memalign(1024, sizeof(*iwuqp)) -> 在GNU系统中，malloc或realloc返回的内存块地址都是8的倍数（如果是64位系统，则为16的倍数）。如果你需要更大的粒度，请使用memalign或valloc
+irdma_uk_calc_depth_shift_rq
+irdma_vmapped_qp(iwuqp, pd, attr, &info, iwvctx->legacy_mode)
+    irdma_alloc_hw_buf
+    reg_mr_cmd.reg_type = IRDMA_MEMREG_TYPE_QP
+    ibv_cmd_reg_mr
+        execute_cmd_write(pd->context, IB_USER_VERBS_CMD_REG_MR -> to kernel
+    ibv_cmd_create_qp
+irdma_uk_qp_init
+
+
+
+
+ibv_open_device -> LATEST_SYMVER_FUNC(ibv_open_device -> verbs_open_device
+    verbs_get_device
+    cmd_fd = open_cdev -> verbs：启用 verbs_open_device() 以在非 sysfs 设备上工作，从 mlx5 开始，启用 verbs_open_device() 通过 VFIO 在非 sysfs 设备上工作。 verbs_sysfs_dev 上的任何其他 API 都应该彻底失败
+    verbs_device->ops->alloc_context -> mlx5_alloc_context -> verbs：始终分配 verbs_context，现在所有内容都在一棵树中，我们可以修改旧版 init_context 路径，通过在所有提供程序的包装结构中将 ibv_context 交换为 verbs_context 来始终分配 verbs_context。 为了保持提供者差异最小，这个补丁同时做了几件事： - 引入 verbs_init_and_alloc_context() 宏。 这会为每个驱动程序分配、清零并初始化 verbs_context。 值得注意的是，这个新宏在失败时根据需要正确设置 errno。 - 从所有驱动程序、calloc、malloc、memset、cmd_fd 和设备分配中删除样板文件 - 与 verbs_init 方案一起必然出现 verbs_uninit 方案，该方案将 uninit 调用降低到提供者而不是公共代码中。 这使我们能够在 init 错误路径上正确地 uninit。 总之，这遵循我们在内核中看到的相当成功的模式，用于对子系统进行驱动程序初始化。 此外，这会将 ibv_cmd_get_context 更改为接受 verbs_context，因为大多数调用者现在都提供该内容，这使得差异较小。 这使得整个流程更加一致，并且可以让我们消除 init_context 流程
+        mlx5_init_context
+            verbs_init_and_alloc_context -> _verbs_init_and_alloc_context
+                verbs_init_context
+                    ibverbs_device_hold
+                    verbs_set_ops(context_ex, &verbs_dummy_ops) -> rdma verbs操作 -> 在上下文中设置 -> 如果更改，则必须更改 PRIVATE IBVERBS_PRIVATE_ 符号。 这是驱动程序可以支持的每个操作的联合。 如果向此结构添加新元素，则 verbs_dummy_ops 也必须更新。 保持排序
+                        SET_OP -> 设置一系列操作
+                        ...
+                    use_ioctl_write = has_ioctl_write(context)
+            mlx5_open_debug_file
+            mlx5_set_debug_mask
+            single_threaded_app
+            get_uar_info
+                get_total_uuars
+                get_num_low_lat_uuars
+        mlx5_cmd_get_context
+            ibv_cmd_get_context
+                ...
+                execute_write_bufs(context, IB_USER_VERBS_CMD_GET_CONTEXT
+        mlx5_set_context
+            adjust_uar_info
+            cl_qmap_init
+            mlx5_mmap
+            mlx5_read_env
+            verbs_set_ops(v_ctx, &mlx5_ctx_common_ops)
+            mlx5_query_device_ctx
+                get_hca_general_caps
+                    mlx5dv_devx_general_cmd MLX5_CMD_OP_QUERY_HCA_CAP
+                ibv_cmd_query_device_any
+                    execute_cmd_write_ex IB_USER_VERBS_EX_CMD_QUERY_DEVICE
+                    execute_cmd_write(context, IB_USER_VERBS_CMD_QUERY_DEVICE -> 转到内核态
+            mlx5_set_singleton_nc_uar
+    set_lib_ops
+    ibv_cmd_alloc_async_fd
+
+
+
+
+
+rdma verbs ops
+const struct verbs_context_ops verbs_dummy_ops = {
+    advise_mr,
+    alloc_dm,
+    alloc_mw,
+    alloc_null_mr,
+    alloc_parent_domain,
+    alloc_pd,
+    alloc_td,
+    async_event,
+    attach_counters_point_flow,
+    attach_mcast,
+    bind_mw,
+    close_xrcd,
+    cq_event,
+    create_ah,
+    create_counters,
+    create_cq,
+    create_cq_ex,
+    create_flow,
+    create_flow_action_esp,
+    create_qp,
+    create_qp_ex,
+    create_rwq_ind_table,
+    create_srq,
+    create_srq_ex,
+    create_wq,
+    dealloc_mw,
+    dealloc_pd,
+    dealloc_td,
+    dereg_mr,
+    destroy_ah,
+    destroy_counters,
+    destroy_cq,
+    destroy_flow,
+    destroy_flow_action,
+    destroy_qp,
+    destroy_rwq_ind_table,
+    destroy_srq,
+    destroy_wq,
+    detach_mcast,
+    free_context,
+    free_dm,
+    get_srq_num,
+    import_dm,
+    import_mr,
+    import_pd,
+    modify_cq,
+    modify_flow_action_esp,
+    modify_qp,
+    modify_qp_rate_limit,
+    modify_srq,
+    modify_wq,
+    open_qp,
+    open_xrcd,
+    poll_cq,
+    post_recv,
+    post_send,
+    post_srq_ops,
+    post_srq_recv,
+    query_device_ex,
+    query_ece,
+    query_port,
+    query_qp,
+    query_qp_data_in_order,
+    query_rt_values,
+    query_srq,
+    read_counters,
+    reg_dm_mr,
+    reg_dmabuf_mr,
+    reg_mr,
+    req_notify_cq,
+    rereg_mr,
+    resize_cq,
+    set_ece,
+    unimport_dm,
+    unimport_mr,
+    unimport_pd,
+};
+
+设置rdma verbs操作:
+static const struct verbs_context_ops mlx5_ctx_common_ops = {
+    .query_port    = mlx5_query_port,
+    .alloc_pd      = mlx5_alloc_pd,
+    .async_event   = mlx5_async_event,
+    .dealloc_pd    = mlx5_free_pd,
+    .reg_mr	       = mlx5_reg_mr,
+    .reg_dmabuf_mr = mlx5_reg_dmabuf_mr,
+    .rereg_mr      = mlx5_rereg_mr,
+    .dereg_mr      = mlx5_dereg_mr,
+    .alloc_mw      = mlx5_alloc_mw,
+    .dealloc_mw    = mlx5_dealloc_mw,
+    .bind_mw       = mlx5_bind_mw,
+    .create_cq     = mlx5_create_cq,
+    .poll_cq       = mlx5_poll_cq,
+    .req_notify_cq = mlx5_arm_cq,
+    .cq_event      = mlx5_cq_event,
+    .resize_cq     = mlx5_resize_cq,
+    .destroy_cq    = mlx5_destroy_cq,
+    .create_srq    = mlx5_create_srq,
+    .modify_srq    = mlx5_modify_srq,
+    .query_srq     = mlx5_query_srq,
+    .destroy_srq   = mlx5_destroy_srq,
+    .post_srq_recv = mlx5_post_srq_recv,
+    .create_qp     = mlx5_create_qp,
+    .query_qp      = mlx5_query_qp,
+    .modify_qp     = mlx5_modify_qp,
+    .destroy_qp    = mlx5_destroy_qp,
+    .post_send     = mlx5_post_send,
+    .post_recv     = mlx5_post_recv,
+    .create_ah     = mlx5_create_ah,
+    .destroy_ah    = mlx5_destroy_ah,
+    .attach_mcast  = mlx5_attach_mcast,
+    .detach_mcast  = mlx5_detach_mcast,
+
+    .advise_mr = mlx5_advise_mr,
+    .alloc_dm = mlx5_alloc_dm,
+    .alloc_parent_domain = mlx5_alloc_parent_domain,
+    .alloc_td = mlx5_alloc_td,
+    .attach_counters_point_flow = mlx5_attach_counters_point_flow,
+    .close_xrcd = mlx5_close_xrcd,
+    .create_counters = mlx5_create_counters,
+    .create_cq_ex = mlx5_create_cq_ex,
+    .create_flow = mlx5_create_flow,
+    .create_flow_action_esp = mlx5_create_flow_action_esp,
+    .create_qp_ex = mlx5_create_qp_ex,
+    .create_rwq_ind_table = mlx5_create_rwq_ind_table,
+    .create_srq_ex = mlx5_create_srq_ex,
+    .create_wq = mlx5_create_wq,
+    .dealloc_td = mlx5_dealloc_td,
+    .destroy_counters = mlx5_destroy_counters,
+    .destroy_flow = mlx5_destroy_flow,
+    .destroy_flow_action = mlx5_destroy_flow_action,
+    .destroy_rwq_ind_table = mlx5_destroy_rwq_ind_table,
+    .destroy_wq = mlx5_destroy_wq,
+    .free_dm = mlx5_free_dm,
+    .get_srq_num = mlx5_get_srq_num,
+    .import_dm = mlx5_import_dm,
+    .import_mr = mlx5_import_mr,
+    .import_pd = mlx5_import_pd,
+    .modify_cq = mlx5_modify_cq,
+    .modify_flow_action_esp = mlx5_modify_flow_action_esp,
+    .modify_qp_rate_limit = mlx5_modify_qp_rate_limit,
+    .modify_wq = mlx5_modify_wq,
+    .open_qp = mlx5_open_qp,
+    .open_xrcd = mlx5_open_xrcd,
+    .post_srq_ops = mlx5_post_srq_ops,
+    .query_device_ex = mlx5_query_device_ex,
+    .query_ece = mlx5_query_ece,
+    .query_rt_values = mlx5_query_rt_values,
+    .read_counters = mlx5_read_counters,
+    .reg_dm_mr = mlx5_reg_dm_mr,
+    .alloc_null_mr = mlx5_alloc_null_mr,
+    .free_context = mlx5_free_context,
+    .set_ece = mlx5_set_ece,
+    .unimport_dm = mlx5_unimport_dm,
+    .unimport_mr = mlx5_unimport_mr,
+    .unimport_pd = mlx5_unimport_pd,
+    .query_qp_data_in_order = mlx5_query_qp_data_in_order,
+};
+
+
+
+代码路径: rdma-core, libibverbs/device.c
+ibv_get_device_list
+    ibverbs_get_device_list -> verbs: 刷新缓存的 ibv_device 列表 问题 ======== 目前，libibverbs 仅在第一次调用 ibv_get_device_list 时构建缓存的 ibv_device 列表，因此无论硬件是否发生变化，该列表都不会更新。 系统。 解决方案======== 修改 ibv_get_device_list() 的实现，以便连续的调用将以与今天相同的方式重新扫描 sysfs，以便每次创建一个新的 ibv_device 列表。 为此，将缓存的设备列表更改为真正的链表而不是动态数组。 我们如何识别新设备​============================= 根据 /sys/class/infiniband_verbs/ 的时间戳创建来识别同一设备 uverbs%d/ibdev。 我们使用 stat 系统调用获取文件状态，并使用 st_mtime 字段来实现此目的。 当我们重新扫描 sysfs 设备时，我们会检查每个 sysfs 设备是否已经在上次扫描中，如果没有，则分配新的 ibv_device 并将其添加到缓存设备列表中。 本系列的下一个补丁处理设备不再使用的情况。 注意：此补丁根据上面 verbs_device 结构体注释中的要求更改了 IBVERBS_PRIVATE 符号
+        find_sysfs_devs_nl -> verbs：使用 netlink 来发现 uverbs 设备而不是 sysfs，netlink 查询为我们提供了 ibdev idx，它对于设备来说大多是唯一的，并且在设备重命名时充当稳定的 id。 如果在 verbs 用户操作期间重命名设备，这会使 verbs 更加健壮。 此外，netlink 仅返回在进程的网络命名空间中实际可见的设备，从而简化了发现过程
+            rdmanl_socket_alloc
+                nl_socket_alloc
+                nl_socket_disable_auto_ack
+                nl_socket_disable_msg_peek
+                nl_connect(nl, NETLINK_RDMA)
+            rdmanl_get_devices find_sysfs_devs_nl_cb
+                nl_send_simple RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_GET) NLM_F_DUMP
+                nl_socket_modify_err_cb
+                nl_socket_modify_cb
+                nl_recvmsgs_default
+            find_uverbs_nl find_uverbs_sysfs try_access_device
+                rdmanl_get_chardev(nl, sysfs_dev->ibdev_idx, "uverbs", find_uverbs_nl_cb
+                    nlmsg_alloc_simple RDMA_NLDEV_CMD_GET_CHARDEV
+                    ...
+                    check_snprintf(path, sizeof(path), "%s/device/infiniband_verbs",
+                    setup_sysfs_uverbs
+                        abi_version
+                    ...
+                    stat(devpath, &cdev_stat)
+            nl_socket_free
+        find_sysfs_devs
+            %s/class/infiniband_verbs
+            ibv_read_sysfs_file_at(uv_dirfd, "ibdev", 
+        check_abi_version
+            "class/infiniband_verbs/abi_version"
+        try_all_drivers
+            try_drivers
+                match_driver_id -> VERBS_MATCH_SENTINEL -> 动词：提供通用代码以将提供程序与内核设备进行匹配 根据表检查 PCI 设备基本上在每个驱动程序中都是重复的。 遵循内核的模式，并将匹配表附加到 verbs_device_ops 驱动程序入口点，该入口点描述提供程序可以处理的所有内核设备，并使核心代码与该表匹配。 驱动程序获取一个指向与分配函数中匹配的表条目的指针。 此实现基于模式别名，而不是读取 PCI 特定供应商和设备文件。 modalias 让我们支持 ACPI 和 OF 提供程序，并提供了一个简单的路径，使提供程序根据其支持的 modalias 字符串（如内核）进行需求加载
+                try_driver
+                    match_device
+                    alloc_device -> mlx5_device_alloc
+                    dev->transport_type = IBV_TRANSPORT_IB -> 传输类型
+                    ...
+        load_drivers
+            dlhandle = dlopen(so_name, RTLD_NOW)
+    ibverbs_device_hold
+
+
+
+
+query_device_ex -> mlx5_query_device_ex
+    
+
+
+
+.alloc_context = irdma_ualloc_context
+    verbs_init_and_alloc_context
+    verbs_set_ops(&iwvctx->ibv_ctx, &irdma_uctx_ops)
+    irdma_mmap
+        mmap
+        ibv_dontfork_range
+            ibv_madvise_range(base, size, MADV_DONTFORK)
+    irdma_ualloc_pd
+        ibv_cmd_alloc_pd
+
+
+
+
+static const struct verbs_context_ops irdma_uctx_ops = {
+    .alloc_mw = irdma_ualloc_mw,
+    .alloc_pd = irdma_ualloc_pd,
+    .attach_mcast = irdma_uattach_mcast,
+    .bind_mw = irdma_ubind_mw,
+    .cq_event = irdma_cq_event,
+    .create_ah = irdma_ucreate_ah,
+    .create_cq = irdma_ucreate_cq,
+    .create_cq_ex = irdma_ucreate_cq_ex,
+    .create_qp = irdma_ucreate_qp,
+    .dealloc_mw = irdma_udealloc_mw,
+    .dealloc_pd = irdma_ufree_pd,
+    .dereg_mr = irdma_udereg_mr,
+    .destroy_ah = irdma_udestroy_ah,
+    .destroy_cq = irdma_udestroy_cq,
+    .destroy_qp = irdma_udestroy_qp,
+    .detach_mcast = irdma_udetach_mcast,
+    .modify_qp = irdma_umodify_qp,
+    .poll_cq = irdma_upoll_cq,
+    .post_recv = irdma_upost_recv,
+    .post_send = irdma_upost_send,
+    .query_device_ex = irdma_uquery_device_ex,
+    .query_port = irdma_uquery_port,
+    .query_qp = irdma_uquery_qp,
+    .reg_dmabuf_mr = irdma_ureg_mr_dmabuf,
+    .reg_mr = irdma_ureg_mr,
+    .rereg_mr = irdma_urereg_mr,
+    .req_notify_cq = irdma_uarm_cq,
+    .resize_cq = irdma_uresize_cq,
+    .free_context = irdma_ufree_context,
+};
+
+
+LATEST_SYMVER_FUNC(ibv_alloc_pd
+.alloc_pd      = mlx5_alloc_pd
+    ibv_cmd_alloc_pd
+         execute_cmd_write(context, IB_USER_VERBS_CMD_ALLOC_PD -> 转到内核处理
+    pthread_mutex_init(&pd->opaque_mr_mutex, NULL -> mlx5：引入 mlx5dv_wr_memcpy builder ，引入 mlx5dv_wr_memcpy 用于构建 DMA memcpy 请求。 DMA memcpy 是从 BlueField-2 开始提供的多种内存到内存卸载 (MMO) 之一。 它利用 DPU 上的 GGA 模块执行从 src 到 dest 的 DMA memcpy，从而提高性能。 src 和 dest 可以是主机和 SoC 的任意组合。 请注意，在 Host 到 SoC 或 SoC 到 Host memcpy 的情况下，需要特殊的跨 gvmi MKey
+
+
+
+
+poll_cq
+    mlx5_stall_cycles_poll_cq
+    or mlx5_stall_poll_cq
+    mlx5_poll_one
+        mlx5_get_next_cqe -> 添加惰性CQ轮询，目前，当用户想要轮询CQ是否完成时，他别无选择，只能获得整个工作完成（WC）。 这有几个含义 - 例如： * 扩展 WC 是有限的，因为添加新字段会使 WC 更大并且可能占用更多缓存行。 * 每个字段都被复制到 WC - 甚至是用户不关心的字段。 此补丁添加了对以惰性方式处理 CQE 的一些支持。 新的惰性模式将在下游补丁中调用。 我们只解析必需的字段，以便找出 CQE，例如类型、状态、wr_id 等。为了与遗留模式共享代码而不影响性能，对遗留代码进行了重构，并使用了“always_inline”机制，以便 分支条件将在编译时被删除
+            next_cqe_sw
+                ...
+                return cq->active_buf->buf + n * cq->cqe_sz
+            VALGRIND_MAKE_MEM_DEFINED -> memory check
+            dump_cqe
+        mlx5_parse_cqe -> 多分支函数
+            case MLX5_CQE_REQ
+            ...
+    update_cons_index
+    mlx5_get_cycles
+
+
+
+test:
+man: https://man7.org/linux/man-pages/man1/ibv_rc_pingpong.1.html
+libibverbs/examples/rc_pingpong.c -> main
+...
+ibv_get_device_list
+pp_init_ctx
+    ctx->buf = memalign(page_size, size)
+    ibv_open_device
+    ibv_create_comp_channel
+    ctx->pd = ibv_alloc_pd(ctx->context)
+    if (use_odp || use_ts || use_dm)
+        ibv_query_device_ex(ctx->context, NULL, &attrx) -> 查询设备属性/支持的功能
+        ctx->dm = ibv_alloc_dm(ctx->context, &dm_attr)
+        access_flags |= IBV_ACCESS_ZERO_BASED -> 使用从 MR 开始的字节偏移量来访问该 MR，而不是指针地址
+    ctx->mr = ibv_reg_mr
+    or ibv_reg_dm_mr
+    if (prefetch_mr)
+        ibv_advise_mr
+    ibv_create_cq_ex
+    or ibv_create_cq
+    ibv_create_qp_ex
+    or ibv_create_qp
+    ibv_qp_to_qp_ex
+    ibv_query_qp
+    IBV_QPS_INIT
+    ibv_modify_qp
+pp_post_recv
+    for (i = 0; i < n; ++i)
+        ibv_post_recv
+ibv_req_notify_cq
+pp_get_port_info -> 由于 IBoE 需要使用 GRH，因此更新 ibv_*_pinpong 示例以接受 GID。 GID 作为本地端口表的索引给出，并通过套接字连接在客户端和服务器之间交换
+    ibv_query_port
+ibv_query_gid
+if (servername)
+    pp_client_exch_dest
+        getaddrinfo(servername, service, &hints, &res)
+        socket
+        connect
+        gid_to_wire_gid
+        (write(sockfd, msg
+        read(sockfd, msg
+        wire_gid_to_gid(gid, &rem_dest->gid)
+or pp_server_exch_dest
+    accept
+    wire_gid_to_gid
+    pp_connect_ctx
+        IBV_QPS_RTR
+        ibv_modify_qp
+        IBV_QPS_RTS
+        ...
+pp_connect_ctx
+客户端
+    ibv_memcpy_to_dm
+    pp_post_send
+        struct ibv_send_wr wr
+        .opcode     = IBV_WR_SEND,
+        ibv_wr_start
+        ibv_wr_send
+        ibv_wr_set_sge
+        ibv_wr_complete
+        or ibv_post_send
+ibv_get_cq_event
+if (use_ts) -> RoCE 时间戳允许您在将数据包发送到线路或从线路接收数据包时对其进行标记。 时间戳以原始硬件周期给出，但可以轻松转换为硬件参考的基于纳秒的时间。 此外，它使您能够查询硬件的硬件时间，从而标记其他应用程序的事件并比较时间
+    ibv_start_poll
+parse_single_wc
+or ibv_poll_cq
+...
+
+
+
+rdma_create_id
+    rdma_create_id2
+        ucma_init
+        ucma_alloc_id
+        write
+        ucma_insert_id
+
+
+
+librdmacm/cma.c
+
+ibv_query_port -> __lib_query_port
+    get_ops(context)->query_port
+
+
+ibv_get_device_list
+    ibverbs_init -> verbs：修改 init 的排序方式，将检查 uverbs ABI 移至从内核加载设备列表之后。 当通过 netlink 加载时，我们可以假设 ABI 是 6，而无需转到 sysfs。 这允许我们使用内核依赖项来初始化库，并且错误（例如缺少内核支持）是从 ibverbs_get_device_list() 而不是 ibverbs_init() 返回的。 如果内核支持 netlink，ibverbs 在启动期间不再读取 /sys/ 路径
+        check_env("RDMAV_FORK_SAFE") || check_env("IBV_FORK_SAFE")
+        ibv_fork_init -> libibverbs/memory.c
+            getenv("RDMAV_HUGEPAGES_SAFE") -> 允许在多次调用 ibv_fork_init 中使用大页，设置环境变量 RDMAV_HUGEPAGES_SAFE 告诉库检查内核用于内存区域的基础页大小。 如果应用程序直接或通过 libhugetlbfs 等库间接使用大页，则这是必需的。 该变量的检查是在第一次调用 ibv_fork_init 时执行的。 这会导致具有多个底层库的复杂应用程序出现不可预测的行为。 提议的更改将允许支持大页面，而不依赖于 ibv_fork_init 调用顺序
+            if (mm_root)
+            get_page_size
+                "/proc/%d/smaps", pid
+                smaps_page_size
+                    KernelPageSize
+            madvise(tmp_aligned, size, MADV_DONTFORK) -> 在 ibv_fork_init() 和 madvise 跟踪中处理大页，当在 libibverbs 中启用 fork 支持时，将为注册为内存区域的每个内存页调用 madvise() 。 传递给 madvise() 的内存范围必须是页对齐的，并且大小必须是页大小的倍数。 libibverbs 使用 sysconf(_SC_PAGESIZE) 找出系统页面大小，并根据此页面大小对传递给 reg_mr() 的所有范围进行舍入。 当 libhugetlbfs 中的内存传递给 reg_mr() 时，这不起作用，因为该内存范围的页面大小可能不同（例如 16MB）。 因此 libibverbs 必须使用巨大的页面大小来计算 madvise 的页面对齐范围。 由于在预加载 libhugetlbfs 时向应用程序“在后台”提供大页面，因此应用程序不知道何时注册大页面或普通页面。 要解决此问题，请检测 libibverbs 中大页面的使用，并根据大页面大小调整传递给 madvise 的内存范围。 通过观察 madvise() 失败来确定给定内存范围的页面大小已被证明是不可靠的。 因此，我们引入 RDMAV_HUGEPAGES_SAFE 环境变量，让用户决定是否应在每次 reg_mr() 调用时检查页面大小。 这要求用户了解正在运行的应用程序是否使用大页面。 我没有添加额外的 API 调用来启用此功能，因为应用程序可以使用 setenv() + ibv_fork_init() 来启用检查代码中的大页面
+            mm_root->color  = IBV_BLACK -> 初始化红黑树(会影响性能)
+            ...
+        verbs_allow_disassociate_destroy -> verbs：引入ENV来控制销毁命令时的EIO，引入环境变量（即RDMAV_ALLOW_DISASSOC_DESTROY）来控制销毁命令返回的代码。 一旦设置完毕，任何将从内核获取 EIO 的销毁命令都将被视为成功。 在这种情况下，该对象的底层内核资源必须已通过分离机制销毁，并且用户空间驱动程序和应用程序也可以安全地清理其资源。 这是为了防止用户空间区域的内存泄漏
+        ibv_get_sysfs_path
+        check_memlock_limit
+            rlim.rlim_cur <= 32768
+        verbs_set_log_level -> verbs：添加通用日志记录 API，调试打印机制在调试应用程序故障时非常有用。 此补丁添加了一个通用 API，可供所有提供商使用并替换特定于提供商的对应项。 调试消息通过名为 VERBS_LOG_LEVEL 的环境变量进行控制，其中值指示应启用哪些打印： enum { VERBS_LOG_LEVEL_NONE, VERBS_LOG_ERR, VERBS_LOG_WARN, VERBS_LOG_INFO, VERBS_LOG_DEBUG, }; 例如，要启用警告级别或更高级别的打印，VERBS_LOG_LEVEL 应设置为 2。输出应写入 VERBS_LOG_FILE 环境变量中提供的文件。 当在调试模式下编译库并且未提供文件时，输出应写入 stderr。 对于数据路径流，附加 if 语句的开销很重要，可以使用 verbs_*_datapath() 宏，该宏将在编译库以供发布时编译出来, 参考: https://github.com/ssbandjl/rdma-core/commit/5c3514eb87ca86e817a8b610ada3200bbcdde6f4, 编译开关: Enabling debug prints, 可作为日志实现的一个参考
+        verbs_set_log_file
+    ibverbs_get_device_list -> verbs: 刷新缓存的 ibv_device 列表，问题 ======== 目前，libibverbs 仅在第一次调用 ibv_get_device_list 时构建缓存的 ibv_device 列表，因此无论是否有硬件更改，该列表都不会更新 在系统中。 解决方案======== 修改 ibv_get_device_list() 的实现，以便连续的调用将以与今天相同的方式重新扫描 sysfs，以便每次创建一个新的 ibv_device 列表。 为此，将缓存的设备列表更改为真正的链表而不是动态数组。 我们如何识别新设备​============================= 根据 /sys/class/infiniband_verbs/ 的时间戳创建来识别同一设备 uverbs%d/ibdev。 我们使用 stat 系统调用获取文件状态，并使用 st_mtime 字段来实现此目的。 当我们重新扫描 sysfs 设备时，我们会检查每个 sysfs 设备是否已经在上次扫描中，如果没有，则分配新的 ibv_device 并将其添加到缓存设备列表中。 本系列的下一个补丁处理设备不再使用的情况。 注意：此补丁根据上面 verbs_device 结构体注释中的要求更改了 IBVERBS_PRIVATE 符号 -> verbs: 整理 ibverbs_get_device_list ，现在我们有了 ccan 列表，这里的逻辑可以大大简化。 消除令人困惑的used和have_driver值，而只是在我们运行进程时从sysfs列表中删除项目。 这直接保证了发现的 sysfs 项仅处理一次，并使 sysfs 指针的生命周期更加清晰
+        find_sysfs_devs_nl(&sysfs_list) -> verbs：使用 netlink 来发现 uverbs 设备而不是 sysfs，netlink 查询为我们提供了 ibdev idx，它对于设备来说大多是唯一的，并且在设备重命名时充当稳定的 id。 如果在 verbs 用户操作期间重命名设备，这会使 verbs 更加健壮。 此外，netlink 仅返回在进程的网络命名空间中实际可见的设备，从而简化了发现过程
+            rdmanl_socket_alloc
+            rdmanl_get_devices(nl, find_sysfs_devs_nl_cb, tmp_sysfs_dev_list)
+            list_for_each_safe (tmp_sysfs_dev_list
+                find_uverbs_nl(nl, dev) && find_uverbs_sysfs(dev)
+                try_access_device(dev)
+                    stat(devpath, &cdev_stat)
+            nl_socket_free(nl)
+        find_sysfs_devs(&sysfs_list)
+        check_abi_version
+        list_for_each_safe(device_list
+            same_sysfs_dev
+            ibverbs_device_put
+        try_all_drivers
+        load_drivers()
+        try_all_drivers
+        return num_devices
+    ibverbs_device_hold(l[i]) -> verbs: 避免 ibv_device 内存泄漏，现在，每次调用 ibv_get_device_list 时都会刷新 ibv_device 列表，因此我们需要从之前的扫描中释放不再绑定的设备，否则可能会导致 ibv_device 结构的内存泄漏。 仅当用户不再使用 ibv_device 的内存时，我们才能释放它。 我们如何识别设备是否仍在使用​============================================ 我们 将引用计数添加到动词设备结构中。 在以下情况下，该引用计数会增加： 设置为 1 以使该设备位于列表中，直到应将其删除为止。 b. 用户调用 ibv_get_device_list。 C。 用户调用 ibv_open_device。 在以下情况下，引用计数会减少： 用户调用 ibv_free_device_list。 b. 用户调用 ibv_close_device。 C。 设备不再存在于 sysfs 中。 当引用计数减少到零时，设备将被释放。 为了释放 ibv_device 结构，我们将 uninit_device 回调函数添加到 verbs_device_ops
+        verbs_get_device
+            container_of(dev, struct verbs_device, device)
+        atomic_fetch_add(&verbs_device->refcount, 1) -> 加引用
+    *num = num_devices
+
+
+
+
+module_init(mlx5_ib_init);
+    alloc_ordered_workqueue
+    mlx5_ib_qp_event_init
+    mlx5_ib_odp_init
+    mlx5r_rep_init
+    auxiliary_driver_register(&mlx5r_mp_driver)
+    auxiliary_driver_register(&mlx5r_driver)
+static struct auxiliary_driver mlx5r_driver = {
+    .name = "rdma",
+    .probe = mlx5r_probe,
+    .remove = mlx5r_remove,
+    .id_table = mlx5r_id_table,
+};
+mlx5r_probe
+    mlx5_port_type_cap_to_rdma_ll -> {net, IB}/mlx5：管理多端口 RoCE 的端口关联，调用 mlx5_ib_add 时确定要添加的 mlx5 核心设备是否能够进行双端口 RoCE 操作。 如果是，请使用 num_vhca_ports 和affiliate_nic_vport_criteria 功能确定它是主设备还是从设备。 如果该设备是从属设备，请尝试找到与其关联的主设备。 可以关联的设备将共享系统映像 GUID。 如果没有找到，请将其放入非关联端口列表中。 如果找到主设备，则通过在 NIC vport 上下文中配置端口从属关系将端口绑定到它。 同样，当调用 mlx5_ib_remove 时确定端口类型。 如果它是从端口，则将其与主设备取消关联，否则只需将其从非关联端口列表中删除即可。 即使第二个端口不可用于关联，IB 设备也会注册为多端口设备。 当第二个端口稍后附属时，必须刷新 GID 缓存才能获取缓存中第二个端口的默认 GID。 导出roce_rescan_device以提供在绑定新端口后刷新缓存的机制。 在多端口配置中，所有 IB 对象（QP、MR、PD 等）相关命令应流经主站 mlx5_core_dev，其他命令必须发送到从端口 mlx5_core_mdev，提供一个接口来获取非 IB 对象命令的正确 mdev
+    ib_alloc_device
+    if (ll == IB_LINK_LAYER_ETHERNET && !mlx5_get_roce_state(mdev))
+        profile = &raw_eth_profile;
+    else
+        profile = &pf_profile;
+    __mlx5_ib_add
+    auxiliary_set_drvdata
+
+
+...
+static const struct mlx5_ib_profile pf_profile
+    mlx5_ib_counters_init
+        ib_set_device_ops(&dev->ib_dev, &counters_ops)
+        ib_set_device_ops(&dev->ib_dev, &hw_switchdev_stats_ops)
+        or
+        ib_set_device_ops(&dev->ib_dev, &hw_stats_ops);
+        mlx5_ib_alloc_counters
+            mlx5_ib_fill_counters
+                basic_q_cnts
+            mlx5_cmd_exec_inout
+
+
+mlx5 counter:
+static const struct counter_desc pport_802_3_stats_desc[] = {
+    { "tx_packets_phy", PPORT_802_3_OFF(a_frames_transmitted_ok) },
+    { "rx_packets_phy", PPORT_802_3_OFF(a_frames_received_ok) },
+    { "rx_crc_errors_phy", PPORT_802_3_OFF(a_frame_check_sequence_errors) },
+    { "tx_bytes_phy", PPORT_802_3_OFF(a_octets_transmitted_ok) },
+    { "rx_bytes_phy", PPORT_802_3_OFF(a_octets_received_ok) },
+    { "tx_multicast_phy", PPORT_802_3_OFF(a_multicast_frames_xmitted_ok) },
+    { "tx_broadcast_phy", PPORT_802_3_OFF(a_broadcast_frames_xmitted_ok) },
+    { "rx_multicast_phy", PPORT_802_3_OFF(a_multicast_frames_received_ok) },
+    { "rx_broadcast_phy", PPORT_802_3_OFF(a_broadcast_frames_received_ok) },
+    { "rx_in_range_len_errors_phy", PPORT_802_3_OFF(a_in_range_length_errors) },
+    { "rx_out_of_range_len_phy", PPORT_802_3_OFF(a_out_of_range_length_field) },
+    { "rx_oversize_pkts_phy", PPORT_802_3_OFF(a_frame_too_long_errors) },
+    { "rx_symbol_err_phy", PPORT_802_3_OFF(a_symbol_error_during_carrier) },
+    { "tx_mac_control_phy", PPORT_802_3_OFF(a_mac_control_frames_transmitted) },
+    { "rx_mac_control_phy", PPORT_802_3_OFF(a_mac_control_frames_received) },
+    { "rx_unsupported_op_phy", PPORT_802_3_OFF(a_unsupported_opcodes_received) },
+    { "rx_pause_ctrl_phy", PPORT_802_3_OFF(a_pause_mac_ctrl_frames_received) },
+    { "tx_pause_ctrl_phy", PPORT_802_3_OFF(a_pause_mac_ctrl_frames_transmitted) },
+};
+
+rx_write_requests
+static const struct mlx5_ib_counter basic_q_cnts[] = {
+    INIT_Q_COUNTER(rx_write_requests),
+    INIT_Q_COUNTER(rx_read_requests),
+    INIT_Q_COUNTER(rx_atomic_requests),
+    INIT_Q_COUNTER(rx_dct_connect),
+    INIT_Q_COUNTER(out_of_buffer),
+};
+
+
+MLX5E_DECLARE_STATS_GRP_OP_UPDATE_STATS
+
+
+
+struct mlx5_ifc_query_q_counter_out_bits {
+    u8         status[0x8];
+    u8         reserved_at_8[0x18];
+
+    u8         syndrome[0x20];
+
+    u8         reserved_at_40[0x40];
+
+    u8         rx_write_requests[0x20];
+
+
+static const struct ib_device_ops hw_stats_ops = {
+    .alloc_hw_port_stats = mlx5_ib_alloc_hw_port_stats,
+    .get_hw_stats = mlx5_ib_get_hw_stats,
+    .counter_bind_qp = mlx5_ib_counter_bind_qp,
+    .counter_unbind_qp = mlx5_ib_counter_unbind_qp,
+    .counter_dealloc = mlx5_ib_counter_dealloc,
+    .counter_alloc_stats = mlx5_ib_counter_alloc_stats,
+    .counter_update_stats = mlx5_ib_counter_update_stats,
+    .modify_hw_stat = IS_ENABLED(CONFIG_INFINIBAND_USER_ACCESS) ?
+              mlx5_ib_modify_stat : NULL,
+};
+
+
+rdma_counter_init
+    alloc_hw_port_stats
+
+
+nlmsg_put RDMA_NLDEV_CMD_STAT_SET
+.doit = nldev_stat_set_doit
+    nldev_stat_set_counter_dynamic_doit
+        rdma_counter_modify -> RDMA/nldev：允许通过 RDMA netlink 进行可选计数器状态配置，提供允许用户通过 RDMA netlink 启用/禁用可选计数器的选项。 将其限制为仅具有管理员权限的用户。 示例： 1. 启用可选计数器 cc_rx_ce_pkts 和 cc_rx_cnp_pkts（并禁用所有其他计数器）： $ sudo rdma statistic set link rocep8s0f0/1 option-counters \ cc_rx_ce_pkts,cc_rx_cnp_pkts 2. 删除所有可选计数器： $ sudo rdma statistic unset link rocep8s0 f0/1 可选 -计数器
+
+
+
+
+ib_modify_qp
+    _ib_modify_qp
+        rdma_counter_bind_qp_auto -> RDMA：支持超过 255 个 rdma 端口，当前代码在处理 RDMA 设备的端口时使用许多不同的类型：u8、unsigned int 和 u32。 切换到 u32 来清理逻辑。 这使我们（至少）能够使核心视图保持一致并使用相同的类型。 不幸的是，并非所有地方都可以转换。 许多 uverbs 函数期望端口为 u8，因此保留这些位置以免破坏 UAPI。 硬件/规范定义的值也不得更改。 通过切换到 u32，我们现在可以支持具有超过 255 个端口的设备。 U32_MAX 被保留以使控制逻辑更容易处理。 由于具有 U32_MAX 端口的设备可能不会很快发生这种情况，这似乎不是问题。 当创建具有超过 255 个端口的设备时，uverbs 将报告 RDMA 设备具有 255 个端口，因为这是当前支持的最大值。 verbs 接口尚未更改，因为 IBTA 规范在太多地方将端口大小限制为 u8，并且所有依赖 verbs 的应用程序将无法应对此更改。 在此阶段，我们正在扩展仅使用供应商通道的接口。一旦解除限制，switchdev 模式下的 mlx5 将能够拥有设备创建的数千个 SF。 由于报告超过 255 个端口的 RDMA 设备的唯一实例将是代表设备，并且它将自身暴露为仅原始以太网设备 CM/MAD/IPoIB 和其他 ULP 不受此更改的影响，并且它们的 sysfs/接口 暴露给用户空间的内容可以保持不变。 虽然在这里清理了一些对齐问题并删除了不需要的健全性检查（主要在 rdmavt 中）
+            rdma_restrack_is_tracked
+            rdma_is_port_valid
+            rdma_get_counter_auto_mode -> qp 在初始化期间根据自动模式自动与计数器绑定（例如，qp 类型，...）
+            __rdma_counter_bind_qp -> RDMA/计数器：结合分配和绑定逻辑，RDMA 计数器随后立即分配并绑定到 QP。 只有经过这两个步骤之后，它们才真正可用。 通过组合逻辑，我们确保一旦计数器返回给调用者，它将完成所有设置
+                counter_bind_qp -> mlx5_ib_counter_bind_qp -> RDMA/mlx5：与 main.c 分开的计数器，mlx5_ib 中支持多种计数器类型：硬件计数器、拥塞计数器、Q 计数器和流量计数器。 几乎所有支持代码都放在 main.c 中，这使得几乎不可能再维护代码了。 让我们为计数器创建单独的代码命名空间，以方便将来的泛化工作
+                    mlx5_cmd_exec_inout(dev->mdev, alloc_q_counter, in, out)
+                    mlx5_ib_qp_set_counter -> IB/mlx5：支持设置qp计数器，支持将qp与计数器绑定。 如果 counter 为 null，则将 qp 绑定到默认计数器。 不同的QP状态有不同的操作： - RESET：设置计数器字段，使其在RST2INIT更改期间生效； - RTS：发出RTS2RTS更改以更新QP计数器； - 其他：设置计数器字段并标记 counter_pending 标志，当 QP 转移到 RTS 状态并设置该标志时，然后发出 RTS2RTS 修改来更新计数器
+                        MLX5_CAP_GEN(dev->mdev, rts2rts_qp_counters_set_id)
+                        if (mqp->state == IB_QPS_RTS)
+                            __mlx5_ib_qp_set_counter
+                                mlx5_ib_get_counters_id
+                                __mlx5_ib_qp_set_raw_qp_counter
+                                    mlx5_core_modify_rq
+                                        MLX5_CMD_OP_MODIFY_RQ
+                                        mlx5_cmd_exec_in(dev, modify_rq, in);
+                                            ...
+                                MLX5_SET(rts2rts_qp_in, in, opcode, MLX5_CMD_OP_RTS2RTS_QP)
+                                return mlx5_cmd_exec_in(dev->mdev, rts2rts_qp, in)
+            else -> alloc_and_bind
+
+
+
+
+fill_res_counter_entry
+
+
+
+rdma_counter_query_stats
+    counter_update_stats
+
+
+counter_history_stat_update -> RDMA/计数器：在释放之前查询计数器，在释放之前查询动态分配的计数器，以更新其硬件计数器并将所有计数器记录到历史数据中。 否则这些硬件计数器的所有值都将丢失
+
+
+
+.modify_qp = mlx5_ib_modify_qp
+
+
+
+
+ib_query_port
+    __ib_query_port
+        ops.query_port
+
+

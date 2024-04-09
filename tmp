@@ -1,0 +1,2 @@
+#define ib_alloc_device(drv_struct, member)                                    \
+    container_of(_ib_alloc_device(sizeof(struct drv_struct) + BUILD_BUG_ON_ZERO(offsetof(struct drv_struct, member))), struct drv_struct, member)
