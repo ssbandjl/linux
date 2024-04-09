@@ -1778,6 +1778,2532 @@ vlan header:
 
 
 .unlocked_ioctl = ib_uverbs_ioctl
+err_no: #define	ETIMEDOUT	110	/* Connection timed out */, tools/include/uapi/asm-generic/errno.h
+...
+user space
+ioctl(context->cmd_fd, RDMA_VERBS_IOCTL, &cmd->hdr)
+...
+ib_uverbs_ioctl
+    unlikely(cmd != RDMA_VERBS_IOCTL)
+    copy_from_user
+    srcu_read_lock
+    ib_uverbs_cmd_verbs -> IB/uverbs：使用 uverbs_api 解组 ioctl 命令 转换 ioctl 方法系统调用路径以使用 uverbs_api 数据结构。 新的 uapi 结构包含所有相同的信息，只是以不同且更优化的方式。 - 对于与属性相关的所有内容，使用 attr_bkey 而不是 2 级基数树。 这包括属性存储、存在以及缺失强制属性的检测。 - 避免在完成时迭代所有属性存储，而是使用 find_first_bit 和 attr_bkey 来仅定位那些需要清理的属性。 - 组织事物始终运行并始终依赖清理。 这避免了一堆棘手的错误展开情况。 - 使用基数树定位方法，并使用非常高效的增量基数树查找来定位属性 - 使用预先计算的 destroy_bkey 来处理 uobject 销毁 - 使用预先计算的分配大小和预先计算的“need_stack”以避免快速路径中的数学运算。 如果用户空间不传递（许多）不支持的属性，这是最佳的。 总的来说，这为属性访问器带来了更好的代码生成，所有内容现在都存储在由 attr_bkey 索引的位图或线性数组中。 编译器可以在编译时计算所有方法属性的 attr_bkey 值，这意味着像 uverbs_attr_is_valid() 这样的东西现在编译成单指令位测试
+        radix_tree_iter_lookup <- uapi_add_get_elm
+            uapi_key_ioctl_method(hdr->method_id)
+        method_elm = rcu_dereference_protected(*slot, true)
+        ib_uverbs_run_method
+            handler = srcu_dereference
+            ret = handler(&pbundle->bundle)
+            ...
+            ib_uverbs_alloc_pd -> IB_USER_VERBS_CMD_ALLOC_PD
+                uverbs_request
+                    copy_from_user
+                uobj_alloc(UVERBS_OBJECT_PD, attrs, &ib_dev)
+                    ...
+                    rdma_alloc_begin_uobject
+                        obj->type_class->alloc_begin
+                rdma_zalloc_drv_obj
+                rdma_restrack_new
+                rdma_restrack_set_name
+                ib_dev->ops.alloc_pd(pd, &attrs->driver_udata) -> .alloc_pd =  -> mlx5_ib_alloc_pd
+                    rdma_udata_to_drv_context
+                    mlx5_cmd_exec_inout(to_mdev(ibdev)->mdev, alloc_pd, in, out) -> 命令框架
+                        ...
+                    ib_copy_to_udata
+                rdma_restrack_add
+                    xa_insert
+                    or xa_alloc_cyclic
+                uobj_finalize_uobj_create
+                uverbs_response
+        bundle_destroy
+    srcu_read_unlock
+
+
+ioctl, cmd, 
+uverbs_core_api
+uverbs_def_write_intf
+static const struct uapi_definition uverbs_core_api[] = {
+	UAPI_DEF_CHAIN(uverbs_def_obj_async_fd),
+	UAPI_DEF_CHAIN(uverbs_def_obj_counters),
+	UAPI_DEF_CHAIN(uverbs_def_obj_cq),
+	UAPI_DEF_CHAIN(uverbs_def_obj_device),
+	UAPI_DEF_CHAIN(uverbs_def_obj_dm),
+	UAPI_DEF_CHAIN(uverbs_def_obj_flow_action),
+	UAPI_DEF_CHAIN(uverbs_def_obj_intf),
+	UAPI_DEF_CHAIN(uverbs_def_obj_mr),
+	UAPI_DEF_CHAIN(uverbs_def_obj_qp),
+	UAPI_DEF_CHAIN(uverbs_def_obj_srq),
+	UAPI_DEF_CHAIN(uverbs_def_obj_wq),
+	UAPI_DEF_CHAIN(uverbs_def_write_intf),
+	{},
+};
+
+
+
+
+uverbs
+module_init(ib_uverbs_init) -> [PATCH] IB uverbs：核心实现，添加 InfiniBand 用户空间动词实现的核心，包括创建字符设备节点、从用户空间分派请求以及将事件通知传递回用户空间
+    register_chrdev_region
+    alloc_chrdev_region
+    class_register
+    ...
+    ib_register_client(&uverbs_client)
+
+
+probe, add(dev)
+ib_register_device -> roce和IB注册的flow: https://blog.csdn.net/tiantao2012/article/details/77746141
+    assign_name
+    setup_device(device) -> ib_register_device() 执行多个分配和初始化步骤。 将其拆分为更小、更易读的函数，以便于审查和维护 -> setup_device() 分配内存并设置需要调用设备操作的数据，这是在 ib_alloc_device 期间未完成这些操作的唯一原因。 它由 ib_dealloc_device() 撤消
+        ib_device_check_mandatory
+            IB_MANDATORY_FUNC
+            mandatory_table
+            IB_MANDATORY_FUNC(query_device),
+            ...
+        setup_port_data -> RDMA/device：将 ib_device per_port 数据合并到一个位置，没有理由对每个端口数据进行 3 次分配。 将它们组合在一起并使所有每端口数据的生命周期与 struct ib_device 匹配。 后续补丁将需要更多特定于端口的数据，现在有一个好地方可以放置它
+            alloc_port_data
+                rdma_end_port
+                rdma_for_each_port
+                    INIT_LIST_HEAD(&pdata->pkey_list)
+                    INIT_HLIST_NODE(&pdata->ndev_hash_link)
+            rdma_for_each_port
+                get_port_immutable -> .get_port_immutable = irdma_roce_port_immutable
+                    ib_query_port
+                    immutable->max_mad_size = IB_MGMT_MAD_SIZE
+                verify_immutable
+                    rdma_cap_ib_mad -> rdma_cap_ib_mad - 检查设备的端口是否支持 Infiniband 管理数据报。 @device：要检查的设备 @port_num：要检查的端口号 管理数据报 (MAD) 是 InfiniBand 规范的必需部分，并且受所有 InfiniBand 设备支持。 OPA 接口还支持稍微扩展的版本。 返回：如果端口支持发送/接收MAD数据包，则返回true
+                        device->port_data[port_num].immutable.core_cap_flags & RDMA_CORE_CAP_IB_MAD
+                    rdma_max_mad_size -> rdma_max_mad_size - 返回此 RDMA 端口所需的最大 MAD 大小。 @device：设备 @port_num：端口号 该 MAD 大小包括 MAD 标头和 MAD 负载。 不包含其他标头。 返回端口所需的最大 MAD 大小。 如果端口不支持 MAD，则返回 0
+        device->ops.query_device
+    ib_cache_setup_one(device) -> IB/核心：添加 RoCE GID 表管理，RoCE GID 基于与 RDMA (RoCE) 设备端口相关的以太网网络设备上配置的 IP 地址。 目前，每个支持 RoCE（ocrdma、mlx4）的低级驱动程序都管理自己的 RoCE 端口 GID 表。 由于本质上没有任何特定于供应商的内容，因此我们对其进行概括，并增强 RDMA 核心 GID 缓存来完成这项工作。 为了填充 GID 表，我们监听事件： (a) netdev up/down/change_addr 事件 - 如果 netdev 构建在我们的 RoCE 设备上，我们需要添加/删除其 IP。 这涉及添加与此 ndev 相关的所有 GID、添加默认 GID 等。 (b) inet 事件 - 将新 GID（根据 IP 地址）添加到表中。 为了对端口 RoCE GID 表进行编程，提供商必须实现 add_gid 和 del_gid 回调。 RoCE GID 管理要求我们在 GID 旁边声明关联的 net_device。 为了管理 GID 表，此信息是必需的。 例如，当删除 net_device 时，其关联的 GID 也需要删除。 RoCE 要求根据相关网络设备的 IPv6 本地链路为每个端口生成默认 GID。 与基于常规 IPv6 链路本地的 GID（因为我们为每个 IP 地址生成 GID）相反，当网络设备关闭时，默认 GID 也可用（为了支持环回）。 锁定的完成方式如下：该补丁修改了 GID 表代码，适用于实现 add_gid/del_gid 回调的新 RoCE 驱动程序以及未实现 add_gid/del_gid 回调的当前 RoCE 和 IB 驱动程序。 更新表的流程不同，因此锁定要求也不同。 更新 RoCE GID 表时，通过 mutex_lock(&table->lock) 实现针对多个写入者的保护。 由于写入表需要我们在表中查找一个条目（可能是空闲条目）然后修改它，因此该互斥锁保护 find_gid 和 write_gid 确保操作的原子性。 GID 缓存中的每个条目均受 rwlock 保护。 在 RoCE 中，写入（通常来自 netdev 通知程序的结果）涉及调用供应商的 add_gid 和 del_gid 回调，这些回调可能会休眠。 因此，为每个条目添加无效标志。 RoCE 的更新是通过工作队列完成的，因此允许休眠。 在IB中，更新是在write_lock_irq(&device->cache.lock)中完成的，因此write_gid不允许休眠并且add_gid/del_gid不会被调用。 当将网络设备传入/传出 GID 缓存时，该设备始终被传递为保持 (dev_hold)。 该代码使用单个工作项来更新所有 RDMA 设备，遵循 netdev 或 inet 通知程序。 该补丁将缓存从客户端（这是不正确的，因为缓存是 IB 基础设施的一部分）转变为在设备注册/删除时显式初始化/释放
+        gid_table_setup_one
+            _gid_table_setup_one
+            rdma_roce_rescan_device -> {net, IB}/mlx5：管理多端口 RoCE 的端口关联，调用 mlx5_ib_add 时确定要添加的 mlx5 核心设备是否能够进行双端口 RoCE 操作。 如果是，请使用 num_vhca_ports 和affiliate_nic_vport_criteria 功能确定它是主设备还是从设备。 如果该设备是从属设备，请尝试找到与其关联的主设备。 可以关联的设备将共享系统映像 GUID。 如果没有找到，请将其放入非关联端口列表中。 如果找到主设备，则通过在 NIC vport 上下文中配置端口从属关系将端口绑定到它。 同样，当调用 mlx5_ib_remove 时确定端口类型。 如果它是从端口，则将其与主设备取消关联，否则只需将其从非关联端口列表中删除即可。 即使第二个端口不可用于关联，IB 设备也会注册为多端口设备。 当第二个端口稍后附属时，必须刷新 GID 缓存才能获取缓存中第二个端口的默认 GID。 导出roce_rescan_device以提供在绑定新端口后刷新缓存的机制。 在多端口配置中，所有 IB 对象（QP、MR、PD 等）相关命令应流经主站 mlx5_core_dev，其他命令必须发送到从端口 mlx5_core_mdev，提供一个接口来获取非 IB 对象命令的正确 mdev
+                ib_enum_roce_netdev pass_all_filter enum_all_gids_of_dev_cb
+        rdma_for_each_port
+            ib_cache_update -> IB/核心：仅在相应事件上更新 PKEY 和 GID 缓存，HCA 中的 PKEY 和 GID 表都可以保存数百个条目。 阅读它们是昂贵的。 部分原因是用于检索它们的 API 一次仅返回一个条目。 此外，在某些实现上，例如 CX-3，VF 在这方面是半虚拟化的，并且必须依赖 PF 驱动程序来执行读取。 这再次需要 VF 到 PF 的通信。 IB Core 的缓存会根据所有事件进行刷新。 因此，根据收到的事件分别为 IB_EVENT_PKEY_CHANGE 和 IB_EVENT_GID_CHANGE 来过滤 PKEY 和 GID 缓存的刷新
+                rdma_is_port_valid
+                ib_query_port
+                rdma_protocol_roce
+                config_non_roce_gid_cache
+                ib_query_pkey
+                ib_security_cache_change
+    ib_setup_device_attrs
+    ib_device_register_rdmacg
+    rdma_counter_init
+    dev_set_uevent_suppress
+    ib_setup_port_attrs
+    enable_device_and_get
+        add_client_context
+            client->add(device) -> .add    = ib_uverbs_add_one,
+    dev_set_uevent_suppress
+    kobject_uevent(&device->dev.kobj, KOBJ_ADD)
+    ib_device_put
+
+
+static struct ib_client uverbs_client = {
+    .name   = "uverbs",
+    .no_kverbs_req = true,
+    .add    = ib_uverbs_add_one,
+    .remove = ib_uverbs_remove_one,
+    .get_nl_info = ib_uverbs_get_nl_info,
+};
+
+ib_uverbs_add_one  -> RDMA：允许 ib_client 在调用 add() 时失败，添加客户端时不允许失败，但所有客户端在其添加例程中都有各种失败路径。 这会产生一种非常边缘的情况：添加客户端后，在添加过程中失败并且未设置 client_data。 然后，核心代码仍然会使用 NULL client_data 调用其他以 client_data 为中心的操作，例如 remove()、rename()、get_nl_info() 和 get_net_dev_by_params() - 这是令人困惑和意外的。 如果 add() 回调失败，则不要再为设备调用任何客户端操作，甚至删除。 删除操作回调中现在对 NULL client_data 的所有冗余检查。 更新所有 add() 回调以正确返回错误代码。 EOPNOTSUPP 用于 ULP 不支持 ib_device 的情况 - 例如，因为它仅适用于 IB
+参考: https://www.cnblogs.com/vlhn/p/8301427.html
+    ib_uverbs_create_uapi
+        uverbs_alloc_api
+            uapi_merge_def(uapi, ibdev, uverbs_core_api, false)
+                uapi_merge_obj_tree
+                    uapi_merge_method
+    dev_set_name
+    cdev_init
+    cdev_device_add
+    ib_set_client_data
+
+
+
+Mellanox ConnectX-6-dx智能网卡 openvswitch 流表卸载源码分析: https://blog.csdn.net/qq_20679687/article/details/131632198
+// -------- ovs -----------------
+// --- ovs vswitchd 主线程 -----------------
+// 首包触发卸载，后续包走datapath转发或硬件转发
+dp_netdev_flow_add
+    dpcls_insert(cls, &flow->cr, &mask);  // datapath缓存流转发规则
+    // 入队 卸载任务队列
+    queue_netdev_flow_put(pmd, flow, match, actions, actions_len, DP_NETDEV_FLOW_OFFLOAD_OP_ADD);
+
+// --- ovs offload_main 卸载线程 -----
+dp_netdev_flow_offload_main    // 通过队列+poll的方式，该线程 异步处理 来自ovs主线程的卸载任务队列。
+    dp_offload_flow(offload);
+        // netdev offload
+        dp_netdev_flow_offload_put  // 单独的一个线程 dp_netdev_flow_offload_main
+        netdev_flow_put->flow_ flow_api->flow_put
+            netdev_offload_dpdk_flow_put
+                netdev_offload_dpdk_add_flow
+                    netdev_offload_dpdk_action
+                        netdev_offload_dpdk_flow_create
+                            netdev_dpdk_rte_flow_create
+                                // ---- dpdk rte_flow ----------------------
+                                rte_flow_create()
+                                 ==>mlx5_flow_create    // dpdk: drivers/net/mlx5/mlx5_flow.c
+                                        mlx5_flow_list_create
+                                            flow_idx = flow_list_create(dev, type, attr, items, original_actions, 
+                                                                        external, wks, error);
+                                                flow_drv_translate(dev, dev_flow,&attr_tx, items_tx.items,
+                                                                   actions_hairpin_tx.actions, error);
+                                                    fops->translate(dev, dev_flow, attr, items, actions, error);
+                                                     ==>flow_dv_translate(dev, dev_flow, attr, items, actions, error)  # 详见下方
+                                                flow_drv_validate()
+                                                flow_drv_apply(dev, flow, error);
+                                                    fops->apply(dev, flow, error);
+                                                     ==>flow_dv_apply     # 详见下方
+
+// 分析 flow_dv_translate 
+    for (; !actions_end ; actions++) {
+        // parse action
+    }
+    dev_flow->act_flags = action_flags;
+    flow_dv_matcher_register(dev, &matcher, &tbl_key, dev_flow, tunnel, attr->group, error)
+
+// 分析 flow_dv_apply
+flow_dv_apply
+     mlx5_flow_os_create_flow(dv_h->matcher->matcher_object,(void *)&dv->value, n,dv->actions, &dh->drv_flow);
+        *flow = mlx5_glue->dv_create_flow(matcher, match_value,num_actions, actions);
+            mlx5_glue_dv_create_flow
+                mlx5dv_dr_rule_create(matcher, match_value, num_actions,(struct mlx5dv_dr_action **)actions);
+                    ==>用户态驱动 详见下小节
+                    mlx5dv_dr_rule_create(matcher, match_value, num_actions,(struct mlx5dv_dr_action **)actions);
+                    ==>内核态驱动 详见下下小节
+                    __mlx5_glue_dv_create_flow(matcher, match_value,num_actions, actions_attr);
+
+
+
+// --- rdma-core --------
+mlx5dv_dr_rule_create(matcher, match_value, num_actions,(struct mlx5dv_dr_action **)actions);
+    dr_rule_create_rule(matcher, value, num_actions, actions);
+        dr_rule_create_rule_fdb(rule, &param,num_actions, actions);
+            dr_rule_create_rule_nic(rule, &rule->tx, &copy_param,num_actions, actions);
+                dr_rule_send_update_list(&send_ste_list, dmn, true, nic_rule->lock_index);
+                    dr_rule_handle_one_ste_in_update_list(ste_info,dmn,send_ring_idx);
+                        dr_send_postsend_ste(dmn, ste_info->ste, ste_info->data,ste_info->size,
+                                             ste_info->offset,send_ring_idx);
+                            dr_postsend_icm_data(dmn, &send_info, ring_idx);	
+                                dr_post_send(send_ring->qp, send_info);   // 走rdma通道 
+                                    /* Write. false, because we delay the post_send_db till the coming READ */
+                                    dr_rdma_segments(dr_qp, send_info->remote_addr, send_info->rkey,
+                                             &send_info->write, MLX5_OPCODE_RDMA_WRITE, false);
+                                    /* Read. true, because we send WRITE + READ together */
+                                    dr_rdma_segments(dr_qp, send_info->remote_addr, send_info->rkey,
+                                             &send_info->read, MLX5_OPCODE_RDMA_READ, true);
+
+// --- dpdk ---------------
+mlx5_glue_dv_create_flow()
+    __mlx5_glue_dv_create_flow(matcher, match_value,num_actions, actions_attr);
+// --- rdma mlx5dv_create_flow in rdma-core providers/mlx5/verbs.c ---
+    dvops->create_flow(flow_matcher,match_value,num_actions,actions_attr,NULL);
+        _mlx5dv_create_flow
+            fill_attr_in_uint32(cmd,MLX5_IB_ATTR_CREATE_FLOW_FLAGS,MLX5_IB_ATTR_CREATE_FLOW_FLAGS_DEFAULT_MISS);
+            execute_ioctl(flow_matcher->context, cmd); // call kernel ioctl
+// --- kernel space -- mlx5_ib.ko mlx_core.ko -------------
+// ib_core dispatch message to mlx5_ib
+UVERBS_HANDLER(MLX5_IB_METHOD_CREATE_FLOW)   // drivers/infiniband/hw/mlx5/fs.c
+    get_dests
+        uverbs_get_flags32
+            uverbs_get_flags64(&flags, attrs_bundle, idx, allowed_bits);
+            raw_fs_rule_add(dev, fs_matcher, &flow_context, &flow_act,counter_id, cmd_in, inlen, dest_id, dest_type);
+                _create_raw_flow_rule
+                    mlx5_add_flow_rules(ft, spec,flow_act, dst, dst_num);  // drivers/net/ethernet/mellanox/mlx5/core/fs_core.c
+                        rule = add_rule_fg(g, spec, flow_act, dest, dest_num, fte);
+                            handle = add_rule_fte(fte, fg, dest, dest_num,old_action != flow_act->action);
+                                root->cmds->update_fte(root, ft, fg, modify_mask, fte)
+                                    mlx5_cmd_update_fte
+                                        mlx5_cmd_set_fte(dev, opmod, modify_mask, ft, fg->id, fte);
+                                            mlx5_cmd_exec(dev, in, inlen, out, sizeof(out));
+                                                mlx5_cmd_do(dev, in, in_size, out, out_size);
+                                                    cmd_exec(dev, in, in_size, out, out_size, NULL, NULL, false);
+                                                        cmd_work_handler
+                                                            down(sem)
+                                                            lay = get_inst(cmd, ent->idx);
+                                                                return cmd->cmd_buf + (idx << cmd->log_stride);
+                                                            memset(lay, 0, sizeof(*lay));
+                                                            memcpy(lay->in, ent->in->first.data, sizeof(lay->in));
+                                                            lay->type = MLX5_PCI_CMD_XPORT
+                                                            lay->status_own = CMD_OWNER_HW; // transfer ownership to hardware
+                                                            wmb()
+                                                            iowrite32be(1 << ent->idx, &dev->iseg->cmd_dbell);
+                                                            // polling reg for completion
+                                                            mlx5_cmd_comp_handler(dev, 1ULL << ent->idx, ent->ret == -ETIMEDOUT ?
+                                                                      MLX5_CMD_COMP_TYPE_FORCED : MLX5_CMD_COMP_TYPE_POLLING);
+                                                                callback or
+                                                                complete
+
+// ovs kernel datapath 路径
+// -- user space ---
+dpif_netlink_operate
+ -->try_send_to_netdev   // 先卸载。这里会卡住。
+    dpif_netlink_operate_chunks // 再转发
+        dpif_netlink_operate__
+            dpif_netlink_init_flow_put  // netlink
+// -- kernel space ---
+    ovs_flow_cmd_new()
+        ovs_flow_tbl_lookup(&dp->table, &new_flow->key);
+        ovs_flow_tbl_insert(&dp->table, new_flow, &mask);
+
+// ovs卸载路径
+// --- user space ---
+dpif_netlink_operate
+    try_send_to_netdev
+        parse_flow_put(dpif, put);
+            netdev_flow_put(dev, &match,...)
+            flow_api->flow_put(netdev,...）
+                netdev_tc_flow_put()
+                    tc_replace_flower(&id, &flower);   // netlink 通信。组装tc-flow指令给tc内核模块
+// --- kernel space ------
+tc_ctl_tfilter // tc module。不属于ovs代码
+    // 代表口卸载
+    mlx5e_rep_indr_setup_tc_cb  // mlx5_core.ko
+        mlx5e_rep_indr_offload(priv->netdev, type_data, priv,flags);
+            mlx5e_configure_flower(netdev, priv, flower, flags)
+                mlx5e_tc_add_flow(priv, f, flags, dev, &flow);
+                    mlx5e_add_fdb_flow(priv, f, flow_flags,filter_dev, flow);
+                        mlx5e_tc_offload_fdb_rules
+                            mlx5_eswitch_add_offloaded_rule
+                             ==>mlx5_add_flow_rules   //与 rte_flow/ib一样的底层调用接口
+                               
+// data structure
+const struct net_device_ops mlx5e_netdev_ops = {
+    .ndo_setup_tc            = mlx5e_setup_tc,
+}
+
+udpif_revalidator()
+    revalidate(revalidator);
+        dpif_flow_dump_next
+            dpif->dpif_class->flow_dump_next(thread, flows, max_flows);
+                dpif_netdev_flow_dump_next
+                    dp_netdev_flow_to_dpif_flow
+                        get_dpif_flow_status()
+                            dpif_netdev_get_flow_offload_status()
+                                netdev_offload_dpdk_flow_get
+                                    netdev_dpdk_rte_flow_query_count
+                                     ==>rte_flow_query()
+// --- rte_flow_query in dpdk -----------
+rte_flow_query
+    flow_dv_query
+        flow_dv_query_count
+            _flow_dv_query_count(dev, cnt_idx, &pkts, &bytes);
+                cnt = flow_dv_counter_get_by_idx(dev, counter, NULL);
+                    MLX5_POOL_GET_CNT(pool, idx % MLX5_COUNTERS_PER_POOL);  // 直接读硬件统计寄存器
+
+
+mellanox 命令操作码, 寄存器:
+enum {
+    MLX5_CMD_OP_QUERY_HCA_CAP                 = 0x100,
+    MLX5_CMD_OP_QUERY_ADAPTER                 = 0x101,
+    MLX5_CMD_OP_INIT_HCA                      = 0x102,
+    MLX5_CMD_OP_TEARDOWN_HCA                  = 0x103,
+    MLX5_CMD_OP_ENABLE_HCA                    = 0x104,
+    MLX5_CMD_OP_DISABLE_HCA                   = 0x105,
+    MLX5_CMD_OP_QUERY_PAGES                   = 0x107,
+    MLX5_CMD_OP_MANAGE_PAGES                  = 0x108,
+    MLX5_CMD_OP_SET_HCA_CAP                   = 0x109,
+    MLX5_CMD_OP_QUERY_ISSI                    = 0x10a,
+    MLX5_CMD_OP_SET_ISSI                      = 0x10b,
+    MLX5_CMD_OP_SET_DRIVER_VERSION            = 0x10d,
+    MLX5_CMD_OP_QUERY_SF_PARTITION            = 0x111,
+    MLX5_CMD_OP_ALLOC_SF                      = 0x113,
+    MLX5_CMD_OP_DEALLOC_SF                    = 0x114,
+    MLX5_CMD_OP_SUSPEND_VHCA                  = 0x115,
+    MLX5_CMD_OP_RESUME_VHCA                   = 0x116,
+    MLX5_CMD_OP_QUERY_VHCA_MIGRATION_STATE    = 0x117,
+    MLX5_CMD_OP_SAVE_VHCA_STATE               = 0x118,
+    MLX5_CMD_OP_LOAD_VHCA_STATE               = 0x119,
+    MLX5_CMD_OP_CREATE_MKEY                   = 0x200,
+    MLX5_CMD_OP_QUERY_MKEY                    = 0x201,
+    MLX5_CMD_OP_DESTROY_MKEY                  = 0x202,
+    MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS        = 0x203,
+    MLX5_CMD_OP_PAGE_FAULT_RESUME             = 0x204,
+    MLX5_CMD_OP_ALLOC_MEMIC                   = 0x205,
+    MLX5_CMD_OP_DEALLOC_MEMIC                 = 0x206,
+    MLX5_CMD_OP_MODIFY_MEMIC                  = 0x207,
+    MLX5_CMD_OP_CREATE_EQ                     = 0x301,
+    MLX5_CMD_OP_DESTROY_EQ                    = 0x302,
+    MLX5_CMD_OP_QUERY_EQ                      = 0x303,
+    MLX5_CMD_OP_GEN_EQE                       = 0x304,
+    MLX5_CMD_OP_CREATE_CQ                     = 0x400,
+    MLX5_CMD_OP_DESTROY_CQ                    = 0x401,
+    MLX5_CMD_OP_QUERY_CQ                      = 0x402,
+    MLX5_CMD_OP_MODIFY_CQ                     = 0x403,
+    MLX5_CMD_OP_CREATE_QP                     = 0x500,
+    MLX5_CMD_OP_DESTROY_QP                    = 0x501,
+    MLX5_CMD_OP_RST2INIT_QP                   = 0x502,
+    MLX5_CMD_OP_INIT2RTR_QP                   = 0x503,
+    MLX5_CMD_OP_RTR2RTS_QP                    = 0x504,
+    MLX5_CMD_OP_RTS2RTS_QP                    = 0x505,
+    MLX5_CMD_OP_SQERR2RTS_QP                  = 0x506,
+    MLX5_CMD_OP_2ERR_QP                       = 0x507,
+    MLX5_CMD_OP_2RST_QP                       = 0x50a,
+    MLX5_CMD_OP_QUERY_QP                      = 0x50b,
+    MLX5_CMD_OP_SQD_RTS_QP                    = 0x50c,
+    MLX5_CMD_OP_INIT2INIT_QP                  = 0x50e,
+    MLX5_CMD_OP_CREATE_PSV                    = 0x600,
+    MLX5_CMD_OP_DESTROY_PSV                   = 0x601,
+    MLX5_CMD_OP_CREATE_SRQ                    = 0x700,
+    MLX5_CMD_OP_DESTROY_SRQ                   = 0x701,
+    MLX5_CMD_OP_QUERY_SRQ                     = 0x702,
+    MLX5_CMD_OP_ARM_RQ                        = 0x703,
+    MLX5_CMD_OP_CREATE_XRC_SRQ                = 0x705,
+    MLX5_CMD_OP_DESTROY_XRC_SRQ               = 0x706,
+    MLX5_CMD_OP_QUERY_XRC_SRQ                 = 0x707,
+    MLX5_CMD_OP_ARM_XRC_SRQ                   = 0x708,
+    MLX5_CMD_OP_CREATE_DCT                    = 0x710,
+    MLX5_CMD_OP_DESTROY_DCT                   = 0x711,
+    MLX5_CMD_OP_DRAIN_DCT                     = 0x712,
+    MLX5_CMD_OP_QUERY_DCT                     = 0x713,
+    MLX5_CMD_OP_ARM_DCT_FOR_KEY_VIOLATION     = 0x714,
+    MLX5_CMD_OP_CREATE_XRQ                    = 0x717,
+    MLX5_CMD_OP_DESTROY_XRQ                   = 0x718,
+    MLX5_CMD_OP_QUERY_XRQ                     = 0x719,
+    MLX5_CMD_OP_ARM_XRQ                       = 0x71a,
+    MLX5_CMD_OP_QUERY_XRQ_DC_PARAMS_ENTRY     = 0x725,
+    MLX5_CMD_OP_SET_XRQ_DC_PARAMS_ENTRY       = 0x726,
+    MLX5_CMD_OP_QUERY_XRQ_ERROR_PARAMS        = 0x727,
+    MLX5_CMD_OP_RELEASE_XRQ_ERROR             = 0x729,
+    MLX5_CMD_OP_MODIFY_XRQ                    = 0x72a,
+    MLX5_CMD_OP_QUERY_ESW_FUNCTIONS           = 0x740,
+    MLX5_CMD_OP_QUERY_VPORT_STATE             = 0x750,
+    MLX5_CMD_OP_MODIFY_VPORT_STATE            = 0x751,
+    MLX5_CMD_OP_QUERY_ESW_VPORT_CONTEXT       = 0x752,
+    MLX5_CMD_OP_MODIFY_ESW_VPORT_CONTEXT      = 0x753,
+    MLX5_CMD_OP_QUERY_NIC_VPORT_CONTEXT       = 0x754,
+    MLX5_CMD_OP_MODIFY_NIC_VPORT_CONTEXT      = 0x755,
+    MLX5_CMD_OP_QUERY_ROCE_ADDRESS            = 0x760,
+    MLX5_CMD_OP_SET_ROCE_ADDRESS              = 0x761,
+    MLX5_CMD_OP_QUERY_HCA_VPORT_CONTEXT       = 0x762,
+    MLX5_CMD_OP_MODIFY_HCA_VPORT_CONTEXT      = 0x763,
+    MLX5_CMD_OP_QUERY_HCA_VPORT_GID           = 0x764,
+    MLX5_CMD_OP_QUERY_HCA_VPORT_PKEY          = 0x765,
+    MLX5_CMD_OP_QUERY_VNIC_ENV                = 0x76f,
+    MLX5_CMD_OP_QUERY_VPORT_COUNTER           = 0x770,
+    MLX5_CMD_OP_ALLOC_Q_COUNTER               = 0x771,
+    MLX5_CMD_OP_DEALLOC_Q_COUNTER             = 0x772,
+    MLX5_CMD_OP_QUERY_Q_COUNTER               = 0x773,
+    MLX5_CMD_OP_SET_MONITOR_COUNTER           = 0x774,
+    MLX5_CMD_OP_ARM_MONITOR_COUNTER           = 0x775,
+    MLX5_CMD_OP_SET_PP_RATE_LIMIT             = 0x780,
+    MLX5_CMD_OP_QUERY_RATE_LIMIT              = 0x781,
+    MLX5_CMD_OP_CREATE_SCHEDULING_ELEMENT      = 0x782,
+    MLX5_CMD_OP_DESTROY_SCHEDULING_ELEMENT     = 0x783,
+    MLX5_CMD_OP_QUERY_SCHEDULING_ELEMENT       = 0x784,
+    MLX5_CMD_OP_MODIFY_SCHEDULING_ELEMENT      = 0x785,
+    MLX5_CMD_OP_CREATE_QOS_PARA_VPORT         = 0x786,
+    MLX5_CMD_OP_DESTROY_QOS_PARA_VPORT        = 0x787,
+    MLX5_CMD_OP_ALLOC_PD                      = 0x800,
+    MLX5_CMD_OP_DEALLOC_PD                    = 0x801,
+    MLX5_CMD_OP_ALLOC_UAR                     = 0x802,
+    MLX5_CMD_OP_DEALLOC_UAR                   = 0x803,
+    MLX5_CMD_OP_CONFIG_INT_MODERATION         = 0x804,
+    MLX5_CMD_OP_ACCESS_REG                    = 0x805,
+    MLX5_CMD_OP_ATTACH_TO_MCG                 = 0x806,
+    MLX5_CMD_OP_DETACH_FROM_MCG               = 0x807,
+    MLX5_CMD_OP_GET_DROPPED_PACKET_LOG        = 0x80a,
+    MLX5_CMD_OP_MAD_IFC                       = 0x50d,
+    MLX5_CMD_OP_QUERY_MAD_DEMUX               = 0x80b,
+    MLX5_CMD_OP_SET_MAD_DEMUX                 = 0x80c,
+    MLX5_CMD_OP_NOP                           = 0x80d,
+    MLX5_CMD_OP_ALLOC_XRCD                    = 0x80e,
+    MLX5_CMD_OP_DEALLOC_XRCD                  = 0x80f,
+    MLX5_CMD_OP_ALLOC_TRANSPORT_DOMAIN        = 0x816,
+    MLX5_CMD_OP_DEALLOC_TRANSPORT_DOMAIN      = 0x817,
+    MLX5_CMD_OP_QUERY_CONG_STATUS             = 0x822,
+    MLX5_CMD_OP_MODIFY_CONG_STATUS            = 0x823,
+    MLX5_CMD_OP_QUERY_CONG_PARAMS             = 0x824,
+    MLX5_CMD_OP_MODIFY_CONG_PARAMS            = 0x825,
+    MLX5_CMD_OP_QUERY_CONG_STATISTICS         = 0x826,
+    MLX5_CMD_OP_ADD_VXLAN_UDP_DPORT           = 0x827,
+    MLX5_CMD_OP_DELETE_VXLAN_UDP_DPORT        = 0x828,
+    MLX5_CMD_OP_SET_L2_TABLE_ENTRY            = 0x829,
+    MLX5_CMD_OP_QUERY_L2_TABLE_ENTRY          = 0x82a,
+    MLX5_CMD_OP_DELETE_L2_TABLE_ENTRY         = 0x82b,
+    MLX5_CMD_OP_SET_WOL_ROL                   = 0x830,
+    MLX5_CMD_OP_QUERY_WOL_ROL                 = 0x831,
+    MLX5_CMD_OP_CREATE_LAG                    = 0x840,
+    MLX5_CMD_OP_MODIFY_LAG                    = 0x841,
+    MLX5_CMD_OP_QUERY_LAG                     = 0x842,
+    MLX5_CMD_OP_DESTROY_LAG                   = 0x843,
+    MLX5_CMD_OP_CREATE_VPORT_LAG              = 0x844,
+    MLX5_CMD_OP_DESTROY_VPORT_LAG             = 0x845,
+    MLX5_CMD_OP_CREATE_TIR                    = 0x900,
+    MLX5_CMD_OP_MODIFY_TIR                    = 0x901,
+    MLX5_CMD_OP_DESTROY_TIR                   = 0x902,
+    MLX5_CMD_OP_QUERY_TIR                     = 0x903,
+    MLX5_CMD_OP_CREATE_SQ                     = 0x904,
+    MLX5_CMD_OP_MODIFY_SQ                     = 0x905,
+    MLX5_CMD_OP_DESTROY_SQ                    = 0x906,
+    MLX5_CMD_OP_QUERY_SQ                      = 0x907,
+    MLX5_CMD_OP_CREATE_RQ                     = 0x908,
+    MLX5_CMD_OP_MODIFY_RQ                     = 0x909,
+    MLX5_CMD_OP_SET_DELAY_DROP_PARAMS         = 0x910,
+    MLX5_CMD_OP_DESTROY_RQ                    = 0x90a,
+    MLX5_CMD_OP_QUERY_RQ                      = 0x90b,
+    MLX5_CMD_OP_CREATE_RMP                    = 0x90c,
+    MLX5_CMD_OP_MODIFY_RMP                    = 0x90d,
+    MLX5_CMD_OP_DESTROY_RMP                   = 0x90e,
+    MLX5_CMD_OP_QUERY_RMP                     = 0x90f,
+    MLX5_CMD_OP_CREATE_TIS                    = 0x912,
+    MLX5_CMD_OP_MODIFY_TIS                    = 0x913,
+    MLX5_CMD_OP_DESTROY_TIS                   = 0x914,
+    MLX5_CMD_OP_QUERY_TIS                     = 0x915,
+    MLX5_CMD_OP_CREATE_RQT                    = 0x916,
+    MLX5_CMD_OP_MODIFY_RQT                    = 0x917,
+    MLX5_CMD_OP_DESTROY_RQT                   = 0x918,
+    MLX5_CMD_OP_QUERY_RQT                     = 0x919,
+    MLX5_CMD_OP_SET_FLOW_TABLE_ROOT		  = 0x92f,
+    MLX5_CMD_OP_CREATE_FLOW_TABLE             = 0x930,
+    MLX5_CMD_OP_DESTROY_FLOW_TABLE            = 0x931,
+    MLX5_CMD_OP_QUERY_FLOW_TABLE              = 0x932,
+    MLX5_CMD_OP_CREATE_FLOW_GROUP             = 0x933,
+    MLX5_CMD_OP_DESTROY_FLOW_GROUP            = 0x934,
+    MLX5_CMD_OP_QUERY_FLOW_GROUP              = 0x935,
+    MLX5_CMD_OP_SET_FLOW_TABLE_ENTRY          = 0x936,
+    MLX5_CMD_OP_QUERY_FLOW_TABLE_ENTRY        = 0x937,
+    MLX5_CMD_OP_DELETE_FLOW_TABLE_ENTRY       = 0x938,
+    MLX5_CMD_OP_ALLOC_FLOW_COUNTER            = 0x939,
+    MLX5_CMD_OP_DEALLOC_FLOW_COUNTER          = 0x93a,
+    MLX5_CMD_OP_QUERY_FLOW_COUNTER            = 0x93b,
+    MLX5_CMD_OP_MODIFY_FLOW_TABLE             = 0x93c,
+    MLX5_CMD_OP_ALLOC_PACKET_REFORMAT_CONTEXT = 0x93d,
+    MLX5_CMD_OP_DEALLOC_PACKET_REFORMAT_CONTEXT = 0x93e,
+    MLX5_CMD_OP_QUERY_PACKET_REFORMAT_CONTEXT = 0x93f,
+    MLX5_CMD_OP_ALLOC_MODIFY_HEADER_CONTEXT   = 0x940,
+    MLX5_CMD_OP_DEALLOC_MODIFY_HEADER_CONTEXT = 0x941,
+    MLX5_CMD_OP_QUERY_MODIFY_HEADER_CONTEXT   = 0x942,
+    MLX5_CMD_OP_FPGA_CREATE_QP                = 0x960,
+    MLX5_CMD_OP_FPGA_MODIFY_QP                = 0x961,
+    MLX5_CMD_OP_FPGA_QUERY_QP                 = 0x962,
+    MLX5_CMD_OP_FPGA_DESTROY_QP               = 0x963,
+    MLX5_CMD_OP_FPGA_QUERY_QP_COUNTERS        = 0x964,
+    MLX5_CMD_OP_CREATE_GENERAL_OBJECT         = 0xa00,
+    MLX5_CMD_OP_MODIFY_GENERAL_OBJECT         = 0xa01,
+    MLX5_CMD_OP_QUERY_GENERAL_OBJECT          = 0xa02,
+    MLX5_CMD_OP_DESTROY_GENERAL_OBJECT        = 0xa03,
+    MLX5_CMD_OP_CREATE_UCTX                   = 0xa04,
+    MLX5_CMD_OP_DESTROY_UCTX                  = 0xa06,
+    MLX5_CMD_OP_CREATE_UMEM                   = 0xa08,
+    MLX5_CMD_OP_DESTROY_UMEM                  = 0xa0a,
+    MLX5_CMD_OP_SYNC_STEERING                 = 0xb00,
+    MLX5_CMD_OP_QUERY_VHCA_STATE              = 0xb0d,
+    MLX5_CMD_OP_MODIFY_VHCA_STATE             = 0xb0e,
+    MLX5_CMD_OP_SYNC_CRYPTO                   = 0xb12,
+    MLX5_CMD_OP_ALLOW_OTHER_VHCA_ACCESS       = 0xb16,
+    MLX5_CMD_OP_MAX
+};
+net/mlx5_core：使用硬件寄存器描述头文件，添加自动生成的头文件来描述硬件寄存器以及设置/获取值的宏集。 这些宏进行静态检查以避免溢出、处理字节顺序，并总体上提供了一种干净的命令编码方式。 目前头文件很小，我们将在使用宏时添加结构。 一些命令已从命令枚举中删除，因为当前不支持它们，将在支持可用时添加
+
+
+IB_USER_VERBS_CMD_QUERY_DEVICE
+ib_uverbs_query_device
+    copy_query_dev_fields
+
+
+
+
+fs_initcall(ib_core_init);
+ib_core_init
+register_pernet_device(&rdma_dev_net_ops)
+static struct pernet_operations rdma_dev_net_ops = {
+    .init = rdma_dev_init_net,
+    .exit = rdma_dev_exit_net,
+    .id = &rdma_dev_net_id,
+    .size = sizeof(struct rdma_dev_net),
+};
+rdma_dev_init_net
+    ...
+    rdma_nl_net_init
+        read_pnet
+        .input	= rdma_nl_rcv
+        netlink_kernel_create(net, NETLINK_RDMA, &cfg)
+
+
+static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
+    [RDMA_NLDEV_CMD_GET] = {
+        .doit = nldev_get_doit,
+        .dump = nldev_get_dumpit,
+    },
+如果用户提供特定索引，我们可以使用 .doit 回调加速查询，并在之后保存完整转储和过滤
+nldev_get_dumpit _nldev_get_dumpit
+    rdma_dev_access_netns
+    _nldev_get_dumpit
+        nlmsg_end
+
+
+
+ice intel debug logging 配置固件调试日志:
+The format to set the log levels for a module are:
+  # echo <log level> > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/<module>
+The supported log levels are:
+      *	none
+      *	error
+      *	warning
+      *	normal
+      *	verbose
+Each level includes the messages from the previous/lower level
+The modules that are supported are:
+      *	general
+      *	ctrl
+      *	link
+      *	link_topo
+      *	dnl
+      *	i2c
+      *	sdp
+      *	mdio
+      *	adminq
+      *	hdma
+      *	lldp
+      *	dcbx
+      *	dcb
+      *	xlr
+      *	nvm
+      *	auth
+      *	vpd
+      *	iosf
+      *	parser
+      *	sw
+      *	scheduler
+      *	txq
+      *	rsvd
+      *	post
+      *	watchdog
+      *	task_dispatch
+      *	mng
+      *	synce
+      *	health
+      *	tsdrv
+      *	pfreg
+      *	mdlver
+      *	all
+The module 'all' is a special module which allows the user to read or
+write to all of the modules.
+The following example command would set the DCB module to the 'normal'
+log level:
+  # echo normal > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/dcb
+If the user wants to set the DCB, Link, and the AdminQ modules to
+'verbose' then the commands are:
+  # echo verbose > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/dcb
+  # echo verbose > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/link
+  # echo verbose > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/adminq
+If the user wants to set all modules to the 'warning' level then the
+command is:
+  # echo warning > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/all
+If the user wants to disable logging for a module then they can set the
+level to 'none'. An example setting the 'watchdog' module is:
+  # echo none > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/watchdog
+If the user wants to see what the log level is for a specific module
+then the command is:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/dcb
+This will return the log level for the DCB module. If the user wants to
+see the log level for all the modules then the command is:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/modules/all
+Writing to the module file will update the configuration, but NOT enable the
+configuration (that is a separate command).
+In addition to configuring the modules, the user can also configure the
+number of log messages (nr_messages) to include in a single Admin Receive
+Queue (ARQ) event.The range is 1-128 (1 means push every log message, 128
+means push only when the max AQ command buffer is full). The suggested
+value is 10.
+To see/change the resolution the user can read/write the
+'fwlog/nr_messages' file. An example changing the value to 50 is
+  # echo 50 > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/nr_messages
+To see the current value of 'nr_messages' then the command is:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/nr_messages
+
+ice: add ability to read and configure FW log data
+Once logging is enabled the user should read the data from the 'data'
+file. The data is in the form of a binary blob that can be sent to Intel
+for decoding. To read the data use a command like:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/data > log_data.bin
+If the user wants to clear the FW log data that has been stored in the
+driver then they can write any value to the 'data' file and that will clear
+the data. An example is:
+  # echo 34 > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/data
+In addition to being able to read the data the user can configure how
+much memory is used to store FW log data. This allows the user to
+increase/decrease the amount of memory based on the users situation.
+The data is stored such that if the memory fills up then the oldest data
+will get overwritten in a circular manner. To change the amount of
+memory the user can write to the 'log_size' file like this:
+  # echo <value> > /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/log_size
+Where <value> is one of 128K, 256K, 512K, 1M, and 2M. The default value
+is 1M.
+The user can see the current value of 'log_size' by reading the file:
+  # cat /sys/kernel/debug/ice/0000\:18\:00.0/fwlog/log_size
+At this point the user have SF devlink instance with auxiliary device
+for the Ethernet functionality only.
+
+
+
+timeout type:
+enum mlx5_timeouts_types {
+    /* pre init timeouts (not read from FW) */
+    MLX5_TO_FW_PRE_INIT_TIMEOUT_MS,
+    MLX5_TO_FW_PRE_INIT_ON_RECOVERY_TIMEOUT_MS,
+    MLX5_TO_FW_PRE_INIT_WARN_MESSAGE_INTERVAL_MS,
+    MLX5_TO_FW_PRE_INIT_WAIT_MS,
+
+    /* init segment timeouts */
+    MLX5_TO_FW_INIT_MS,
+    MLX5_TO_CMD_MS,
+
+    /* DTOR timeouts */
+    MLX5_TO_PCI_TOGGLE_MS,
+    MLX5_TO_HEALTH_POLL_INTERVAL_MS,
+    MLX5_TO_FULL_CRDUMP_MS,
+    MLX5_TO_FW_RESET_MS,
+    MLX5_TO_FLUSH_ON_ERROR_MS,
+    MLX5_TO_PCI_SYNC_UPDATE_MS,
+    MLX5_TO_TEARDOWN_MS,
+    MLX5_TO_FSM_REACTIVATE_MS,
+    MLX5_TO_RECLAIM_PAGES_MS,
+    MLX5_TO_RECLAIM_VFS_PAGES_MS,
+    MLX5_TO_RESET_UNLOAD_MS,
+
+    MAX_TIMEOUT_TYPES
+};
+
+default timeout:
+static const u32 tout_def_sw_val[MAX_TIMEOUT_TYPES] = {
+    [MLX5_TO_FW_PRE_INIT_TIMEOUT_MS] = 120000,
+    [MLX5_TO_FW_PRE_INIT_ON_RECOVERY_TIMEOUT_MS] = 7200000,
+    [MLX5_TO_FW_PRE_INIT_WARN_MESSAGE_INTERVAL_MS] = 20000,
+    [MLX5_TO_FW_PRE_INIT_WAIT_MS] = 2,
+    [MLX5_TO_FW_INIT_MS] = 2000,
+    [MLX5_TO_CMD_MS] = 60000,
+    [MLX5_TO_PCI_TOGGLE_MS] =  2000,
+    [MLX5_TO_HEALTH_POLL_INTERVAL_MS] =  2000,
+    [MLX5_TO_FULL_CRDUMP_MS] = 60000,
+    [MLX5_TO_FW_RESET_MS] = 60000,
+    [MLX5_TO_FLUSH_ON_ERROR_MS] = 2000,
+    [MLX5_TO_PCI_SYNC_UPDATE_MS] = 5000,
+    [MLX5_TO_TEARDOWN_MS] = 3000,
+    [MLX5_TO_FSM_REACTIVATE_MS] = 5000,
+    [MLX5_TO_RECLAIM_PAGES_MS] = 5000,
+    [MLX5_TO_RECLAIM_VFS_PAGES_MS] = 120000,
+    [MLX5_TO_RESET_UNLOAD_MS] = 300000
+};
+
+
+mlx5_function_setup
+
+
+
+ip分片:
+net/ipv4/ip_output.c
+int ip_do_fragment
+
+
+
+dev_alloc_pages 函数，用于分配多个连续的物理内存页，分配数量只能是2的非负整数次幂
+
+
+
+
+.port_new = mlx5_devlink_sf_port_new
+mlx5_sf_add
+    mlx5_eswitch_load_sf_vport
+
+
+struct devlink_port {
+    ...
+}
+引入 devlink 基础设施，为驱动程序引入 devlink 基础设施，以通过通用 Netlink 接口注册并公开给用户空间。 定义了两个基本对象： 
+devlink - 每个“父设备”都有一个实例，例如交换机 ASIC (芯片)
+devlink_port - 设备的每个物理端口都有一个实例。 这个初始部分实现了将对象基本获取/转储到用户空间。 此外，还实现了端口分配器和端口类型设置
+
+makefile:
+obj-$(CONFIG_NET_DEVLINK)	+= devlink/
+
+code_style:
+devlink：将代码移动到专用目录，devlink 代码很难在一个文件中使用 13kLoC 进行导航。 我真的很喜欢 Michal 将 ethtool 分成每个命令文件和核心的方式。 将其全部拆分可能太多了，但我们至少可以将核心部分从每个 cmd 实现中分离出来，并将其放在一个目录中，以便新命令可以是单独的文件。 移动代码，后续commit会做部分分割
+
+core_code:
+drivers/net/ethernet/mellanox/mlx5/core/devlink.c
+
+
+mlx5_devlink_ops
+
+
+
+create_cq:
+IB_USER_VERBS_CMD_CREATE_COMP_CHANNEL -> ib_uverbs_create_comp_channel
+ib_uverbs_init_event_queue
+
+
+
+ovs:
+module_init(dp_init) -> net：添加 Open vSwitch 内核组件。 Open vSwitch 是一款针对虚拟化环境的多层以太网交换机。 除了支持传统硬件交换机所期望的各种功能之外，它还支持细粒度的编程扩展和基于流的网络控制。 这种控制在各种应用程序中都很有用，但在多服务器虚拟化部署中尤其重要，多服务器虚拟化部署的特点通常是高度动态的端点以及需要维护多个租户的逻辑抽象。 Open vSwitch 数据路径为数据包转发提供了内核内快速路径。 它由用户空间守护进程 ovs-vswitchd 进行补充，该守护进程能够接受来自各种来源的配置并将其转换为数据包处理规则。 请参阅 http://openvswitch.org 了解更多信息和用户空间实用程序
+action_fifos_init
+...
+
+
+int netif_rx(struct sk_buff *skb)
+
+skeleton.c
+
+
+set_64bit_val
+
+ibv_reg_mr:
+IB_USER_VERBS_CMD_REG_MR
+ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
+    region = ib_umem_get -> pin住以及通过DMA映射的用户空间内存, IB/uverbs：将 ib_umem_get()/ib_umem_release() 导出到模块，导出 ib_umem_get()/ib_umem_release() 并让低级驱动程序控制何时调用 ib_umem_get() 来pin和 DMA 映射用户空间，而不是总是调用它 在调用低级驱动程序的 reg_user_mr 方法之前在 ib_uverbs_reg_mr() 中。 还将这些函数移至 ib_core 模块而不是 ib_uverbs 中，以便使用它们的驱动程序模块不依赖于 ib_uverbs。 这具有许多优点： - 从使通用代码成为可以根据特定设备的详细信息指示由设备特定代码使用或覆盖的库的角度来看，这是更好的设计。 - 不需要固定用户空间内存区域的驱动程序不需要承受调用 ib_mem_get() 的性能损失。 例如，虽然我没有尝试在此补丁中实现它，但 ipath 驱动程序应该能够避免固定内存并仅使用 copy_{to,from}_user() 来访问用户空间内存区域。 - 需要特殊映射处理的缓冲区可以由低级驱动程序识别。 例如，通过使用额外标志映射 CQ 缓冲区，可以解决用户空间中 mthca CQ 的一些特定于 Altix 的内存排序问题。 - 需要为内存区域以外的内容固定和 DMA 映射用户空间内存的驱动程序可以直接使用 ib_umem_get()，而不是使用其 reg_phys_mr 方法的额外参数进行黑客攻击。 例如，待合并的 mlx4 驱动程序需要引脚和 DMA 映射 QP 和 CQ 缓冲区，但不需要为这些缓冲区创建内存密钥。 因此，最干净的解决方案是 mlx4 在 create_qp 和 create_cq 方法中调用 ib_umem_get() -> 调用 ib_umem_get 来完成内存页面pin操作 + 将pin住的内存页面组织为DMA SG List
+        can_do_mlock -> [PATCH] IB uverbs：内存固定实现(pin)，添加对固定用户空间内存区域并返回该区域中的页面列表的支持。 这包括根据 vm_locked 跟踪固定内存并防止非特权用户超过 RLIMIT_MEMLOCK
+        mmgrab(mm) -> 抓住内存(引用+1)
+        __get_free_page -> get continue pa(return va) -> https://blog.csdn.net/do2jiang/article/details/5450705
+        npages = ib_umem_num_pages(umem)
+            ib_umem_num_dma_blocks(umem, PAGE_SIZE) -> RDMA/umem：将 ib_umem_num_pages() 拆分为 ib_umem_num_dma_blocks()，ib_umem_num_pages() 只能由直接在 CPU 页面中使用 SGL 的事物使用。 构建 DMA 列表的驱动程序应使用新的 ib_num_dma_blocks()，它返回 rdma_umem_for_each_block() 将返回的块数。 要使 DMA 驱动程序通用，需要不同的实现。 仅当请求的页面大小为 < PAGE_SIZE 和/或 IOVA == umem->address 时，基于 umem->address 计算 DMA 块计数才有效。 相反，DMA 页数应在 IOVA 地址空间中计算，而不是 umem->address。 因此，IOVA 必须存储在 umem 内，以便可以用于这些计算。 现在默认将其设置为 umem->address 并在调用 ib_umem_find_best_pgsz() 时修复它。 这允许驱动程序安全地转换为 ib_umem_num_dma_blocks()
+                ALIGN ALIGN_DOWN / pgsz
+        cond_resched -> RDMA/umem：在 ib_umem_get() 中添加一个调度点，映射小至 64GB 可能需要 10 秒以上，触发 CONFIG_PREEMPT_NONE=y 的内核问题。 ib_umem_get() 已经在 x86_64 上以 2MB 为单位分割工作，在持久循环中添加 cond_resched() 足以解决问题。 请注意，sg_alloc_table() 仍然可以使用超过 100 毫秒，这也是有问题的。 这可能稍后在 ib_umem_add_sg_table() 中解决，按需在 sql 中添加新块. 在一些比较耗时的处理中如文件系统和内存回收的一些路径会调用cond_resched, 用cond_resched来进行检查是否具备调度时机, 对于非抢占式内核来说，在内核的很多地方，特别是文件系统操作和内存管理相关的一些耗时路径中，都已经被内核开发者识别出来，并使用cond_resched来减小延迟, cond_resched() 函数，它的功能是主动放权，等待下一次的调度运行, 参考: https://www.zhihu.com/question/35004859
+        pin_user_pages_fast -> 与 get_user_pages_fast() 几乎相同，只是设置了 FOLL_PIN。 有关函数参数的文档，请参阅 get_user_pages_fast()，因为此处的参数是相同的。 FOLL_PIN 意味着必须通过 unpin_user_page() 释放页面。 请参阅 Documentation/core-api/pin_user_pages.rst 了解更多详细信息。 请注意，如果返回的页面中有一个 zero_page，则其中不会有pin，并且 unpin_user_page() 不会从中删除pin -> mm/gup：从内部 GUP 函数中删除 vmas 数组，现在我们已经消除了所有使用 vmas 参数的 GUP API 的调用者，完全消除了它。 这消除了一类错误，其中 vmas 的保留时间可能比 mmap_lock 的时间长，因此我们不必担心在此操作期间锁定被删除，留下悬空指针。 这简化了 GUP API 并使其用途更加清晰 - 应用跟随标志，如果固定，则返回页面数组
+            is_valid_gup_args
+                WARN_ON_ONCE()会将调试信息输出到dmesg，类似于BUG_ON()打印的内容。与BUG_ON()的区别在于，WARN_ON_ONCE()仅会在第一次触发时打印调试信息
+            internal_get_user_pages_fast -> 获取用户空间页面: https://sanli-b.com.cn/posts/35092.html -> mm/gup：跟踪 FOLL_PIN 页面 添加对通过 FOLL_PIN 固定的页面的跟踪。 此跟踪是通过 page->_refcount 的重载来实现的：通过将 GUP_PIN_COUNTING_BIAS (1024) 添加到 refcount 来添加引脚。 这提供了固定的模糊指示，并且可能会出现误报（但这没关系）。 请参阅现有的 Documentation/core-api/pin_user_pages.rst 了解详细信息。 正如 pin_user_pages.rst 中提到的，有效设置 FOLL_PIN（通常通过 pin_user_pages*()）的调用者需要最终通过 unpin_user_page() 释放此类页面。 另请注意 pin_user_pages.rst 中“TODO：适用于 1GB 及更大的大页面”部分中讨论的限制。 （该限制将在后续补丁中删除。）FOLL_PIN 标志的效果与 FOLL_GET 的效果类似，并且可以被视为“用于 DIO 和/或 RDMA 使用的 FOLL_GET”。 通过 FOLL_PIN 固定的页面可通过新函数调用进行识别： bool page_maybe_dma_pinned(struct page *page); 遇到这样的页面该怎么办，就留给以后的补丁了。 在[1]、[2]、[3]和[4]中对此进行了讨论。 这也会将 follow_page_mask() 中的 BUG_ON() 更改为 WARN_ON()
+                mm_set_has_pinned_flag
+                    set_bit(MMF_HAS_PINNED, mm_flags) -> flag -> MMF_HAS_PINNED：该mm是否已固定任何页面。 当它变得稳定时，它可以在将来被 mm.pinned_vm 取代，或者自己成长为一个计数器。 我们现在对此非常积极：即使稍后取消固定的页面，我们仍然会在该 mm 的生命周期中保留此位设置，只是为了简单起见
+                untagged_addr -> 调用 untagged_addr() 宏直接去除指针标记
+                check_add_overflow
+                lockless_pages_from_mm -> mm/gup：重组 internal_get_user_pages_fast()，补丁系列“在gup_fast和copy_page_range()之间添加seqcount”，v4。 正如 Linus 所讨论和建议的，使用 seqcount 来结束 gup_fast 和 copy_page_range() 之间的小竞争。 Ahmed 确认 raw_write_seqcount_begin() 是在这种情况下使用的正确 API，并且它不会触发任何 lockdeps。 我能够使用两个线程对其进行测试，一个线程分叉，另一个使用 ibv_reg_mr() 快速触发 GUP。 将 copy_page_range() 修改为睡眠状态使窗口足够大，可以可靠地命中来测试逻辑。 此补丁（共 2 个）：本系列中的下一个补丁使无锁流程变得更加复杂，因此将整个块移至新函数中并删除一定程度的缩进。 整理一些废话： - addr 始终与 start 相同，因此使用 start - 使用现代的 check_add_overflow() 进行计算 end = start + len - nr_pinned/pages << PAGE_SHIFT 需要 LHS 为 unsigned long 以避免移位溢出 ，将变量设置为 unsigned long 以避免在两个地方进行编码转换。 nr_pinned 缺少其演员 - ret 和 nr_pinned 的处理可以稍微简化一点 没有功能变化 -> https://gwzlchn.github.io/202208/rdma-stack-02/
+                    IS_ENABLED
+                    gup_fast_permitted
+                    raw_read_seqcount
+                    gup_pgd_range
+                    read_seqcount_retry
+                    unpin_user_pages_lockless
+                __gup_longterm_locked
+        sg_alloc_append_table_from_pages
+        ib_dma_map_sgtable_attrs
+    ib_copy_from_udata(&req, udata, min(sizeof(req), udata->inlen)
+    irdma_alloc_iwmr
+        ib_umem_find_best_pgsz
+        ib_umem_num_dma_blocks
+    case IRDMA_MEMREG_TYPE_QP
+        irdma_reg_user_mr_type_qp(req, udata, iwmr)
+            irdma_handle_q_mem(iwdev, &req, iwpbl, lvl)
+                irdma_setup_pbles -> 将用户页拷贝到PBLE中
+                case IRDMA_MEMREG_TYPE_QP
+                    irdma_check_mem_contiguous
+            rdma_udata_to_drv_context
+            list_add_tail(&iwpbl->list, &ucontext->qp_reg_mem_list)
+    case IRDMA_MEMREG_TYPE_MEM
+        irdma_reg_user_mr_type_mem
+            irdma_setup_pbles -> 使用位掩码重构 PBLE 函数来表示所需的 PBLE 级别，而使用 2 个参数 use_pble 和 lvl_one_only 使代码变得混乱
+            HW 使用主机内存作为许多协议上下文对象和队列状态跟踪的后备存储。 主机内存缓存 (HMC) 是负责管理存储在主机内存中的这些对象的组件。 添加函数和数据结构来管理 HMC 为各种对象使用的支持页面的分配, 本文主要分析inux内核intel/hns3/mlx5等RDMA驱动上下文内存管理机制优缺点: https://zhuanlan.zhihu.com/p/610503666, 实现物理缓冲区列表条目 (PBLE) 资源管理器来管理 PBLE HMC 资源对象池, 
+                irdma_get_pble ?
+                    get_lvl1_lvl2_pble
+                        get_lvl1_pble
+                            irdma_prm_get_pbles
+                                bitmap_find_next_zero_area
+                                bitmap_set
+                        get_lvl2_pble
+                            ...
+                    add_pble_prm -> Host Memory Cache (HMC) 主机内存缓存, prm 页资源管理
+                        irdma_get_type
+                        add_sd_direct
+                            irdma_add_sd_table_entry
+                            dma_alloc_coherent
+                            memcpy(&sd_entry->u.pd_table.pd_page_addr, &dma_mem,
+                        add_bp_pages -> 为段描述添加后端内存页
+                            irdma_pble_get_paged_mem
+                                irdma_map_vm_page_list
+                                    vmalloc_to_page -> 找到由vmalloc( )所分配的内存的虚拟地址所映射的物理页，并返回该页的指针描述符
+                                    dma_map_page -> 将一页物理内存进行映射
+                            irdma_add_sd_table_entry
+                            irdma_add_pd_table_entry
+                                dma_alloc_coherent
+                                memcpy(&pd_entry->bp.addr, page, sizeof(pd_entry->bp.addr))
+                                memcpy(pd_addr, &page_desc, sizeof(*pd_addr))
+                                irdma_invalidate_pf_hmc_pd -> 使 PF 硬件中的 pd 缓存无效
+                                    writel(val, dev->hw_regs[IRDMA_PFHMC_PDINV])
+                        irdma_prm_add_pble_mem
+                            bitmap_zalloc
+                        irdma_hmc_sd_one
+                            irdma_set_sd_entry
+                            or irdma_clr_sd_entry
+                            dev->cqp->process_cqp_sds(dev, &sdinfo) -> irdma_update_sds_noccq
+                                cqp_sds_wqe_fill
+                                    irdma_sc_cqp_get_next_send_wqe_idx
+                                irdma_get_cqp_reg_info
+                                irdma_sc_cqp_post_sq
+                                irdma_cqp_poll_registers
+                        list_add(&chunk->list, &pble_rsrc->pinfo.clist)
+                    get_lvl1_lvl2_pble
+                irdma_copy_user_pgaddrs -> 将用户页面地址复制到本地 pble 的操作系统
+                    sg_page -> 获取scatterlist所对应的page指针
+                    rdma_umem_for_each_dma_block -> 迭代 umem 的连续 DMA 块
+                        rdma_block_iter_dma_address -> 获取块迭代器持有的当前块的对齐 dma 地址
+                        irdma_next_pbl_addr
+            irdma_check_mr_contiguous
+                irdma_check_mem_contiguous
+            irdma_create_stag -> 随机stag
+                get_random_bytes
+                irdma_alloc_rsrc -> RDMA/irdma：注册辅助驱动程序并实现私有通道 OP，注册可以从 Intel PCI netdev 驱动程序 i40e 和ice 连接到辅助 RDMA 设备的辅助驱动程序。 实现私有通道操作，并注册网络通知程序
+            irdma_hwreg_mr(iwdev, iwmr, access) -> 发送cqp命令进行内存注册
+                irdma_alloc_and_get_cqp_request
+                irdma_get_mr_access
+                cqp_info->cqp_cmd = IRDMA_OP_MR_REG_NON_SHARED -> irdma_sc_mr_reg_non_shared
+                    irdma_sc_cqp_get_next_send_wqe
+                    ...
+                    set_64bit_val(wqe, 32, info->reg_addr_pa)
+                    irdma_sc_cqp_post_sq
+                stag_info->reg_addr_pa = iwmr->pgaddrmem[0]
+                irdma_handle_cqp_op
+                irdma_put_cqp_request
+UVERBS_OBJECT_MR
+ib_check_mr_access
+uobj_get_obj_read
+reg_user_mr
+
+
+intel irdma/ice/e810 driver:
+drivers/infiniband/hw/irdma/main.c
+module_init(irdma_init_module);
+    auxiliary_driver_register i40iw_auxiliary_drv
+        .probe = i40iw_probe
+    auxiliary_driver_register(&irdma_auxiliary_drv.adrv)
+    irdma_register_notifiers
+        register_inetaddr_notifier
+        register_inet6addr_notifier
+        register_netevent_notifier
+        register_netdevice_notifier
+...		
+irdma_probe <- irdma_auxiliary_drv
+irdma_ib_register_device
+irdma_init_rdma_device
+    irdma_init_roce_device(iwdev)
+    or
+    irdma_init_iw_device
+    ib_set_device_ops(&iwdev->ibdev, &irdma_dev_ops)
+ib_device_set_netdev
+dma_set_max_seg_size
+ib_register_device
+
+
+
+.reg_user_mr = rxe_reg_user_mr,
+
+
+
+...
+irdma_init_roce_device
+    ib_set_device_ops(&iwdev->ibdev, &irdma_roce_dev_ops);
+        SET_DEVICE_OP(dev_ops, add_gid);
+        SET_DEVICE_OP(dev_ops, counter_bind_qp)
+        ...
+
+static const struct ib_device_ops irdma_roce_dev_ops = {
+    .attach_mcast = irdma_attach_mcast,
+    .create_ah = irdma_create_ah,
+    .create_user_ah = irdma_create_user_ah,
+    .destroy_ah = irdma_destroy_ah,
+    .detach_mcast = irdma_detach_mcast,
+    .get_link_layer = irdma_get_link_layer,
+    .get_port_immutable = irdma_roce_port_immutable,
+    .modify_qp = irdma_modify_qp_roce,
+    .query_ah = irdma_query_ah,
+    .query_pkey = irdma_query_pkey,
+};
+
+
+ioctl -> ib_uverbs_modify_qp -> return modify_qp(attrs, &cmd)
+    ...
+    if (cmd->base.attr_mask & IB_QP_RQ_PSN)
+    ...
+
+ibv_modify_qp -> IB_USER_VERBS_EX_CMD_MODIFY_QP -> ib_uverbs_ex_modify_qp
+    modify_qp
+        uobj_get_obj_read UVERBS_OBJECT_QP
+        校验参数
+        ...
+        ib_modify_qp_with_udata
+            _ib_modify_qp -> IB/core：将 DMAC 解析限制为用户空间 QP，当前 ah_attr 由 ib_cm 层针对基于 rdma_cm 的应用程序进行初始化。 对于 RoCE 传输，ah_attr.roce.dmac 已由 ib_cm、rdma_cm 从 wc、路径记录、路由解析、显式路径记录设置（取决于主动方或被动方 QP）初始化。 因此避免为内核消费者的 QP 解析 DMAC
+                attr_mask & IB_QP_AV -> IBV_QP_AV，主要用来指示内核做地址解析，对于RoCE，则进行L3到MAC地址的转换
+                rdma_fill_sgid_attr
+                    rdma_check_ah_attr
+                    rdma_ah_retrieve_grh
+                    rdma_get_gid_attr
+                        rdma_gid_table
+                        get_gid_entry
+                ib_resolve_eth_dmac -> 调用ib_resolve_eth_dmac解析remote gid对应的MAC地址
+                    ...
+                    rdma_resolve_ip resolve_cb
+                        complete -> IB/core：verbs/cm 结构中的以太网 L2 属性 ，此补丁添加了对 verbs/cm/cma 结构中的以太网 L2 属性的支持。 在处理 L2 以太网时，我们应该以与使用 IB L2（和 L4 PKEY）属性类似的方式使用 smac、dmac、vlan ID 和优先级。 因此，这些属性被添加到以下结构中： * ib_ah_attr - 添加了 dmac * ib_qp_attr - 添加了 smac 和 vlan_id，（sl 保留 vlan 优先级） * ib_wc - 添加了 smac、vlan_id * ib_sa_path_rec - 添加了 smac、dmac、vlan_id * cm_av - 添加了 smac 和 vlan_id 对于路径记录结构，在将其打包为有线格式时特别注意避免新字段，因此我们不会破坏 IB CM 和 SA 有线协议。 在主动侧，CM 被填充。 其内部结构来自 ULP 提供的路径。 我们添加了 ETH L2 属性并将它们放入 CM 地址句柄（struct cm_av）中。 在被动侧，CM 从与 REQ 消息关联的 WC 中填充其内部结构。 我们添加了从 WC 获取 ETH L2 属性的内容。 当硬件驱动程序在 WC 中提供所需的 ETH L2 属性时，它们会设置 IB_WC_WITH_SMAC 和 IB_WC_WITH_VLAN 标志。 IB 核心代码检查这些标志是否存在，如果没有，则从 ib_init_ah_from_wc() 辅助函数进行地址解析。 ib_modify_qp_is_ok 也被更新以考虑链路层。 有些参数对于以太网链路层是必需的，而对于IB来说则无关。 修改供应商驱动程序以支持新的函数签名
+                rdma_lag_get_ah_roce_slave
+                    rdma_read_gid_attr_ndev_rcu
+                    rdma_get_xmit_slave_udp
+                        rdma_build_skb
+                        netdev_get_xmit_slave RDMA_LAG_FLAGS_HASH_ALL_SLAVES
+                rdma_counter_bind_qp_auto -> RDMA/计数器：添加“自动”配置模式支持，在自动模式下，属于一个类别的所有 QP 都会自动绑定到单个计数器集。 目前仅支持“qp 类型”。 在此模式下，qp 计数器在 RST2INIT 修改中设置，当 qp 被销毁时，计数器将解除绑定
+                    ... -> ref rdma
+                ib_security_modify_qp -> IB/核心：在 QP 上强制执行 PKey 安全性，添加新的 LSM 挂钩以分配和释放安全上下文并检查访问 PKey 的权限。 创建和销毁 QP 时分配和释放安全上下文。 此上下文用于控制对 PKey 的访问。 当请求修改 QP 来更改端口、PKey 索引或备用路径时，请检查 QP 是否具有对该端口子网前缀上的 PKey 表索引中的 PKey 的权限。 如果 QP 是共享的，请确保 QP 的所有句柄也具有访问权限。 存储 QP 正在使用的端口和 PKey 索引。 重置到初始化转换后，用户可以独立修改端口、PKey 索引和备用路径。 因此，端口和 PKey 设置更改可以是先前设置和新设置的合并。 为了在 PKey 表或子网前缀更改时维持访问控制，请保留每个端口上使用每个 PKey 索引的所有 QP 的列表。 如果发生更改，则使用该设备和端口的所有 QP 都必须强制执行新缓存设置的访问权限。 这些更改将事务添加到 QP 修改过程中。 如果修改失败，则必须保持与旧端口和 PKey 索引的关联；如果修改成功，则必须将其删除。 必须在修改之前建立与新端口和 PKey 索引的关联，如果修改失败则将其删除。 1. 当 QP 被修改为特定端口时，PKey 索引或备用路径将该 QP 插入到适当的列表中。 2. 检查访问新设置的权限。 3. 如果步骤 2 授予访问权限，则尝试修改 QP。 4a. 如果步骤 2 和 3 成功，则删除任何先前的关联。 4b. 如果以太失败，请删除新的设置关联。 如果 PKey 表或子网前缀发生更改，则遍历 QP 列表并检查它们是否具有权限。 如果没有，则将 QP 发送到错误状态并引发致命错误事件。 如果它是共享 QP，请确保共享 real_qp 的所有 QP 也具有权限。 如果拥有安全结构的 QP 被拒绝访问，则安全结构将被标记为此类，并且 QP 将被添加到 error_list 中。 一旦将 QP 移至错误完成，安全结构标记就会被清除。 正确维护列表会将 QP 销毁转变为事务。 设备的硬件驱动程序释放 ib_qp 结构，因此当销毁正在进行时，ib_qp_security 结构中的 ib_qp 指针未定义。 当销毁过程开始时，ib_qp_security 结构被标记为正在销毁。 这可以防止对 QP 指针采取任何操作。 QP 成功销毁后，它仍然可以列在 error_list 上，等待该流处理它，然后再清理结构。 如果销毁失败，则 QP 端口和 PKey 设置将重新插入到适当的列表中，销毁标志将被清除，并强制执行访问控制，以防在销毁流程期间发生任何缓存更改。 为了保持安全更改隔离，使用新文件来保存与安全相关的功能
+                    port_pkey_list_insert -> 在检查权限之前，将此 QP 添加到新端口和 pkey 设置的列表中，以防发生并发缓存更新。 遍历列表进行缓存更改不会获取安全互斥体，除非将 QP 发送到错误
+                    check_qp_port_pkey_settings
+                        get_pkey_and_subnet_prefix
+                            ib_get_cached_pkey
+                            ib_get_cached_subnet_prefix
+                        enforce_qp_pkey_security
+                    modify_qp -> .modify_qp = irdma_modify_qp_roce
+                rdma_lag_put_ah_roce_slave
+        release_qp:
+        rdma_lookup_put_uobject
+
+irdma_modify_qp
+irdma_modify_qp_roce
+    irdma_query_pkey
+    rdma_get_udp_sport -> 根据 grh.flow_label 或 lqpn/rqrpn 获取 QP 的源 udp 端口号。 这可以更好地跨 NIC RX 队列传播流量
+    irdma_qp_rem_qos
+    dev->ws_remove
+    rdma_read_gid_l2_fields
+    irdma_roce_get_vlan_prio
+        vlan_dev_get_egress_qos_mask
+    irdma_qp_add_qos
+        list_add(&qp->list, &vsi->qos[qp->user_pri].qplist)
+    ib_modify_qp_is_ok
+        qp_state_table[cur_state][next_state].valid) -> IB：添加 ib_modify_qp_is_ok() 库函数，内核中的 mthca 驱动程序包含一个表，其中的属性对于每个队列对状态转换都有效。 事实证明，正在准备合并的其他两个 IB 驱动程序（ipath 和 ehca）都复制了该表、错误等。 为了防止代码重复，请将此表和用于检查参数的代码移动到中间层库函数 ib_modify_qp_is_ok() 中
+        qp状态表及参数: qp_state_table[IB_QPS_ERR + 1][IB_QPS_ERR + 1]
+    switch (attr->qp_state) -> QP状态机
+    ...
+    irdma_flush_wqes
+        irdma_hw_flush_wqes
+            cqp_request->callback_fcn = irdma_hw_flush_wqes_callback
+            cqp_info->cqp_cmd = IRDMA_OP_QP_FLUSH_WQES
+            irdma_handle_cqp_op -> cqp 控制QP
+                irdma_process_cqp_cmd
+                    irdma_exec_cqp_cmd
+                        switch (pcmdinfo->cqp_cmd) -> 判断控制QP命令类型
+                        case IRDMA_OP_CEQ_CREATE -> 驱动程序将特权命令发布到硬件管理队列（控制 QP 或 CQP），以请求硬件执行管理操作。 实现 CQP 的创建/销毁以及支持函数、数据结构和标头以处理不同的 CQP 命令
+                            irdma_sc_cq_create
+                                irdma_sc_cqp_get_next_send_wqe
+                                set_64bit_val(wqe, 0, cq->cq_uk.cq_size) -> 按位设置其值(每8字节)
+                                dma_wmb()
+                                irdma_sc_cqp_post_sq -> no msleep(300)
+                                    writel(IRDMA_RING_CURRENT_HEAD(cqp->sq_ring), cqp->dev->cqp_db) -> 写寄存器(往内存映射的 I/O 空间上写4字节数据)
+                        ...
+                        case IRDMA_OP_QP_CREATE
+                            irdma_sc_qp_create -> 创建QP判断对应QP HMC是否已准备好
+                        ...
+    irdma_sc_qp_setctx_roce
+void irdma_sc_qp_setctx_roce(struct irdma_sc_qp *qp, __le64 *qp_ctx,
+    set_64bit_val rq_wqe_size
+    ...
+
+
+irdma_uk_rdma_write
+irdma_uk_rdma_read
+irdma_uk_cq_poll_cmpl
+
+
+/proc/pid/pagemap - an array mapping virtual pages to pfns, 如果页面不存在但在交换中，则 PFN 包含交换文件号的编码以及页面在交换中的偏移量。 未映射的页面返回空 PFN。 这允许精确确定哪些页面被映射（或在交换中）并比较进程之间的映射页面。 * 此接口的高效用户将使用 /proc/pid/maps 来确定实际映射的内存区域，并使用 llseek 跳过未映射的区域
+pagemap_read -> Maps4：添加 /proc/pid/pagemap 接口，该接口为地址空间中的每个页面提供到其物理页帧号的映射，允许精确确定哪些页面被映射以及哪些页面在进程之间共享。 此版本中的新增内容： - 标头再次消失（根据 Dave Hansen 和 Alan Cox 的建议） - 64 位条目（根据与 Andi Kleen 的讨论） - 交换导出的 pte 信息（来自 Dave Hansen） - 页面遍历器回调以查找漏洞（来自 Dave Hansen） - 直接 put_user I/O（根据 Rusty Russell 的建议）此补丁折叠在清理中并交换 Dave Hansen 的 PTE 支持
+    file_ns_capable
+    mmap_read_lock_killable
+    untagged_addr_remote
+    mmap_read_lock_killable
+    walk_page_range(mm, start_vaddr, end, &pagemap_ops, &pm) -> walk_page_range - 使用回调遍历内存映射的页表：起始地址：结束地址：为树的每个级别调用的回调集递归地遍历 VMA 中内存区域的页表，调用提供的回调。 回调按顺序调用（第一个 PGD、第一个 PUD、第一个 PMD、第一个 PTE、第二个 PTE...第二个 PMD 等）。 如果省略较低级别的回调，则行走深度会减少。 每个回调接收一个入口指针以及关联范围的开始和结束，以及用于访问 ->private 或 ->mm 字段的原始 mm_walk 的副本。 通常不加锁，但分割透明大页可能会加页表锁。 如果需要，底层迭代器将从 highmem 映射 PTE 目录。 如果任何回调返回非零值，则遍历将中止并将返回值传播回调用者。 否则返回 0。 如果 walk->hugetlb_entry 为 !NULL，则 walk->mm->mmap_sem 必须至少保持读取状态
+    copy_to_user
+
+static const struct mm_walk_ops pagemap_ops = {
+    .pmd_entry	= pagemap_pmd_range,
+    .pte_hole	= pagemap_pte_hole,
+    .hugetlb_entry	= pagemap_hugetlb_range,
+    .walk_lock	= PGWALK_RDLOCK,
+};
+
+pagemap_pmd_range -> pagemap：将 mm 传递给 pagewalkers ，我们现在至少需要这个来检测大页，因为 powerpc 需要 vm_area_struct 来确定虚拟地址是否引用大页（它的 pmd_huge() 不起作用）。 对于其他一些用户来说它也可能派上用场
+    pmd_trans_huge_lock
+    ...
+    for pte
+        内核态实现pagemap proc接口的代码位于: fs/proc/task_mmu.c, 把PTE转换为pagemap_entry
+        pte_to_pagemap_entry -> proc：报告 /proc/pid/pagemap 中的文件/匿名位，这是安德鲁提议的实现，扩展页面映射文件位以报告任务工作集缺少的内容。 工作集检测的问题是多方面的。 在 criu（检查点/恢复）项目中，我们将任务的内存转储到图像文件中，为了正确执行此操作，我们需要检测映射中的哪些页面真正在使用。 我虽然可以帮助解决这个问题，但 mincore 系统调用却没有。 首先，它不报告交换的页面，因此我们无法找出要转储的匿名映射的哪些部分。 接下来，它会报告页面缓存中存在的页面，即使它们没有被映射，但这并不意味着它们没有受到威胁。 请注意，交换页的问题至关重要——我们必须将交换页转储到映像文件。 但是文件页面的问题是优化 - 我们可以将所有文件页面进行映像，这是正确的，但是如果我们知道页面未映射或未受到限制，我们可以将它们从转储文件中删除。 转储仍然是自洽的，尽管大小明显较小（在实际应用程序中最多小 10 倍）。 Andrew 注意到，proc pagemap 文件解决了上述 3 个问题中的 2 个——它报告页面是否存在或交换，并且不报告未映射的页面缓存页面。 但是，它无法区分受限制的文件页面和不受限制的文件页面。 我想在此文件中最后一个未使用的位来报告映射到相应 pte 的页面是否为 PageAnon
+            pte_present(pte)
+            frame = pte_pfn(pte) -> 
+            make_pme(frame, flags)
+        add_to_pagemap
+    ...
+
+
+
+
+smap: 基于映射的扩展，显示每个映射的内存消耗以及与其关联的标志, scan page table
+static const struct mm_walk_ops smaps_walk_ops = {
+    .pmd_entry		= smaps_pte_range,
+    .hugetlb_entry		= smaps_hugetlb_range,
+    .walk_lock		= PGWALK_RDLOCK,
+};
+smaps_pte_range
+    smaps_pte_entry
+
+
+show_smap
+    smap_gather_stats
+    show_map_vma
+    __show_smap
+    seq_printf
+
+
+irdma：为英特尔(R) 以太网控制器 E810 添加 RDMA 驱动程序，这是针对英特尔(R) 以太网控制器 E810 的 RDMA FreeBSD 驱动程序（称为 irdma）的初始提交。 以每 PF 方式支持 RoCEv2 和 iWARP 协议，RoCEv2 为默认协议。 测试已使用 krping 工具、perftest、ucmatose、rping、ud_pingpong、rc_pingpong 等完成, https://cgit.freebsd.org/src/commit/?id=42bad04a2156
+
+
+struct ice_vsi
+
+
+
+irdma_probe
+    ib_alloc_device -> #define ib_alloc_device(drv_struct, member) -> struct ib_device *_ib_alloc_device(size_t size)
+        device = kzalloc(size, GFP_KERNEL)
+        rdma_restrack_init
+        rdma_init_coredev -> RDMA/core：在net命名空间中实现compat device/sysfs树，实现ib_core的兼容层sysfs条目，以便非init_net net命名空间也可以发现rdma设备。 每个非 init_net 网络命名空间都在其中创建了 ib_core_device。 这样的 ib_core_device sysfs 树类似于 init_net 命名空间中找到的 rdma 设备。 这允许通过 sysfs 条目在多个非 init_net 网络命名空间中发现 rdma 设备，并且对 rdma-core 用户空间很有帮助
+            此 BUILD_BUG_ON 旨在捕获 ib_core_device 和 device 联合的布局更改。 dev 必须是第一个元素，因为 ib_core 和提供程序驱动程序使用它。 在 ib_core_device 中的 device 之前添加任何内容都会打破这个假设
+            coredev->dev.class = &ib_class
+            device_initialize
+            INIT_LIST_HEAD(&coredev->port_list) -> RDMA/core：引入 ib_core_device 来保存设备，为了支持 rdma 设备的多个网络命名空间中的 sysfs 条目，引入一个 ib_core_device ，其范围仅限于保存核心设备和每个端口 sysfs 相关条目。 这是准备补丁，以便在后续补丁中可以在每个网络命名空间中创建多个 ib_core_device，这些设备都可以共享 ib_device。 (a) 将 sysfs 特定字段移至 ib_core_device。 (b) 使 sysfs 和设备生命周期相关例程在 ib_core_device 上工作。 (c) 引入并使用 rdma_init_coredev() 帮助程序来初始化 coredev 字段
+            write_pnet(&coredev->rdma_net, net)
+        INIT_LIST_HEAD(&device->event_handler_list)
+        init_rwsem(&device->event_handler_rwsem) -> init_rwsem()的功能是初始化读写信号量，将信号量的count字段设置为0
+        xa_init_flags(&device->client_data, XA_FLAGS_ALLOC) -> 初始化数组
+        init_completion(&device->unreg_completion) -> RDMA/核心：使用 netlink 命令同步取消注册, -> 初始化动态分配的完成对象 -> 参考: https://zhuanlan.zhihu.com/p/504938832
+        device->uverbs_cmd_mask = -> IB_USER_VERBS_CMD_ALLOC_MW... -> 设置命令掩码/比特位
+    irdma_fill_device_info -> 填充设备信息,默认配置
+    irdma_ctrl_init_hw -> 初始化硬件的控制部分
+        irdma_setup_init_state
+            irdma_save_msix_info
+            dma_alloc_coherent
+            irdma_initialize_dev
+                irdma_obj_aligned_mem
+                irdma_sc_dev_init
+        irdma_create_cqp
+            irdma_obj_aligned_mem
+            irdma_sc_cqp_init
+                irdma_get_encoded_wqe_size IRDMA_QUEUE_TYPE_CQP
+                cqp->rocev2_rto_policy = info->rocev2_rto_policy
+                memcpy(&cqp->dcqcn_params, &info->dcqcn_params, sizeof(cqp->dcqcn_params))
+                IRDMA_RING_INIT(cqp->sq_ring, cqp->sq_size)
+                INIT_LIST_HEAD(&cqp->dev->cqp_cmd_head)
+                writel(0, cqp->dev->hw_regs[IRDMA_CQPTAIL]) -> db, register -> fpga
+            irdma_sc_cqp_create
+                cqp->sdbuf.size = ALIGN(IRDMA_UPDATE_SD_BUFF_SIZE * cqp->sq_size, IRDMA_SD_BUF_ALIGNMENT -> 128
+                writel(p1, cqp->dev->hw_regs[IRDMA_CCQPHIGH])
+                writel(p2, cqp->dev->hw_regs[IRDMA_CCQPLOW])
+                udelay(cqp->dev->hw_attrs.max_sleep_count)
+                readl(cqp->dev->hw_regs[IRDMA_CCQPSTATUS])
+                cqp->process_cqp_sds = irdma_update_sds_noccq
+            INIT_LIST_HEAD(&cqp->cqp_avail_reqs)
+            INIT_LIST_HEAD(&cqp->cqp_pending_reqs)
+            init_waitqueue_head(&cqp->cqp_requests[i].waitq) <- wake_up(&cqp_request->waitq)
+        irdma_hmc_setup
+            irdma_create_hmc_objs -> 初始化时驱动会按照支持QP数量规格把HMC准备好
+                irdma_cfg_fpm_val
+                    irdma_sc_cfg_iw_fpm
+                        irdma_sc_parse_fpm_commit_buf
+                            irdma_sc_decode_fpm_commit
+                                obj_info[rsrc_idx].cnt = (u32)FIELD_GET(IRDMA_COMMIT_FPM_QPCNT, temp) -> 初始化时获取支持的QP数量规格
+        irdma_initialize_hw_rsrc
+        irdma_create_ccq
+        irdma_setup_ceq_0
+        INIT_WORK(&rf->cqp_cmpl_work, cqp_compl_worker)
+        irdma_sc_ccq_arm
+    ice_get_qos_params
+    irdma_fill_qos_info
+    irdma_rt_init_hw -> 初始化硬件运行时, ILQ, IEQ, CEQs and PBLEs
+        irdma_initialize_ieq
+            irdma_puda_create_rsrc
+                irdma_puda_qp_create
+                    irdma_cqp_qp_create_cmd
+                        cqp_info->cqp_cmd = IRDMA_OP_QP_CREATE
+        ...
+        irdma_setup_ceqs
+        irdma_setup_aeq
+            irdma_create_aeq
+            irdma_cfg_aeq_vector
+            irdma_ena_intr
+        ...
+    irdma_ib_register_device
+    ice_rdma_update_vsi_filter
+    auxiliary_set_drvdata
+
+
+
+
+static struct class ib_class = {
+    .name    = "infiniband",
+    .dev_release = ib_device_release,
+    .dev_uevent = ib_device_uevent,
+    .ns_type = &net_ns_type_operations,
+    .namespace = net_namespace,
+};
+
+
+
+iavf_register_client
+
+
+drivers/net/ethernet/hisilicon/Makefile
+net：添加海思网络子系统hnae框架支持，HNAE（海思网络加速引擎）是为海思网络加速引擎提供统一环形缓冲区接口的框架。 通过该接口，上层可以有意地充当以太网驱动程序、ODP驱动程序或其他服务驱动程序
+
+
+capability:
+pci_find_capability
+
+read pcie config space of device:
+u32 read_pci_config
+    outl(0x80000000 | (bus<<16) | (slot<<11) | (func<<8) | offset, 0xcf8);
+
+
+
+drivers/dma/dmatest.c
+late_initcall(dmatest_init);
+
+
+三星:
+drivers/dma/pl330.c
+pd->device_issue_pending = pl330_issue_pending;
+dma_async_issue_pending
+    device_issue_pending
+xdev->common.device_issue_pending = xilinx_dma_issue_pending;
+chan->start_transfer = xilinx_dma_start_transfer
+
+struct dma_device
+
+desc->txd.tx_submit = pl330_tx_submit;
+
+
+module_amba_driver(pl330_driver);
+dma_async_device_register
+
+
+Xilinx media platform drivers
+drivers/media/platform/xilinx/xilinx-dma.c
+dmaengine_prep_interleaved_dma
+
+
+dmaengine_prep_interleaved_dma
+dmaengine_submit
+
+
+https://www.kernel.org/doc/html/v4.9/media/kapi/v4l2-videobuf2.html
+static const struct vb2_ops xvip_dma_queue_qops = {
+    .queue_setup = xvip_dma_queue_setup,
+    .buf_prepare = xvip_dma_buffer_prepare,
+    .buf_queue = xvip_dma_buffer_queue,
+    .wait_prepare = vb2_ops_wait_prepare,
+    .wait_finish = vb2_ops_wait_finish,
+    .start_streaming = xvip_dma_start_streaming,
+    .stop_streaming = xvip_dma_stop_streaming,
+};
+
+xvip_dma_buffer_queue
+
+
+static struct platform_driver xvip_composite_driver = {
+    .driver = {
+        .name = "xilinx-video",
+        .of_match_table = xvip_composite_of_id_table,
+    },
+    .probe = xvip_composite_probe,
+    .remove_new = xvip_composite_remove,
+};
+
+module_platform_driver(xvip_composite_driver);
+xvip_graph_init
+xvip_graph_dma_init
+xvip_graph_dma_init_one
+    xvip_dma_init
+        ...
+        dma->queue.ops = &xvip_dma_queue_qops;
+        dma->dma = dma_request_chan(dma->xdev->dev, name);
+
+
+https://github.com/Xilinx/linux-xlnx/tree/xilinx-v14.4
+
+
+
+drivers/infiniband/core/ucma.c
+static ssize_t (*ucma_cmd_table[])(struct ucma_file *file,
+                   const char __user *inbuf,
+                   int in_len, int out_len) = {
+    [RDMA_USER_CM_CMD_CREATE_ID] 	 = ucma_create_id,
+    [RDMA_USER_CM_CMD_DESTROY_ID]	 = ucma_destroy_id,
+    [RDMA_USER_CM_CMD_BIND_IP]	 = ucma_bind_ip,
+    [RDMA_USER_CM_CMD_RESOLVE_IP]	 = ucma_resolve_ip,
+    [RDMA_USER_CM_CMD_RESOLVE_ROUTE] = ucma_resolve_route,
+    [RDMA_USER_CM_CMD_QUERY_ROUTE]	 = ucma_query_route,
+    [RDMA_USER_CM_CMD_CONNECT]	 = ucma_connect,
+    [RDMA_USER_CM_CMD_LISTEN]	 = ucma_listen,
+    [RDMA_USER_CM_CMD_ACCEPT]	 = ucma_accept,
+    [RDMA_USER_CM_CMD_REJECT]	 = ucma_reject,
+    [RDMA_USER_CM_CMD_DISCONNECT]	 = ucma_disconnect,
+    [RDMA_USER_CM_CMD_INIT_QP_ATTR]	 = ucma_init_qp_attr,
+    [RDMA_USER_CM_CMD_GET_EVENT]	 = ucma_get_event,
+    [RDMA_USER_CM_CMD_GET_OPTION]	 = NULL,
+    [RDMA_USER_CM_CMD_SET_OPTION]	 = ucma_set_option,
+    [RDMA_USER_CM_CMD_NOTIFY]	 = ucma_notify,
+    [RDMA_USER_CM_CMD_JOIN_IP_MCAST] = ucma_join_ip_multicast,
+    [RDMA_USER_CM_CMD_LEAVE_MCAST]	 = ucma_leave_multicast,
+    [RDMA_USER_CM_CMD_MIGRATE_ID]	 = ucma_migrate_id,
+    [RDMA_USER_CM_CMD_QUERY]	 = ucma_query,
+    [RDMA_USER_CM_CMD_BIND]		 = ucma_bind,
+    [RDMA_USER_CM_CMD_RESOLVE_ADDR]	 = ucma_resolve_addr,
+    [RDMA_USER_CM_CMD_JOIN_MCAST]	 = ucma_join_multicast
+};
+
+UCMA_CMD_CONNECT -> static ssize_t (*ucma_cmd_table[]) -> static ssize_t ucma_connect
+    copy_from_user
+    ucma_get_ctx_dev
+    ucma_copy_conn_param -> RDMA/cma：为AF_IB设置qkey，允许用户在使用AF_IB时指定qkey。 qkey 被添加到 struct rdma_ucm_conn_param 中代替保留字段，但为了向后兼容，仅当关联的 rdma_cm_id 使用 AF_IB 时才可访问
+        ...
+        dst->qkey = (id->route.addr.src_addr.ss_family == AF_IB) ? src->qkey : 0;
+    rdma_connect_ece -> RDMA/ucma：扩展ucma_connect以接收ECE参数，CMID的主动方通过librdmacm的rdma_connect()和内核的ucma_connect()发起连接。 扩展 UCMA 接口来处理这些新参数
+        rdma_connect(id, conn_param) -> rdma_connect_locked
+            cma_comp_exch(id_priv, RDMA_CM_ROUTE_RESOLVED, RDMA_CM_CONNECT)
+            rdma_cap_ib_cm(id->device, id->port_num) -> rdma_cap_ib_cm - 检查设备端口是否具有 Infiniband Communication Manager 功能。 @device：要检查的设备 @port_num：要检查的端口号 InfiniBand 通信管理器是通过通用服务接口 (GSI) 访问的许多预定义通用服务代理 (GSA) 之一。 它的作用是促进节点之间连接的建立以及已建立的连接的其他管理相关任务。 返回：如果端口支持 IB CM，则返回 true（但这并不能保证 CM 实际正在运行）
+                RDMA_CORE_CAP_IB_CM
+            if (id->qp_type == IB_QPT_UD) -> cma_resolve_ib_udp -> RDMA/cma：添加对 RDMA_PS_UDP 的支持，允许通过 rdma_cm 使用 UD QP，以便为使用 SIDR 解析数据报消息的 IB 地址提供地址转换服务
+            or cma_connect_ib
+                check_add_overflow
+                ib_create_cm_id(id_priv->id.device, cma_ib_handler, id_priv)
+                    cm_alloc_id_priv -> RDMA/cm：简化建立监听cm_id
+                        RB_CLEAR_NODE(&cm_id_priv->service_node) -> rb_tree
+                        init_completion(&cm_id_priv->comp)
+                        xa_alloc_cyclic -> 在 XArray 中找到存储此条目的位置
+                trace_cm_send_req
+                ib_send_cm_req
+                    msg->context[1] = (void *)(unsigned long)IB_CM_REQ_SENT
+                    ib_post_send_mad -> [IB] 修复 MAD 层 DMA 映射，以避免在映射后触及数据缓冲区。MAD 层在 DMA 映射完成后触及用于发送的数据缓冲区，从而违反了 DMA API。 这会导致非缓存一致性架构出现问题，因为执行 DMA 的设备不会看到仅存在于 CPU 缓存中的有效负载缓冲区的更新。 通过让所有 MAD 使用者使用 ib_create_send_mad() 分配其发送缓冲区，并将 DMA 映射移动到 MAD 层，以便可以在调用 send 之前（以及 MAD 层对发送缓冲区进行任何修改之后）完成此操作，可以解决此问题。 在非缓存一致性 PowerPC 440SPe 系统上进行测试
+                        ib_mad_enforce_security -> IB/核心：在管理数据报上强制执行安全性，在创建和销毁 MAD 代理时分配和释放安全上下文。 该上下文用于控制对 PKey 的访问以及发送和接收 SMP。 发送或接收 MAD 时，检查代理是否有权访问端口子网前缀的 PKey。 在 SMI QP 的 MAD 和监听代理注册期间，检查调用进程是否有权访问管理子网并向 LSM 注册回调以获取策略更改通知。 当发生策略更改通知时，重新检查权限并设置一个标志，指示允许发送和接收 SMP。 发送和接收 MAD 时，如果代理位于 SMI QP 上，请检查代理是否有权访问 SMI。 由于安全策略可以更改，因此在创建代理时可能允许许可，但不再允许
+                            rdma_protocol_ib
+                            ib_security_pkey_access
+                        ib_is_mad_class_rmpp
+                        handle_outgoing_dr_smp
+                        ib_mad_kernel_rmpp_agent
+                        ib_send_rmpp_mad
+                        ib_send_mad
+                            ib_dma_map_single
+                                ib_uses_virt_dma
+                                dma_map_single
+                            ib_post_send
+                                .post_send = mlx5_ib_post_send_nodrain,
+            or cma_connect_iw
+    ucma_put_ctx
+
+
+
+mlx5_ib_post_send_nodrain -> mlx5_ib_post_send
+    begin_wqe
+    ...
+
+
+
+cm状态机:
+enum rdma_cm_state {
+    RDMA_CM_IDLE,
+    RDMA_CM_ADDR_QUERY,
+    RDMA_CM_ADDR_RESOLVED,
+    RDMA_CM_ROUTE_QUERY,
+    RDMA_CM_ROUTE_RESOLVED,
+    RDMA_CM_CONNECT,
+    RDMA_CM_DISCONNECT,
+    RDMA_CM_ADDR_BOUND,
+    RDMA_CM_LISTEN,
+    RDMA_CM_DEVICE_REMOVAL,
+    RDMA_CM_DESTROYING
+};
+
+
+cma_ib_handler
+switch (ib_event->event)
+case IB_CM_REP_RECEIVED
+    ib_send_cm_mra(cm_id, CMA_CM_MRA_SETTING, NULL, 0) -> IB/cma：为回复消息发送MRA，RDMA_CM的当前实现仅针对请求消息发送MRA（消息接收确认），而不针对响应消息发送MRA。 因此，连接的缓慢主动方可能会在延迟太长的情况下向被动方发送就绪消息，而被动方无法等待。 该补丁在收到响应消息时添加了对 ib_send_cm_mra() 的调用，从而告诉对方将服务超时修改为更大的值，是之前的 16 倍。 与请求情况一样，仅当重复响应到达时才会发送用于回复的 MRA
+        ...
+
+
+大页:
+配置内核大页:
+echo 16 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+
+
+
+mm/hugetlb.c
+free_hugepages
+
+
+
+const struct file_operations hugetlbfs_file_operations = {
+    .read_iter		= hugetlbfs_read_iter,
+    .mmap			= hugetlbfs_file_mmap,
+    .fsync			= noop_fsync,
+    .get_unmapped_area	= hugetlb_get_unmapped_area,
+    .llseek			= default_llseek,
+    .fallocate		= hugetlbfs_fallocate,
+};
+
+
+
+
+ibv_create_qp -> IB_USER_VERBS_CMD_CREATE_QP -> static int ib_uverbs_create_qp
+    ...
+    uobj_get_obj_read
+    attr.event_handler = ib_uverbs_qp_event_handler
+    ib_create_qp_user
+        create_qp
+            rdma_zalloc_drv_obj_numa
+            rdma_restrack_new(&qp->res, RDMA_RESTRACK_QP)
+             dev->ops.create_qp(qp, attr, udata) -> .create_qp = irdma_create_qp,
+                ...
+             ib_create_qp_security
+             rdma_restrack_add(&qp->res)
+        create_xrc_qp_user
+    ib_qp_usecnt_inc
+    uverbs_response
+
+
+example of e81:
+irdma_create_qp
+    ...
+    iwqp->q2_ctx_mem.va = dma_alloc_coherent
+    irdma_alloc_rsrc
+    rdma_protocol_roce
+    irdma_sc_qp_init
+        irdma_uk_qp_init
+        irdma_get_encoded_wqe_size
+    irdma_cqp_create_qp_cmd
+        irdma_alloc_and_get_cqp_request
+        cqp_info->cqp_cmd = IRDMA_OP_QP_CREATE
+        status = irdma_handle_cqp_op(rf, cqp_request) -> irdma_sc_qp_create
+            irdma_sc_cqp_get_next_send_wqe
+            dma_wmb();
+            set_64bit_val(wqe, 24, hdr)
+            print_hex_dump_debug
+            irdma_sc_cqp_post_sq
+        irdma_put_cqp_request(&rf->cqp, cqp_request)
+    iwqp->sig_all = init_attr->sq_sig_type == IB_SIGNAL_ALL_WR
+    rdma_protocol_roce
+    init_completion(&iwqp->free_qp)
+
+
+
+l2b:
+include/linux/byteorder/generic.h
+cpu_to_be64 -> #define cpu_to_be64 __cpu_to_be64
+
+
+
+
+samples/trace_events
+samples/trace_events/trace-events-sample.c
+
+
+
+
+static const struct ib_device_ops irdma_dev_ops = {
+	.owner = THIS_MODULE,
+	.driver_id = RDMA_DRIVER_IRDMA,
+	.uverbs_abi_ver = IRDMA_ABI_VER,
+
+	.alloc_hw_port_stats = irdma_alloc_hw_port_stats,
+	.alloc_mr = irdma_alloc_mr,
+	.alloc_mw = irdma_alloc_mw,
+	.alloc_pd = irdma_alloc_pd,
+	.alloc_ucontext = irdma_alloc_ucontext,
+	.create_cq = irdma_create_cq,
+	.create_qp = irdma_create_qp,
+	.dealloc_driver = irdma_ib_dealloc_device,
+	.dealloc_mw = irdma_dealloc_mw,
+	.dealloc_pd = irdma_dealloc_pd,
+	.dealloc_ucontext = irdma_dealloc_ucontext,
+	.dereg_mr = irdma_dereg_mr,
+	.destroy_cq = irdma_destroy_cq,
+	.destroy_qp = irdma_destroy_qp,
+	.disassociate_ucontext = irdma_disassociate_ucontext,
+	.get_dev_fw_str = irdma_get_dev_fw_str,
+	.get_dma_mr = irdma_get_dma_mr,
+	.get_hw_stats = irdma_get_hw_stats,
+	.map_mr_sg = irdma_map_mr_sg,
+	.mmap = irdma_mmap,
+	.mmap_free = irdma_mmap_free,
+	.poll_cq = irdma_poll_cq,
+	.post_recv = irdma_post_recv,
+	.post_send = irdma_post_send,
+	.query_device = irdma_query_device,
+	.query_port = irdma_query_port,
+	.query_qp = irdma_query_qp,
+	.reg_user_mr = irdma_reg_user_mr,
+	.reg_user_mr_dmabuf = irdma_reg_user_mr_dmabuf,
+	.rereg_user_mr = irdma_rereg_user_mr,
+	.req_notify_cq = irdma_req_notify_cq,
+	.resize_cq = irdma_resize_cq,
+	INIT_RDMA_OBJ_SIZE(ib_pd, irdma_pd, ibpd),
+	INIT_RDMA_OBJ_SIZE(ib_ucontext, irdma_ucontext, ibucontext),
+	INIT_RDMA_OBJ_SIZE(ib_ah, irdma_ah, ibah),
+	INIT_RDMA_OBJ_SIZE(ib_cq, irdma_cq, ibcq),
+	INIT_RDMA_OBJ_SIZE(ib_mw, irdma_mr, ibmw),
+	INIT_RDMA_OBJ_SIZE(ib_qp, irdma_qp, ibqp),
+};
+
+
+
+rdma version: 5.4.18
+
+
+
+
+
+
+
+
+struct bundle_priv
+IB/uverbs：为 uverbs_attr_bundle 提供实现私有内存，这已经作为匿名“ctx”结构存在，但这并不是真正有用的形式。 将此结构提升到bundle_priv并重新设计内部内容以使用它。 将一堆处理内部状态移入 priv 并减少函数参数的过度使用
+
+
+
+强制实现的函数:
+static void ib_device_check_mandatory(struct ib_device *device)
+{
+#define IB_MANDATORY_FUNC(x) { offsetof(struct ib_device_ops, x), #x }
+	static const struct {
+		size_t offset;
+		char  *name;
+	} mandatory_table[] = {
+		IB_MANDATORY_FUNC(query_device),
+		IB_MANDATORY_FUNC(query_port),
+		IB_MANDATORY_FUNC(alloc_pd),
+		IB_MANDATORY_FUNC(dealloc_pd),
+		IB_MANDATORY_FUNC(create_qp),
+		IB_MANDATORY_FUNC(modify_qp),
+		IB_MANDATORY_FUNC(destroy_qp),
+		IB_MANDATORY_FUNC(post_send),
+		IB_MANDATORY_FUNC(post_recv),
+		IB_MANDATORY_FUNC(create_cq),
+		IB_MANDATORY_FUNC(destroy_cq),
+		IB_MANDATORY_FUNC(poll_cq),
+		IB_MANDATORY_FUNC(req_notify_cq),
+		IB_MANDATORY_FUNC(get_dma_mr),
+		IB_MANDATORY_FUNC(reg_user_mr),
+		IB_MANDATORY_FUNC(dereg_mr),
+		IB_MANDATORY_FUNC(get_port_immutable)
+	};
+
+
+
+
+为该端口需要由内核支持的各种功能定义位
+/* Define bits for the various functionality this port needs to be supported by
+ * the core.
+ */
+/* Management                           0x00000FFF */
+#define RDMA_CORE_CAP_IB_MAD            0x00000001
+#define RDMA_CORE_CAP_IB_SMI            0x00000002
+#define RDMA_CORE_CAP_IB_CM             0x00000004
+#define RDMA_CORE_CAP_IW_CM             0x00000008
+#define RDMA_CORE_CAP_IB_SA             0x00000010
+#define RDMA_CORE_CAP_OPA_MAD           0x00000020
+
+/* Address format                       0x000FF000 */
+#define RDMA_CORE_CAP_AF_IB             0x00001000
+#define RDMA_CORE_CAP_ETH_AH            0x00002000
+#define RDMA_CORE_CAP_OPA_AH            0x00004000
+#define RDMA_CORE_CAP_IB_GRH_REQUIRED   0x00008000
+
+/* Protocol                             0xFFF00000 */
+#define RDMA_CORE_CAP_PROT_IB           0x00100000
+#define RDMA_CORE_CAP_PROT_ROCE         0x00200000
+#define RDMA_CORE_CAP_PROT_IWARP        0x00400000
+#define RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP 0x00800000
+#define RDMA_CORE_CAP_PROT_RAW_PACKET   0x01000000
+#define RDMA_CORE_CAP_PROT_USNIC        0x02000000
+
+
+iw40
+
+
+static int irdma_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
+
+
+
+
+
+.mmap = mlx5_ib_mmap,
+
+
+mmap
+SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
+    ksys_mmap_pgoff
+        vm_mmap_pgoff
+            do_mmap
+                addr = get_unmapped_area(file, addr, len, pgoff, flags)
+                switch (flags & MAP_TYPE)
+                mmap_region
+                    count_vma_pages_range
+                    call_mmap
+                        file->f_op->mmap(file, vma) -> or filemap_fault -> or xtrdma_mmap by cmd_fd fs
+                    khugepaged_enter_vma
+
+
+
+build kernel, https://zhuanlan.zhihu.com/p/105069730
+apt-get install libncurses5-dev libssl-dev bison flex libelf-dev gcc make openssl libc6-dev -y
+
+qemu:
+apt-get install qemu -y
+apt-get update
+apt install qemu-kvm virt-manager virtinst libvirt-clients bridge-utils libvirt-daemon-system -y
+apt install dwarves
+buid:
+gcc --static -o helloworld main.c
+echo helloworld | cpio -o --format=newc > rootfs
+
+
+此时将断点设在 init/main.c 中的start_kernel函数中，然后Qemu 开启GDB调试，vscode start debug即可开始调试内核
+
+using make menuconfig it's going to be under "Kernel hacking" -> "Compile-time checks and compiler options" -> "Compiler a kernel with debug info"
+
+
+source code:
+wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.4.18.tar.gz
+
+
+set key to ""
+CONFIG_SYSTEM_TRUSTED_KEYS
+CONFIG_SYSTEM_REVOCATION_KEYS
+
+[iproute2-next,4/8] rdma：添加 rdma 统计计数器每端口自动模式支持，通过每 QP 统计计数器支持，用户可以监控特定的 QP 类别，这些类别与动态分配的计数器绑定/解除绑定 /解除分配。 在每端口“自动”模式下，QP 根据通用标准自动绑定到计数器。 例如，每个“类型”（qp 类型）方案，其中每个进程中所有具有相同 qp 类型的 QP 都会自动绑定到单个计数器。 目前仅支持“type”（qp 类型）。 示例: $ rdma statistic qp set link mlx5_2/1 auto type on $ rdma statistic qp set link mlx5_2/1 auto off, https://patchwork.kernel.org/project/linux-rdma/patch/20190410112121.6790-5-leon@kernel.org/
+
+
+
+SET_PORT_SNIFFER
+
+
+
+irdma register: -> RDMA/irdma：实施硬件管理队列 OP，驱动程序将特权命令发布到硬件管理队列（控制 QP 或 CQP）以请求硬件的管理操作。 实现 CQP 的创建/销毁以及支持函数、数据结构和标头以处理不同的 CQP 命令
+enum irdma_registers {
+	IRDMA_CQPTAIL,
+	IRDMA_CQPDB,
+	IRDMA_CCQPSTATUS,
+	IRDMA_CCQPHIGH,
+	IRDMA_CCQPLOW,
+	IRDMA_CQARM,
+	IRDMA_CQACK,
+	IRDMA_AEQALLOC,
+	IRDMA_CQPERRCODES,
+	IRDMA_WQEALLOC,
+	IRDMA_GLINT_DYN_CTL,
+	IRDMA_DB_ADDR_OFFSET,
+	IRDMA_GLPCI_LBARCTRL,
+	IRDMA_GLPE_CPUSTATUS0,
+	IRDMA_GLPE_CPUSTATUS1,
+	IRDMA_GLPE_CPUSTATUS2,
+	IRDMA_PFINT_AEQCTL,
+	IRDMA_GLINT_CEQCTL,
+	IRDMA_VSIQF_PE_CTL1,
+	IRDMA_PFHMC_PDINV,
+	IRDMA_GLHMC_VFPDINV,
+	IRDMA_GLPE_CRITERR,
+	IRDMA_GLINT_RATE,
+	IRDMA_MAX_REGS, /* Must be last entry */
+};
+
+
+
+get_user_pages_fast:
+进行参数检查，确保传入的gup_flags是合法的组合。
+如果设置了FOLL_PIN标记，将当前进程的内存管理结构中的has_pinned原子变量设为1。
+如果没有设置FOLL_FAST_ONLY标记，使用might_lock_read宏提示可能会对mmap_lock读锁进行加锁。
+计算起始地址、结束地址和地址范围长度，确保它们是有效的。
+禁用中断，阻止页面表页面在操作期间被释放。
+如果启用了CONFIG_HAVE_FAST_GUP配置，并且允许快速GUP（Get User Pages）操作，则调用gup_pgd_range函数获取页面，将获取到的页面数量存储在nr_pinned变量中。
+如果没有获取到所有请求的页面并且没有设置FOLL_FAST_ONLY标记，则尝试使用__gup_longterm_unlocked函数获取剩余的页面。
+根据已获取页面的数量和剩余页面尝试的结果，返回最终结果。
+
+
+
+
+rxe:
+int rxe_mr_init_user
+    rxe_mr_init
+    xa_init -> struct xarray		page_list
+    ib_umem_get
+    rxe_mr_fill_pages_from_sgt
+        __sg_page_iter_start
+        __sg_page_iter_next
+        while
+            sg_page_iter_page
+            xas_store
+            xas_next
+
+
+vaddr = page_address(sg_page_iter_page(&sg_iter))
+page_address( )宏的功能是获得物理页的逻辑地址, 根据给定的struct page 结构体返回该物理页面的内核起始虚拟地址
+buf->addr = (uintptr_t)vaddr
+
+
+#define __va(x)			((void *)((unsigned long)(x)+PAGE_OFFSET))
+在x86_64等64位架构中，因为内核虚拟空间较大，所以直接把所有物理内存直接线性映射到内核虚拟地址当中，物理地址和内核虚拟地址仅仅一个PAGE_OFFSET的偏移, __va() 宏用于将给定的物理地址转换为对应的内核虚拟地址
+
+
+ibv_create_flow -> IB_USER_VERBS_EX_CMD_CREATE_FLOW -> ib_uverbs_ex_create_flow
+uverbs_request_start
+rdma_is_port_valid
+uobj_get_obj_read
+flow_resources_alloc
+    kcalloc
+kern_spec_to_ib_spec
+flow_id = qp->device->ops.create_flow(qp, flow_attr, -> mlx5_ib_create_flow
+    get_flow_table
+        mlx5_eswitch_get_encap_mode
+    _create_flow_rule
+        parse_flow_attr
+        flow_is_multicast_only
+            ipv4_is_multicast -> 用于检查地址是否是多播地址，即224.x.x.x的D类地址 -> static inline bool ipv4_is_multicast(__be32 addr) -> return (addr & htonl(0xf0000000)) == htonl(0xe0000000)
+            is_multicast_ether_addr -> 如果一个流可以同时捕获组播和单播数据包，则它不会落入组播流转向表中，并且该规则可以窃取其他组播数据包
+                return 0x01 & (a >> ((sizeof(a) * 8) - 8));
+        set_underlay_qp
+        mlx5_ib_set_rule_source_port
+        get_match_criteria_enable
+        mlx5_ib_flow_counters_set_data
+        mlx5_add_flow_rules -> EXPORT_SYMBOL(mlx5_add_flow_rules)
+            _mlx5_add_flow_rules
+    create_leftovers_rule
+        create_flow_rule
+    create_sniffer_rule
+        .type = IB_FLOW_ATTR_SNIFFER
+        create_flow_rule(dev, ft_rx, &flow_attr, dst)
+ib_set_flow
+rdma_lookup_put_uobject
+uobj_finalize_uobj_create
+uverbs_response
+
+qemu-system-x86_64 -enable-kvm -m 512 -smp 2 -boot order=c -hda ubuntu14.04.img -vnc :1 -monitor stdio
+--graphics vnc,port=5900,listen=0.0.0.0
+
+
+https://blog.csdn.net/qq_26907291/article/details/129403678?spm=1001.2014.3001.5502
+qemu-system-x86_64 -m 2048 \
+-drive file=ubuntu22.04.img,if=virtio \
+-nic user,hostfwd=tcp::5557-:22 \
+-vnc :1 -monitor stdio
+
+# vnc可以查看开机情况，ssh可以登录VM与host主机共享网络
+ssh -p 5557 username@localhost
+
+# 往VM主机发送文件
+scp -P 5557 filename username@localhost:/directory
+
+# sharefolder方案，需要qemu安装的时候打开--enable-virtfs, # 开启virtfs方便后续切换vm的kernel版本
+# host端启动qemu
+qemu-system-x86_64 -m 2048 \
+-drive file=ubuntu22.04.img,if=virtio \
+-nic user,hostfwd=tcp::5557-:22 \
+-fsdev local,security_model=passthrough,id=fsdev0,path=/host_directory \
+-device virtio-9p-pci,fsdev=fsdev0,mount_tag=kernelcode \
+-vnc :1 -monitor stdio
+
+# 共享文件夹靠id和tag标识，可以加载多个
+# VM启动后加载共享文件夹
+mount -t 9p -o trans=virtio kernelcode /vm_directory
+
+# 创建镜像
+qemu-img create -f qcow2 ubuntu22.04.img 16G
+# 安装系统
+qemu-system-x86_64 -m 1024 -enable-kvm \
+-drive if=virtio,file=ubuntu22.04.img,cache=none \
+-cdrom ubuntu-22.04-live-server-amd64.iso \
+-vnc :1
+
+
+# 注意自己改路径
+qemu-system-x86_64 -m 2048 -enable-kvm -cpu host \
+-smp cores=16,sockets=1 \
+-drive file=ubuntu-22.04.img,if=virtio \
+-nic user,hostfwd=tcp::5557-:22 \
+-fsdev local,security_model=passthrough,id=fsdev0,path=/kernel_code_directory \
+-device virtio-9p-pci,fsdev=fsdev0,mount_tag=kernelmake \
+-S -s \
+-vnc :1 -monitor stdio
+
+
+mounse, pointer, 
+qemu/build/qemu-system-aarch64 \
+-m 1024 \
+-M raspi3b \
+-kernel $TMP/boot/kernel8.img \
+-dtb "$TMP/boot/bcm2710-rpi-3-b-plus.dtb" \
+-drive file="$IMAGE_FILE",if=sd,format=raw \
+-append "console=ttyAMA0 root=/dev/mmcblk0p2 rw rootwait rootfstype=ext4" \
+-device usb-net,netdev=net0 \
+-netdev user,id=net0,hostfwd=tcp::5555-:22 \
+-device usb-mouse -device usb-tablet -device usb-kbd
+
+-device nec-usb-xhci,id=usb,bus=pci.0,addr=0x4 for usb 3.0 or
+-device usb-ehci,id=usb,bus=pci.0,addr=0x4 for usb 2.
+Then you can pass -device usb-tablet.
+
+
+qemu-system-x86_64 -m 2048 \
+-drive file=ubuntu22.04.img,if=virtio \
+-nic user,hostfwd=tcp::5557-:22 \
+-vnc :1 -monitor stdio
+
+# vnc可以查看开机情况，ssh可以登录VM与host主机共享网络
+ssh -p 5557 username@localhost
+
+# 往VM主机发送文件
+scp -P 5557 filename username@localhost:/directory
+
+# sharefolder方案，需要qemu安装的时候打开--enable-virtfs
+# host端启动qemu
+qemu-system-x86_64 -m 2048 \
+-drive file=ubuntu22.04.img,if=virtio \
+-nic user,hostfwd=tcp::5557-:22 \
+-fsdev local,security_model=passthrough,id=fsdev0,path=/host_directory \
+-device virtio-9p-pci,fsdev=fsdev0,mount_tag=kernelcode \
+-vnc :1 -monitor stdio
+
+# 共享文件夹靠id和tag标识，可以加载多个
+# VM启动后加载共享文件夹
+mount -t 9p -o trans=virtio kernelcode /vm_directory
+
+
+enable-kvm
+debug guest: qemu,
+#ifdef KVM_CAP_SET_GUEST_DEBUG
+    kvm_has_guest_debug =
+        (kvm_check_extension(s, KVM_CAP_SET_GUEST_DEBUG) > 0);
+            kvm_ioctl(s, KVM_CHECK_EXTENSION, extension)
+KVM_CAP_SET_GUEST_DEBUG
+
+
+problem: qemu-system-x86_64 -m 1024 -enable-kvm -S -s ...启动虚机的时候, 提示不支持kvm debug
+查阅代码发现, 当前内核默认支持debug guest, 咱们使用的centos7, 内核是3.10的, 太老旧了
+
+kvm_init
+    kmem_cache_create_usercopy(const char *name,
+    for_each_possible_cpu alloc_cpumask_var_node
+    kvm_irqfd_init -> KVM：在架构硬件设置后初始化 IRQ FD，将 KVM 的 IRQ FD 工作队列的初始化移至架构硬件设置下方，作为巩固架构“init”和“硬件设置”的一步，并最终完全放弃挂钩。 不依赖于在硬件设置之前创建的工作队列，工作队列仅在销毁虚拟机时使用，即只需要在 /dev/kvm 暴露给用户空间之前创建。 将工作队列的销毁移到 arch 钩子之前以保持对称性，这样 arch 代码就可以远离钩子而不必担心顺序更改。 重写有关 kvm_irqfd_init() 需要在 kvm_arch_init() 之后出现的注释，以指出 kvm_arch_init() 必须在常见 KVM 执行任何操作之前出现，因为 x86 非常巧妙地依赖该行为来处理对 kvm_init() 的多次调用，例如 如果用户空间尝试加载 kvm_amd.ko 和 kvm_intel.ko。 使用 FIXME 标记代码，因为 x86 的微妙要求很粗暴，并且调用 arch 回调作为仅从 arch 代码调用的帮助程序中的第一个操作是愚蠢的
+    kvm_async_pf_init
+    kvm_init_debug
+        debugfs_create_dir("kvm", NULL)
+        debugfs_create_file
+    kvm_vfio_ops_init
+         kvm_register_device_ops(&kvm_vfio_ops, KVM_DEV_TYPE_VFIO)
+    kvm_gmem_init -> KVM：为特定于客户的后备内存添加 KVM_CREATE_GUEST_MEMFD ioctl()，引入 ioctl()、KVM_CREATE_GUEST_MEMFD，以允许创建与特定 KVM 虚拟机绑定的基于文件的内存，其主要目的是为客户内存提供服务。 客户优先内存子系统允许进行优化和增强，而这些优化和增强在通用内存子系统中实现/支持是笨拙或完全不可行的。 使用 guest_memfd，来宾保护和映射大小与主机用户空间映射完全解耦。 例如。 KVM 目前不支持将内存映射为在来宾中可写，而不在主机用户空间中也可写，因为 KVM 的 ABI 使用 VMA 保护来定义允许来宾保护。 用户空间可以通过建立两个映射来弥补这一点，一个是客户可写的映射，一个是自身可读的映射，但这在多个方面都不是最佳的。 类似地，KVM 目前要求来宾映射大小是主机用户空间映射大小的严格子集，例如 KVM 不支持创建 1GiB 访客映射，除非用户空间也有 1GiB 访客映射。 解耦映射大小将允许用户空间仅精确映射所需的内容，而不会影响来宾性能，例如 加强对来宾内存的无意访问。 解耦来宾和用户空间映射还可以为 HugeTLB 的高粒度映射提供更清晰的替代方案，而 HugeTLB 已经陷入了僵局，并且不太可能被合并。 客户优先的内存子系统还为诸如专用内存池（用于硬件虚拟机切片）和消除“结构页面”（用于用户空间永远不需要 mmap() 客户内存的卸载设置）等提供了更清晰的视线。 。 更直接地说，能够将内存映射到 KVM 来宾而不将所述内存映射到主机对于机密 VM（CoCo VM）（guest_memfd 的初始用例）至关重要。 虽然 AMD 的 SEV 和英特尔的 TDX 通过使用不受信任的主机无法使用的密钥加密来宾内存来防止不受信任的软件读取来宾私有数据，但受保护的 KVM (pKVM) 等项目*无需*依赖内存加密即可提供机密性和完整性 。 对于 SEV-SNP 和 TDX，访问来宾私有内存对于主机来说可能是致命的，即无论硬件行为如何，KVM 都必须阻止主机用户空间访问来宾内存。 支持 CoCo VM 的尝试#1 是添加一个 VMA 标志来将内存标记为只能由 KVM（或类似的启发式内核子系统）映射。 这种方法被放弃主要是因为它需要使用 PROT_NONE 来玩游戏以防止用户空间访问来宾内存。 尝试 #2 是篡夺 PG_hwpoison 以阻止主机将来宾私有内存映射到用户空间，但该方法无法满足基于软件的 CoCo VM 的几个要求，例如 pKVM，因为内核无法轻松强制执行 1:1 的页面：来宾关联，更不用说 1:1 的 pfn:gfn 映射了。 并且使用 PG_hwpoison 不适用于不受“struct page”支持的内存，例如 如果设备获得向访客公开加密内存区域的支持。 尝试 #3 是扩展 memfd() 系统调用并包装 shmem 以提供基于文件的专用来宾内存。 在 Hugh Dickins 和 Christian Brauner（以及其他人）的反馈导致其消亡之前，这种方法已经发展到了 v10。 Hugh 的反对意见是，搭载 shmem 对于 KVM 的用例来说没有任何意义，因为 KVM 实际上并不“想要”shmem 提供的功能。 IE。 KVM 使用 memfd() 和 shmem 来避免直接管理内存，并不是因为 memfd() 和 shmem 是最佳解决方案，例如 shmem 中的读/写/mmap 之类的东西很重。 Christian 指出了实现部分覆盖（仅包裹 shmem 的一些）的缺陷，例如 戳 inode_operations 或 super_operations 会显示 shmem 内容，但 address_space_operations 和 file_operations 会显示 KVM 的覆盖。 Christian 重重地解释了一下，建议 KVM 不要再偷懒了，创建一个合适的 API
+    kvm_chardev_ops.owner = module
+    r = misc_register(&kvm_dev)
+
+
+static struct file_operations kvm_chardev_ops = {
+	.unlocked_ioctl = kvm_dev_ioctl,
+	.compat_ioctl   = kvm_dev_ioctl,
+	.llseek		= noop_llseek,
+};
+
+static struct miscdevice kvm_dev = {
+	KVM_MINOR,
+	"kvm",
+	&kvm_chardev_ops,
+};
+
+
+
+kvm debug guest:
+KVM_CAP_SET_GUEST_DEBUG
+
+
+tools/testing/selftests/kvm/x86_64/debug_regs.c
+    int main(void)
+    TEST_REQUIRE(kvm_has_cap(KVM_CAP_SET_GUEST_DEBUG)) -> unsigned int kvm_check_cap(long cap)
+        open_kvm_dev_path_or_exit
+        __kvm_ioctl(kvm_fd, KVM_CHECK_EXTENSION, (void *)cap) -> kvm_do_ioctl -> ioctl(fd, cmd, arg)
+            ...
+            kvm_dev_ioctl
+                kvm_vm_ioctl_check_extension_generic
+                    kvm_vm_ioctl_check_extension
+                        case KVM_CAP_SET_GUEST_DEBUG -> KVM：X86：正确声明 KVM_CAP_SET_GUEST_DEBUG，x86 应该支持 KVM_CAP_SET_GUEST_DEBUG，但未声明为受支持。 我的大胆猜测是，像 QEMU 这样的用户空间正在使用“#ifdef KVM_CAP_SET_GUEST_DEBUG”来检查功能，但这可能是错误的，因为编译主机可能不是运行时主机。 用户空间可能仍然希望保留旧的“#ifdef”，但不要破坏旧内核上的来宾调试
+                            r = 1
+        return (unsigned int)ret
+    vm_create_with_one_vcpu
+    vcpu_guest_debug_set
+    vcpu_run
+    vcpu_skip_insn
+    cmd = get_ucall(vcpu, &uc)
+    kvm_vm_free
+
+
+
+debug module:
+cat /sys/module/{这个modulede的名字}/sections/.text
+cat /sys/module/{这个modulede的名字}/sections/.data
+cat /sys/module/{这个modulede的名字}/sections/.bss
+获取三个地址，在gdb里输入
+add-symbol-file {这个module}.ko <text_addr> -s .data <data_addr> -s .bss <bss_addr>
+
+
+~/.gdbinit file added
+add-auto-load-safe-path path/to/linux/kernel/tree/scripts/gdb/vmlinux-gdb.py
+apropos lx
+lx-symbol
+                        
+原文链接：https://blog.csdn.net/qq_26907291/article/details/129403236
+
+
+info proc map
+
+
+禁用 CONFIG_RANDOMIZE_BASE
+开启 CONFIG_GDB_SCRIPTS
+开启 CONFIG_DEBUG_INFO_REDUCED
+开启 CONFIG_FRAME_POINTER
+
+
+
+apt-get install libncurses5-dev libssl-dev bison flex libelf-dev gcc make openssl libc6-dev -y
+
+make menuconfig
+
+it's going to be under "Kernel hacking" -> "Compile-time checks and compiler options" -> "Compiler a kernel with debug info"
+
+
+source code:
+wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.4.18.tar.gz
+
+
+set key to ""
+CONFIG_SYSTEM_TRUSTED_KEYS
+CONFIG_SYSTEM_REVOCATION_KEYS
+
+
+apt install qemu qemu-system qemu-kvm -y
+
+Failed to generate BTF for vmlinux
+Try to disable CONFIG_DEBUG_INFO_BTF
+make: *** [Makefile:1077: vmlinux] Error 1
+
+apt install dwarves
+
+touch main.c
+#include <stdio>
+int main()
+{
+    printf("hello world!");
+    printf("hello world!");
+    printf("hello world!");
+    printf("hello world!");
+    fflush(stdout);
+    while(1);
+    return 0;
+}
+
+gcc --static -o helloworld main.c
+echo helloworld | cpio -o --format=newc > rootfs
+
+qemu-system-x86_64 \
+    -kernel ./arch/x86/boot/bzImage \
+    -initrd ./rootfs \
+    -append "root=/dev/ram rdinit=/helloworld"
+
+qemu-system-x86_64  \
+ -kernel ./arch/x86/boot/bzImage  \
+ -initrd ./rootfs  \
+ -append "root=/dev/ram rdinit=/helloworld" \
+ -smp 2  \
+ -s -S --nographic
+
+
+qemu-system-x86_64 -s -S -kernel /root/project/linux-5.4.18/arch/x86/boot/bzImage -initrd /root/project/linux-5.4.18/rootfs -nographic -append "root=/dev/ram rdinit=/helloworld console=ttyS0" -serial mon:stdio -device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::2222-:22
+
+gdb vmLinux
+#以下进行调试
+target remote:1234
+lx-symbol
+b start_kernel
+c
+
+
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "kernel-debug",
+            "type": "cppdbg",
+            "request": "launch",
+            "miDebuggerServerAddress": "127.0.0.1:1234",
+            "program": "${workspaceFolder}/vmlinux",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "logging": {
+                "engineLogging": false
+            },
+            "MIMode": "gdb",
+        }
+    ]
+}
+
+qemu-system-x86_64 -s -S -kernel ~/linux-5.3.7/arch/x86/boot/bzImage -initrd ~/busybox-1.31.0/initramfs.cpio.gz -nographic -append "nokaslr console=ttyS0" -serial mon:stdio -device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:22
+
+
+
+(gdb) target remote:1234
+Remote debugging using :1234
+0x000000000000fff0 in entry_stack_storage ()
+(gdb) hb start_kernel
+Breakpoint 1 at 0xffffffff8302c118: file init/main.c, line 577.
+(gdb) c
+Continuing.
+
+Thread 1 hit Breakpoint 1, start_kernel () at init/main.c:577
+577     {
+(gdb) bt
+#0  start_kernel () at init/main.c:577
+#1  0xffffffff8302b583 in x86_64_start_reservations (real_mode_data=<optimized out>) at arch/x86/kernel/head64.c:490
+#2  0xffffffff8302b675 in x86_64_start_kernel (real_mode_data=0x14970 <bts_ctx+10608> <error: Cannot access memory at address 0x14970>) at arch/x86/kernel/head64.c:471
+#3  0xffffffff810000e6 in secondary_startup_64 () at arch/x86/kernel/head_64.S:241
+
+
+yum install flex bison openssl libssl-dev libelf-dev -y
+
+
+rdma link add rxe_ens3 type rxe netdev ens3
+
+./drivers/infiniband/sw/rxe/rdma_rxe.ko
+cat ./drivers/infiniband/sw/rxe/rdma_rxe.ko
+root@vm:~/project/linux/linux-5.4.18# cat /sys/module/rdma_rxe/sections/.text
+0xffffffffc0be3000
+root@vm:~/project/linux/linux-5.4.18# cat /sys/module/rdma_rxe/sections/.data
+0xffffffffc0bf90a0
+root@vm:~/project/linux/linux-5.4.18# cat /sys/module/rdma_rxe/sections/.bss 
+0xffffffffc0bffa40
+
+add-symbol-file ./drivers/infiniband/sw/rxe/rdma_rxe.ko 0xffffffffc0be3000 -s .data 0xffffffffc0bf90a0 -s .bss 0xffffffffc0bffa40
+add-symbol-file ./drivers/infiniband/core/ib_uverbs.ko 0xffffffffc0be3000 -s .data 0xffffffffc0bf90a0 -s .bss 0xffffffffc0bffa40
+add-symbol-file ./drivers/infiniband/core/ib_core.ko 0xffffffffc0be3000 -s .data 0xffffffffc0bf90a0 -s .bss 0xffffffffc0bffa40
+
+echo "add-symbol-file ./drivers/infiniband/sw/rxe/rdma_rxe.ko `cat /sys/module/rdma_rxe/sections/.text` -s .data `cat /sys/module/rdma_rxe/sections/.data` -s .bss `cat /sys/module/rdma_rxe/sections/.bss`"
+echo "add-symbol-file ./drivers/infiniband/core/ib_core.ko `cat /sys/module/ib_core/sections/.text` -s .data `cat /sys/module/ib_core/sections/.data` -s .bss `cat /sys/module/ib_core/sections/.bss`"
+echo "add-symbol-file ./drivers/infiniband/core/ib_uverbs.ko `cat /sys/module/ib_uverbs/sections/.text` -s .data `cat /sys/module/ib_uverbs/sections/.data` -s .bss `cat /sys/module/ib_uverbs/sections/.bss`"
+
+
+
+
+ibv_reg_mr:
+.reg_user_mr = rxe_reg_user_mr,
+
+ibv_alloc_pd
+execute_cmd_write(context, IB_USER_VERBS_CMD_ALLOC_PD
+.alloc_pd = rxe_alloc_pd, -> kernel IB_USER_VERBS_CMD_ALLOC_PD -> ib_uverbs_alloc_pd
+    uverbs_request
+    rdma_zalloc_drv_obj
+    ret = ib_dev->ops.alloc_pd(pd, &attrs->driver_udata) -> rxe_alloc_pd -> rxe_add_to_pool
+        might_sleep_if
+        elem->pool = pool
+    uverbs_response
+    uobj_alloc_commit
+
+
+lsmod|grep rdma
+rpcrdma               299008  0
+sunrpc                581632  1 rpcrdma
+rdma_ucm               28672  0
+rdma_cm               118784  3 rpcrdma,ib_iser,rdma_ucm
+iw_cm                  53248  1 rdma_cm
+ib_cm                 131072  1 rdma_cm
+rdma_rxe              135168  0
+ib_uverbs             163840  2 rdma_rxe,rdma_ucm
+ip6_udp_tunnel         16384  1 rdma_rxe
+udp_tunnel             20480  1 rdma_rxe
+ib_core               393216  8 rdma_cm,rdma_rxe,rpcrdma,iw_cm,ib_iser,rdma_ucm,ib_uverbs,ib_cm
+root@vm:~/project/linux/linux-5.4.18/drivers/infiniband/core# modinfo ib_core 
+filename:       /lib/modules/5.15.0-67-generic/kernel/drivers/infiniband/core/ib_core.ko
+
+
+
+root@vm:~/project/rdma/rdma-core/build/bin# ./ibv_devices 
+    device                 node GUID
+    ------              ----------------
+    rxe_ens3            505400fffe123456
+root@vm:~/project/rdma/rdma-core/build/bin# ./ibv_rc_pingpong -d rxe_ens3 -g 0
+  local address:  LID 0x0000, QPN 0x000011, PSN 0x1580f2, GID fe80::5054:ff:fe12:3456
+root@vm:~/project/rdma/rdma-core/build/bin# gdb --args ./ibv_rc_pingpong -d rxe_ens3 -g 0
+
+
+
+add-auto-load-safe-path /root/project/linux/linux-5.4.18/scripts/gdb/vmlinux-gdb.py
+
+
+b cmdline_proc_show
+
+
+readelf -h vmlinux
+
+
+boot:
+vim /boot/grub/grub.cfg
+
+vim /etc/default/grub
+GRUB_DEFAULT=1> 2
+GRUB_TIMEOUT_STYLE=hidden
+GRUB_TIMEOUT=0
+GRUB_DISTRIBUTOR=`lsb_release -i -s 2> /dev/null || echo Debian`
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+GRUB_CMDLINE_LINUX="
+
+update-grub
+gnulinux-5.4.18+-advanced-64471880-f885-4431-a067-a2d6d996387c
+
+dpkg --get-selections|grep linux-image
+
+kvm:
+kvm.ko, commit: https://github.com/ssbandjl/linux/commit/6aa8b732ca01c3d7a54e93f4d701b8aabbe60fb7,  
+virt/kvm/vfio.c
+    kvm_vfio_ops_init
+
+
+kvm_main.c -> kvm_init KVM模块初始化
+
+arch/x86/kvm
+
+
+svm_init, amd
+static int __init vmx_init(void) -> intel -> [PATCH] kvm：用户空间界面，网站：http://kvm.sourceforge.net 邮件列表：kvm-devel@lists.sourceforge.net (http://lists.sourceforge.net/lists/listinfo/kvm-devel ）以下补丁集将英特尔硬件虚拟化扩展的驱动程序添加到 x86 架构。 该驱动程序添加了一个向用户空间公开虚拟化功能的字符设备 (/dev/kvm)。 使用此驱动程序，进程可以在包含其自己的虚拟硬盘、网络适配器和显示器的完全虚拟化 PC 中运行虚拟机（“来宾”）。 使用此驱动程序，可以在一台主机上启动多个虚拟机。 每个虚拟机都是主机上的一个进程； 虚拟CPU是该进程中的一个线程。 Kill(1)、nice(1)、top(1) 按预期工作。 实际上，驱动程序在现有两种执行模式的基础上添加了第三种执行模式：现在有内核模式、用户模式和来宾模式。 访客模式有自己的地址空间映射访客物理内存（用户模式可通过 mmap()ing /dev/kvm 访问）。 访客模式无法访问任何I/O设备； 任何此类访问都会被拦截并定向到用户模式进行模拟。 该驱动程序支持 i386 和 x86_64 主机和来宾。 除了 i386 主机上的 x86_64 guest 以外，所有组合均被允许。 对于 i386 来宾和主机，支持 pae 和 non-pae 分页模式。 支持 SMP 主机和 UP 来宾。 目前仅支持 Intel 硬件，但正在开发 AMD 虚拟化支持。 由于 mmu 虚拟化的简单实现，每次上下文切换都会丢弃大部分影子页表条目，因此目前的性能并不理想。 我们计划通过两种方式解决这个问题： - 跨 tlb 刷新缓存影子页表 - 等到 AMD 和 Intel 发布具有嵌套页表的处理器 目前，虚拟桌面响应良好，但会消耗大量 CPU。 在Windows下我尝试玩弹球游戏和看一些Flash电影； 使用最新的 CPU 几乎感觉不到虚拟化。 Linux/X 较慢，可能是因为 X 位于单独的进程中。 除了驱动程序之外，您还需要稍微修改一下的 qemu 来提供 I/O 设备模拟和 BIOS。 注意事项（akpm：可能不再正确）： - 由于虚拟 APIC 问题，Windows 安装当前出现蓝屏。 我们正在努力修复。 临时解决方法是使用现有映像或通过 qemu 安装 - Windows 64 位不起作用。 qemu也是如此，所以很可能是设备型号的问题
+    kvm_is_vmx_supported
+        smp_processor_id
+        if (!(cpuid_ecx(1) & feature_bit(VMX)))
+    hv_init_evmcs
+    kvm_x86_vendor_init
+    vmx_setup_l1d_flush
+    pi_init_cpu
+    cpu_emergency_register_virt_callback
+    vmx_check_vmcs12_offsets
+    kvm_init THIS_MODULE ->  这是一个表示当前模块的标识符，用于标记KVM模块的所属
+
+总结一下kvm模块初始化到底做了什么：  硬件检查： 初始化过程首先会进行硬件检查，确保主机的硬件支持虚拟化扩展，如 Intel VT-x 或 AMD-V。这些硬件扩展允许虚拟机在更加隔离的环境中运行，提高性能和安全性。 分配结构缓存： KVM 初始化过程分配了一些常用的数据结构的缓存，这些结构将用于管理虚拟机和虚拟 CPU 的状态。 创建设备节点： 通过创建 /dev/kvm 设备节点，用户空间程序可以通过这个设备与 KVM 内核模块进行通信，发起虚拟化请求和操作。 获取 VMCS 配置： 在初始化过程中，KVM 模块会获取 VMCS（Virtual Machine Control Structure）的配置信息，这些信息用于初始化 VMCS 结构。VMCS 是一个关键的数据结构，用于控制虚拟机运行的各个方面。 设置全局变量： 根据主机 CPU 的特性和支持，KVM 模块会设置一些全局变量，以适应不同的硬件环境。例如，根据 CPU 是否支持 EPT（Extended Page Tables）等特性，设置相应的全局标志。 为每个物理 CPU 分配 VMCS： KVM 初始化过程会为每个物理 CPU 分配一个 VMCS 结构，并将这些结构保存在 percpu 变量中。这为虚拟机在不同的物理 CPU 上切换和调度提供了支持。 进入 VMX 模式： 在初始化过程中，并没有将 CPU 设置为 VMX 模式。VMX 模式是虚拟机扩展的一种硬件虚拟化模式，需要通过设置 CR4 寄存器的 VMXE 位并分配 VMXON 区域来开启。然而，在创建第一个虚拟机之前，这些步骤不会执行。这是一种惰性策略，只有在实际需要创建虚拟机时才会启用 VMX 模式，以避免不必要的开销。 综上所述，KVM 模块的初始化过程主要包括硬件检查、资源分配、设备节点创建、全局变量设置、VMCS 配置等步骤。该过程确保了在虚拟化环境下能够准备好必要的数据结构和配置，以便在创建和管理虚拟机时进行有效的虚拟化操作。真正的 VMX 模式开启是在创建第一个虚拟机时才会执行，以避免不必要的性能损耗
+
+
+
+
+
+核心驱动:
+static struct pci_driver mlx5_core_driver = {
+    .name           = KBUILD_MODNAME,
+    .id_table       = mlx5_core_pci_table,
+    .probe          = probe_one,
+    .remove         = remove_one,
+    .suspend        = mlx5_suspend,
+    .resume         = mlx5_resume,
+    .shutdown	= shutdown,
+    .err_handler	= &mlx5_err_handler,
+    .sriov_configure   = mlx5_core_sriov_configure, / 支持sriov功能需要实现的函数 /
+    .sriov_get_vf_total_msix = mlx5_sriov_get_vf_total_msix, //  PF 驱动程序回调以获取可用于分发到VF 的MSI-X 向量的总数
+    .sriov_set_msix_vec_count = mlx5_core_sriov_set_msix_vec_count, // PF 驱动程序回调以更改 VF 上的 MSI-X 向量的数量
+};
+
+static struct auxiliary_driver mlx5_sf_driver = {
+    .name = MLX5_SF_DEV_ID_NAME,
+    .probe = mlx5_sf_dev_probe,
+    .remove = mlx5_sf_dev_remove,
+    .shutdown = mlx5_sf_dev_shutdown,
+    .id_table = mlx5_sf_dev_id_table,
+};
+
+
+
+static int mlx5_sf_dev_probe(struct auxiliary_device *adev, const struct auxiliary_device_id *id)
+    mlx5_devlink_alloc -> devlink：尽早设置设备 所有内核 devlink 实现都会在特定设备的初始化例程期间调用 devlink_alloc()，该设备稍后用作 devlink_register() 的父设备。 这种较晚的设备分配会导致需要我们在设置其他参数之前调用 device_register() 的情况，但该调用向世界打开了 devlink 并可供 netlink 用户访问。 由于访问 devlink->dev 指针，任何将 devlink_register() 移至最后一次调用的尝试都会生成以下错误。
+    mlx5_dev_set_lightweight -> net/mlx5：轻探测本地 SF 如果用户想要配置 SF，例如：仅使用 vdpa 功能，则他需要完全探测 SF，配置他想要的内容，然后重新加载 SF。 为了节省重新加载的时间，本地SF将在没有任何辅助子设备的情况下进行探测，从而可以在其完全探测之前对SF进行配置。 这些 SF 的 enable_* devlink 参数的默认值设置为 false。
+    mlx5_mdev_init -> net/mlx5：为 SF 创建新的配置文件 为 SF 创建新的配置文件以禁用命令缓存。 每个功能命令缓存消耗约 500KB 的内存，当使用大量 SF 时，这种节省在内存受限的系统上非常显着。 使用新的配置文件来提供 SF 和 PF 之间未来的差异。 mr_cache 不用于非 PF 函数，因此它被排除在新配置文件之外。
+    ioremap
+    mlx5_init_one_light
+    or
+    mlx5_init_one
+    mlx5_core_peer_devlink_set
+    devlink_register
+
+
+net/mlx5: SF，添加辅助设备驱动程序
+为mlx5子功能辅助设备添加辅助设备驱动程序。 mlx5 子功能类似于 PCI PF 和 VF。 对于子功能，创建辅助设备。 因此，当 mlx5 SF 辅助设备绑定到驱动程序时，会创建其 netdev 和 rdma 设备，它们显示为
+$ ls -l /sys/bus/auxiliary/devices/
+mlx5_core.sf.4 -> ../../../devices/pci0000:00/0000:00:03.0/0000:06:00.0/mlx5_core.sf.4
+$ ls -l /sys/class/net/eth1/device
+/sys/class/net/eth1/device -> ../../../mlx5_core.sf.4
+$ cat /sys/bus/auxiliary/devices/mlx5_core.sf.4/sfnum
+$ devlink dev show
+pci/0000:06:00.0
+auxiliary/mlx5_core.sf.4
+$ devlink port show auxiliary/mlx5_core.sf.4/1
+auxiliary/mlx5_core.sf.4/1: type eth netdev p0sf88 flavour virtual port 0 splittable false
+$ rdma link show mlx5_0/1
+link mlx5_0/1 state ACTIVE physical_state LINK_UP netdev p0sf88
+$ rdma dev show
+8: rocep6s0f1: node_type ca fw 16.29.0550 node_guid 248a:0703:00b3:d113 sys_image_guid 248a:0703:00b3:d112
+13: mlx5_0: node_type ca fw 16.29.0550 node_guid 0000:00ff:fe00:8888 sys_image_guid 248a:0703:00b3:d112
+将来，devlink 设备实例名称将适应使用别名或 RFC [1] 中描述的 devlink 实例名称的 sfnum 注释。
+
+
+
+
+
+
+
+
+
+
+default config profile:
+static struct mlx5_profile profile[]
+
+
+
+
+git remote add origin git@gitlab.nsv6.b122.top:bin/linux_kernel.git
+
+
+register_chrdev
+
+pci_enable_device
+
+filter: ./drivers/net/ethernet/intel/
+
+
+get info:
+System with RoCE SR-IOV card with 4 VFs:
+[leonro@vm ~]$ lspci |grep nox
+01:00.0 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6]
+01:00.1 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
+01:00.2 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
+01:00.3 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
+01:00.4 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
+[leonro@vm ~]$ ls -l /sys/bus/auxiliary/devices/
+mlx5_core.eth.0 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.0/mlx5_core.eth.0
+mlx5_core.eth.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.eth.1
+mlx5_core.eth.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.eth.2
+mlx5_core.eth.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.eth.3
+mlx5_core.eth.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.eth.4
+mlx5_core.rdma.0 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.0/mlx5_core.rdma.0
+mlx5_core.rdma.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.rdma.1
+mlx5_core.rdma.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.rdma.2
+mlx5_core.rdma.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.rdma.3
+mlx5_core.rdma.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.rdma.4
+mlx5_core.vdpa.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.vdpa.1
+mlx5_core.vdpa.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.vdpa.2
+mlx5_core.vdpa.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.vdpa.3
+mlx5_core.vdpa.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.vdpa.4
+[leonro@vm ~]$ rdma dev
+0: rocep1s0f0: node_type ca fw 4.6.9999 node_guid 5254:00c0:fe12:3455 sys_image_guid 5254:00c0:fe12:3455
+1: rocep1s0f0v0: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3456
+2: rocep1s0f0v1: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3457
+3: rocep1s0f0v2: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3458
+4: rocep1s0f0v3: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3459
+
+
+
+static const struct mlx5_adev_device {
+    const char *suffix;
+    bool (*is_supported)(struct mlx5_core_dev *dev);
+    bool (*is_enabled)(struct mlx5_core_dev *dev);
+} mlx5_adev_devices[] = {
+    [MLX5_INTERFACE_PROTOCOL_VNET] = { .suffix = "vnet",
+                       .is_supported = &mlx5_vnet_supported,
+                       .is_enabled = &is_vnet_enabled },
+    [MLX5_INTERFACE_PROTOCOL_IB] = { .suffix = "rdma",
+                     .is_supported = &mlx5_rdma_supported,
+                     .is_enabled = &is_ib_enabled },
+    [MLX5_INTERFACE_PROTOCOL_ETH] = { .suffix = "eth",
+                      .is_supported = &mlx5_eth_supported,
+                      .is_enabled = &mlx5_core_is_eth_enabled },
+    [MLX5_INTERFACE_PROTOCOL_ETH_REP] = { .suffix = "eth-rep",
+                       .is_supported = &is_eth_rep_supported },
+    [MLX5_INTERFACE_PROTOCOL_IB_REP] = { .suffix = "rdma-rep",
+                       .is_supported = &is_ib_rep_supported },
+    [MLX5_INTERFACE_PROTOCOL_MPIB] = { .suffix = "multiport",
+                       .is_supported = &is_mp_supported },
+    [MLX5_INTERFACE_PROTOCOL_DPLL] = { .suffix = "dpll",
+                       .is_supported = &is_dpll_supported },
+};
+
+
+capability types:
+static const int types[] = {
+    MLX5_CAP_GENERAL,
+    MLX5_CAP_GENERAL_2,
+    MLX5_CAP_ETHERNET_OFFLOADS,
+    MLX5_CAP_IPOIB_ENHANCED_OFFLOADS,
+    MLX5_CAP_ODP,
+    MLX5_CAP_ATOMIC,
+    MLX5_CAP_ROCE,
+    MLX5_CAP_IPOIB_OFFLOADS,
+    MLX5_CAP_FLOW_TABLE,
+    MLX5_CAP_ESWITCH_FLOW_TABLE,
+    MLX5_CAP_ESWITCH,
+    MLX5_CAP_QOS,
+    MLX5_CAP_DEBUG,
+    MLX5_CAP_DEV_MEM,
+    MLX5_CAP_DEV_EVENT,
+    MLX5_CAP_TLS,
+    MLX5_CAP_VDPA_EMULATION,
+    MLX5_CAP_IPSEC,
+    MLX5_CAP_PORT_SELECTION,
+    MLX5_CAP_MACSEC,
+    MLX5_CAP_ADV_VIRTUALIZATION,
+    MLX5_CAP_CRYPTO,
+};
+
+
+
+module_init(mlx5_dpll_init); -> mlx5：使用 DPLL 基础设施实现 SyncE 支持 使用新引入的 DPLL 支持实现 SyncE 支持。 确保使用适当功能探测的每个 PF/VF/SF 将生成 dpll 辅助设备并注册适当的 dpll 设备和引脚实例
+
+
+
+该产品组合包括符合 ITU-T/IEEE 标准的数字锁相环 (DPLL)，用于网络同步，其性能满足 SyncE 和 IEEE 1588 严格的 10G/40G/100G 接口要求。
+
+
+mlx5_tout_init
+
+
+The defaults of the enable_* devlink params of these SFs are set to
+false.
+
+Usage example:
+Create SF:
+$ devlink port add pci/0000:08:00.0 flavour pcisf pfnum 0 sfnum 11
+$ devlink port function set pci/0000:08:00.0/32768 \
+hw_addr 00:00:00:00:00:11 state active
+
+Enable ETH auxiliary device:
+$ devlink dev param set auxiliary/mlx5_core.sf.1 \
+name enable_eth value true cmode driverinit
+
+Now, in order to fully probe the SF, use devlink reload:
+$ devlink dev reload auxiliary/mlx5_core.sf.1
+此时，用户拥有仅用于以太网功能的带有辅助设备的 SF devlink 实例
+
+
+命令操作:
+const char *mlx5_command_str(int command)
+{
+#define MLX5_COMMAND_STR_CASE(__cmd) case MLX5_CMD_OP_ ## __cmd: return #__cmd
+
+    switch (command) {
+    MLX5_COMMAND_STR_CASE(QUERY_HCA_CAP);
+    MLX5_COMMAND_STR_CASE(QUERY_ADAPTER);
+    MLX5_COMMAND_STR_CASE(INIT_HCA);
+    MLX5_COMMAND_STR_CASE(TEARDOWN_HCA);
+    MLX5_COMMAND_STR_CASE(ENABLE_HCA);
+    MLX5_COMMAND_STR_CASE(DISABLE_HCA);
+    MLX5_COMMAND_STR_CASE(QUERY_PAGES);
+    MLX5_COMMAND_STR_CASE(MANAGE_PAGES);
+    MLX5_COMMAND_STR_CASE(SET_HCA_CAP);
+    MLX5_COMMAND_STR_CASE(QUERY_ISSI);
+    MLX5_COMMAND_STR_CASE(SET_ISSI);
+    MLX5_COMMAND_STR_CASE(SET_DRIVER_VERSION);
+    MLX5_COMMAND_STR_CASE(CREATE_MKEY);
+    MLX5_COMMAND_STR_CASE(QUERY_MKEY);
+    MLX5_COMMAND_STR_CASE(DESTROY_MKEY);
+    MLX5_COMMAND_STR_CASE(QUERY_SPECIAL_CONTEXTS);
+    MLX5_COMMAND_STR_CASE(PAGE_FAULT_RESUME);
+    MLX5_COMMAND_STR_CASE(CREATE_EQ);
+    MLX5_COMMAND_STR_CASE(DESTROY_EQ);
+    MLX5_COMMAND_STR_CASE(QUERY_EQ);
+    MLX5_COMMAND_STR_CASE(GEN_EQE);
+    MLX5_COMMAND_STR_CASE(CREATE_CQ);
+    MLX5_COMMAND_STR_CASE(DESTROY_CQ);
+    MLX5_COMMAND_STR_CASE(QUERY_CQ);
+    MLX5_COMMAND_STR_CASE(MODIFY_CQ);
+    MLX5_COMMAND_STR_CASE(CREATE_QP);
+    MLX5_COMMAND_STR_CASE(DESTROY_QP);
+    MLX5_COMMAND_STR_CASE(RST2INIT_QP);
+    MLX5_COMMAND_STR_CASE(INIT2RTR_QP);
+    MLX5_COMMAND_STR_CASE(RTR2RTS_QP);
+    MLX5_COMMAND_STR_CASE(RTS2RTS_QP);
+    MLX5_COMMAND_STR_CASE(SQERR2RTS_QP);
+    MLX5_COMMAND_STR_CASE(2ERR_QP);
+    MLX5_COMMAND_STR_CASE(2RST_QP);
+    MLX5_COMMAND_STR_CASE(QUERY_QP);
+    MLX5_COMMAND_STR_CASE(SQD_RTS_QP);
+    MLX5_COMMAND_STR_CASE(INIT2INIT_QP);
+    MLX5_COMMAND_STR_CASE(CREATE_PSV);
+    MLX5_COMMAND_STR_CASE(DESTROY_PSV);
+    MLX5_COMMAND_STR_CASE(CREATE_SRQ);
+    MLX5_COMMAND_STR_CASE(DESTROY_SRQ);
+    MLX5_COMMAND_STR_CASE(QUERY_SRQ);
+    MLX5_COMMAND_STR_CASE(ARM_RQ);
+    MLX5_COMMAND_STR_CASE(CREATE_XRC_SRQ);
+    MLX5_COMMAND_STR_CASE(DESTROY_XRC_SRQ);
+    MLX5_COMMAND_STR_CASE(QUERY_XRC_SRQ);
+    MLX5_COMMAND_STR_CASE(ARM_XRC_SRQ);
+    MLX5_COMMAND_STR_CASE(CREATE_DCT);
+    MLX5_COMMAND_STR_CASE(DESTROY_DCT);
+    MLX5_COMMAND_STR_CASE(DRAIN_DCT);
+    MLX5_COMMAND_STR_CASE(QUERY_DCT);
+    MLX5_COMMAND_STR_CASE(ARM_DCT_FOR_KEY_VIOLATION);
+    MLX5_COMMAND_STR_CASE(QUERY_VPORT_STATE);
+    MLX5_COMMAND_STR_CASE(MODIFY_VPORT_STATE);
+    MLX5_COMMAND_STR_CASE(QUERY_ESW_VPORT_CONTEXT);
+    MLX5_COMMAND_STR_CASE(MODIFY_ESW_VPORT_CONTEXT);
+    MLX5_COMMAND_STR_CASE(QUERY_NIC_VPORT_CONTEXT);
+    MLX5_COMMAND_STR_CASE(MODIFY_NIC_VPORT_CONTEXT);
+    MLX5_COMMAND_STR_CASE(QUERY_ROCE_ADDRESS);
+    MLX5_COMMAND_STR_CASE(SET_ROCE_ADDRESS);
+    MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_CONTEXT);
+    MLX5_COMMAND_STR_CASE(MODIFY_HCA_VPORT_CONTEXT);
+    MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_GID);
+    MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_PKEY);
+    MLX5_COMMAND_STR_CASE(QUERY_VNIC_ENV);
+    MLX5_COMMAND_STR_CASE(QUERY_VPORT_COUNTER);
+    MLX5_COMMAND_STR_CASE(ALLOC_Q_COUNTER);
+    MLX5_COMMAND_STR_CASE(DEALLOC_Q_COUNTER);
+    MLX5_COMMAND_STR_CASE(QUERY_Q_COUNTER);
+    MLX5_COMMAND_STR_CASE(SET_MONITOR_COUNTER);
+    MLX5_COMMAND_STR_CASE(ARM_MONITOR_COUNTER);
+    MLX5_COMMAND_STR_CASE(SET_PP_RATE_LIMIT);
+    MLX5_COMMAND_STR_CASE(QUERY_RATE_LIMIT);
+    MLX5_COMMAND_STR_CASE(CREATE_SCHEDULING_ELEMENT);
+    MLX5_COMMAND_STR_CASE(DESTROY_SCHEDULING_ELEMENT);
+    MLX5_COMMAND_STR_CASE(QUERY_SCHEDULING_ELEMENT);
+    MLX5_COMMAND_STR_CASE(MODIFY_SCHEDULING_ELEMENT);
+    MLX5_COMMAND_STR_CASE(CREATE_QOS_PARA_VPORT);
+    MLX5_COMMAND_STR_CASE(DESTROY_QOS_PARA_VPORT);
+    MLX5_COMMAND_STR_CASE(ALLOC_PD);
+    MLX5_COMMAND_STR_CASE(DEALLOC_PD);
+    MLX5_COMMAND_STR_CASE(ALLOC_UAR);
+    MLX5_COMMAND_STR_CASE(DEALLOC_UAR);
+    MLX5_COMMAND_STR_CASE(CONFIG_INT_MODERATION);
+    MLX5_COMMAND_STR_CASE(ACCESS_REG);
+    MLX5_COMMAND_STR_CASE(ATTACH_TO_MCG);
+    MLX5_COMMAND_STR_CASE(DETACH_FROM_MCG);
+    MLX5_COMMAND_STR_CASE(GET_DROPPED_PACKET_LOG);
+    MLX5_COMMAND_STR_CASE(MAD_IFC);
+    MLX5_COMMAND_STR_CASE(QUERY_MAD_DEMUX);
+    MLX5_COMMAND_STR_CASE(SET_MAD_DEMUX);
+    MLX5_COMMAND_STR_CASE(NOP);
+    MLX5_COMMAND_STR_CASE(ALLOC_XRCD);
+    MLX5_COMMAND_STR_CASE(DEALLOC_XRCD);
+    MLX5_COMMAND_STR_CASE(ALLOC_TRANSPORT_DOMAIN);
+    MLX5_COMMAND_STR_CASE(DEALLOC_TRANSPORT_DOMAIN);
+    MLX5_COMMAND_STR_CASE(QUERY_CONG_STATUS);
+    MLX5_COMMAND_STR_CASE(MODIFY_CONG_STATUS);
+    MLX5_COMMAND_STR_CASE(QUERY_CONG_PARAMS);
+    MLX5_COMMAND_STR_CASE(MODIFY_CONG_PARAMS);
+    MLX5_COMMAND_STR_CASE(QUERY_CONG_STATISTICS);
+    MLX5_COMMAND_STR_CASE(ADD_VXLAN_UDP_DPORT);
+    MLX5_COMMAND_STR_CASE(DELETE_VXLAN_UDP_DPORT);
+    MLX5_COMMAND_STR_CASE(SET_L2_TABLE_ENTRY);
+    MLX5_COMMAND_STR_CASE(QUERY_L2_TABLE_ENTRY);
+    MLX5_COMMAND_STR_CASE(DELETE_L2_TABLE_ENTRY);
+    MLX5_COMMAND_STR_CASE(SET_WOL_ROL);
+    MLX5_COMMAND_STR_CASE(QUERY_WOL_ROL);
+    MLX5_COMMAND_STR_CASE(CREATE_LAG);
+    MLX5_COMMAND_STR_CASE(MODIFY_LAG);
+    MLX5_COMMAND_STR_CASE(QUERY_LAG);
+    MLX5_COMMAND_STR_CASE(DESTROY_LAG);
+    MLX5_COMMAND_STR_CASE(CREATE_VPORT_LAG);
+    MLX5_COMMAND_STR_CASE(DESTROY_VPORT_LAG);
+    MLX5_COMMAND_STR_CASE(CREATE_TIR);
+    MLX5_COMMAND_STR_CASE(MODIFY_TIR);
+    MLX5_COMMAND_STR_CASE(DESTROY_TIR);
+    MLX5_COMMAND_STR_CASE(QUERY_TIR);
+    MLX5_COMMAND_STR_CASE(CREATE_SQ);
+    MLX5_COMMAND_STR_CASE(MODIFY_SQ);
+    MLX5_COMMAND_STR_CASE(DESTROY_SQ);
+    MLX5_COMMAND_STR_CASE(QUERY_SQ);
+    MLX5_COMMAND_STR_CASE(CREATE_RQ);
+    MLX5_COMMAND_STR_CASE(MODIFY_RQ);
+    MLX5_COMMAND_STR_CASE(DESTROY_RQ);
+    MLX5_COMMAND_STR_CASE(QUERY_RQ);
+    MLX5_COMMAND_STR_CASE(CREATE_RMP);
+    MLX5_COMMAND_STR_CASE(MODIFY_RMP);
+    MLX5_COMMAND_STR_CASE(DESTROY_RMP);
+    MLX5_COMMAND_STR_CASE(QUERY_RMP);
+    MLX5_COMMAND_STR_CASE(CREATE_TIS);
+    MLX5_COMMAND_STR_CASE(MODIFY_TIS);
+    MLX5_COMMAND_STR_CASE(DESTROY_TIS);
+    MLX5_COMMAND_STR_CASE(QUERY_TIS);
+    MLX5_COMMAND_STR_CASE(CREATE_RQT);
+    MLX5_COMMAND_STR_CASE(MODIFY_RQT);
+    MLX5_COMMAND_STR_CASE(DESTROY_RQT);
+    MLX5_COMMAND_STR_CASE(QUERY_RQT);
+    MLX5_COMMAND_STR_CASE(SET_FLOW_TABLE_ROOT);
+    MLX5_COMMAND_STR_CASE(CREATE_FLOW_TABLE);
+    MLX5_COMMAND_STR_CASE(DESTROY_FLOW_TABLE);
+    MLX5_COMMAND_STR_CASE(QUERY_FLOW_TABLE);
+    MLX5_COMMAND_STR_CASE(CREATE_FLOW_GROUP);
+    MLX5_COMMAND_STR_CASE(DESTROY_FLOW_GROUP);
+    MLX5_COMMAND_STR_CASE(QUERY_FLOW_GROUP);
+    MLX5_COMMAND_STR_CASE(SET_FLOW_TABLE_ENTRY);
+    MLX5_COMMAND_STR_CASE(QUERY_FLOW_TABLE_ENTRY);
+    MLX5_COMMAND_STR_CASE(DELETE_FLOW_TABLE_ENTRY);
+    MLX5_COMMAND_STR_CASE(ALLOC_FLOW_COUNTER);
+    MLX5_COMMAND_STR_CASE(DEALLOC_FLOW_COUNTER);
+    MLX5_COMMAND_STR_CASE(QUERY_FLOW_COUNTER);
+    MLX5_COMMAND_STR_CASE(MODIFY_FLOW_TABLE);
+    MLX5_COMMAND_STR_CASE(ALLOC_PACKET_REFORMAT_CONTEXT);
+    MLX5_COMMAND_STR_CASE(DEALLOC_PACKET_REFORMAT_CONTEXT);
+    MLX5_COMMAND_STR_CASE(ALLOC_MODIFY_HEADER_CONTEXT);
+    MLX5_COMMAND_STR_CASE(DEALLOC_MODIFY_HEADER_CONTEXT);
+    MLX5_COMMAND_STR_CASE(FPGA_CREATE_QP);
+    MLX5_COMMAND_STR_CASE(FPGA_MODIFY_QP);
+    MLX5_COMMAND_STR_CASE(FPGA_QUERY_QP);
+    MLX5_COMMAND_STR_CASE(FPGA_QUERY_QP_COUNTERS);
+    MLX5_COMMAND_STR_CASE(FPGA_DESTROY_QP);
+    MLX5_COMMAND_STR_CASE(CREATE_XRQ);
+    MLX5_COMMAND_STR_CASE(DESTROY_XRQ);
+    MLX5_COMMAND_STR_CASE(QUERY_XRQ);
+    MLX5_COMMAND_STR_CASE(ARM_XRQ);
+    MLX5_COMMAND_STR_CASE(CREATE_GENERAL_OBJECT);
+    MLX5_COMMAND_STR_CASE(DESTROY_GENERAL_OBJECT);
+    MLX5_COMMAND_STR_CASE(MODIFY_GENERAL_OBJECT);
+    MLX5_COMMAND_STR_CASE(QUERY_GENERAL_OBJECT);
+    MLX5_COMMAND_STR_CASE(QUERY_MODIFY_HEADER_CONTEXT);
+    MLX5_COMMAND_STR_CASE(ALLOC_MEMIC);
+    MLX5_COMMAND_STR_CASE(DEALLOC_MEMIC);
+    MLX5_COMMAND_STR_CASE(QUERY_ESW_FUNCTIONS);
+    MLX5_COMMAND_STR_CASE(CREATE_UCTX);
+    MLX5_COMMAND_STR_CASE(DESTROY_UCTX);
+    MLX5_COMMAND_STR_CASE(CREATE_UMEM);
+    MLX5_COMMAND_STR_CASE(DESTROY_UMEM);
+    MLX5_COMMAND_STR_CASE(RELEASE_XRQ_ERROR);
+    MLX5_COMMAND_STR_CASE(MODIFY_XRQ);
+    MLX5_COMMAND_STR_CASE(QUERY_VHCA_STATE);
+    MLX5_COMMAND_STR_CASE(MODIFY_VHCA_STATE);
+    MLX5_COMMAND_STR_CASE(ALLOC_SF);
+    MLX5_COMMAND_STR_CASE(DEALLOC_SF);
+    MLX5_COMMAND_STR_CASE(SUSPEND_VHCA);
+    MLX5_COMMAND_STR_CASE(RESUME_VHCA);
+    MLX5_COMMAND_STR_CASE(QUERY_VHCA_MIGRATION_STATE);
+    MLX5_COMMAND_STR_CASE(SAVE_VHCA_STATE);
+    MLX5_COMMAND_STR_CASE(LOAD_VHCA_STATE);
+    MLX5_COMMAND_STR_CASE(SYNC_CRYPTO);
+    MLX5_COMMAND_STR_CASE(ALLOW_OTHER_VHCA_ACCESS);
+    default: return "unknown command opcode";
+    }
+}
+
+
+
+vlan header:
+#define IANA_VXLAN_UDP_PORT     4789
+#define IANA_VXLAN_GPE_UDP_PORT 4790
+
+/* VXLAN protocol (RFC 7348) header:
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |R|R|R|R|I|R|R|R|               Reserved                        |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                VXLAN Network Identifier (VNI) |   Reserved    |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *
+ * I = VXLAN Network Identifier (VNI) present.
+ */
+
+
+
+.unlocked_ioctl = ib_uverbs_ioctl
 ...
 user space
 ioctl(context->cmd_fd, RDMA_VERBS_IOCTL, &cmd->hdr)
