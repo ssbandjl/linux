@@ -2767,6 +2767,8 @@ irdma_modify_qp_roce
     ib_modify_qp_is_ok
         qp_state_table[cur_state][next_state].valid) -> IB：添加 ib_modify_qp_is_ok() 库函数，内核中的 mthca 驱动程序包含一个表，其中的属性对于每个队列对状态转换都有效。 事实证明，正在准备合并的其他两个 IB 驱动程序（ipath 和 ehca）都复制了该表、错误等。 为了防止代码重复，请将此表和用于检查参数的代码移动到中间层库函数 ib_modify_qp_is_ok() 中
         qp状态表及参数: qp_state_table[IB_QPS_ERR + 1][IB_QPS_ERR + 1]
+    wait_event(iwqp->mod_qp_waitq, !atomic_read(&iwqp->hw_mod_qp_pend)) <- irdma_hw_modify_qp_callback
+        wake_up(&iwqp->mod_qp_waitq)
     switch (attr->qp_state) -> QP状态机
     ...
     irdma_flush_wqes
@@ -2788,11 +2790,17 @@ irdma_modify_qp_roce
                         case IRDMA_OP_QP_CREATE
                             irdma_sc_qp_create -> 创建QP判断对应QP HMC是否已准备好
                         ...
-    irdma_sc_qp_setctx_roce
-void irdma_sc_qp_setctx_roce(struct irdma_sc_qp *qp, __le64 *qp_ctx,
-    set_64bit_val rq_wqe_size
-    ...
-
+    irdma_sc_qp_setctx_roce -> void irdma_sc_qp_setctx_roce(struct irdma_sc_qp *qp, __le64 *qp_ctx, -> 设置QP上下文
+        set_64bit_val rq_wqe_size
+        set_64bit_val(qp_ctx, 8, qp->sq_pa) -> set sendq pa
+        set_64bit_val(qp_ctx, 16, qp->rq_pa)
+        ...
+        print_hex_dump_debug("WQE: QP_HOST CTX WQE", DUMP_PREFIX_OFFSET, 16, -> print_hex_dump
+    if (attr_mask & IB_QP_STATE)
+        irdma_hw_modify_qp
+            cqp_request->callback_fcn = irdma_hw_modify_qp_callback -> no wait/async
+        cqp_info->cqp_cmd = IRDMA_OP_QP_MODIFY
+        irdma_handle_cqp_op(rf, cqp_request)
 
 irdma_uk_rdma_write
 irdma_uk_rdma_read
@@ -5821,4 +5829,40 @@ SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
                     call_mmap
                         file->f_op->mmap(file, vma) -> or filemap_fault -> or xtrdma_mmap by cmd_fd fs
                     khugepaged_enter_vma
+
+install module:
+make modules_install
+
+install kernel
+make install
+
+will install three file to /boot
+initramfs-5.16.9.img
+System.map-5.16.9
+vmlinuz-5.16.9
+
+Update grub config
+centos
+$ sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+$ sudo grubby --set-default /boot/vmlinuz-5.16.9
+grubby --info=ALL | more
+grubby --default-index
+grubby --default-kernel
+
+ubuntu:
+$ sudo update-initramfs -c -k 5.16.9
+$ sudo update-grub
+
+
+mkinitramfs 
+qemu-system-x86_64 \
+  -hda ${disk_img} \
+  -enable-kvm \
+  -append "root=/dev/sda3" \
+  -kernel /kernel/src/path/arch/x86/boot/bzImage \
+  -initrd ${initrd-file-path} \
+  -cpu host \
+  -m 8G \
+  -smp 8
+
 

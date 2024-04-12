@@ -801,3 +801,636 @@ ib_query_port
     __ib_query_port
         ops.query_port
 
+
+
+
+uverbs
+module_init(ib_uverbs_init) -> [PATCH] IB uverbs：核心实现，添加 InfiniBand 用户空间动词实现的核心，包括创建字符设备节点、从用户空间分派请求以及将事件通知传递回用户空间
+    register_chrdev_region
+    alloc_chrdev_region
+    class_register
+    ...
+    ib_register_client(&uverbs_client)
+
+
+probe, add(dev)
+ib_register_device -> roce和IB注册的flow: https://blog.csdn.net/tiantao2012/article/details/77746141
+    assign_name
+    setup_device(device) -> ib_register_device() 执行多个分配和初始化步骤。 将其拆分为更小、更易读的函数，以便于审查和维护 -> setup_device() 分配内存并设置需要调用设备操作的数据，这是在 ib_alloc_device 期间未完成这些操作的唯一原因。 它由 ib_dealloc_device() 撤消
+        ib_device_check_mandatory
+            IB_MANDATORY_FUNC
+            mandatory_table
+            IB_MANDATORY_FUNC(query_device),
+            ...
+        setup_port_data -> RDMA/device：将 ib_device per_port 数据合并到一个位置，没有理由对每个端口数据进行 3 次分配。 将它们组合在一起并使所有每端口数据的生命周期与 struct ib_device 匹配。 后续补丁将需要更多特定于端口的数据，现在有一个好地方可以放置它
+            alloc_port_data
+                rdma_end_port
+                rdma_for_each_port
+                    INIT_LIST_HEAD(&pdata->pkey_list)
+                    INIT_HLIST_NODE(&pdata->ndev_hash_link)
+            rdma_for_each_port
+                get_port_immutable -> .get_port_immutable = irdma_roce_port_immutable
+                    ib_query_port
+                    immutable->max_mad_size = IB_MGMT_MAD_SIZE
+                verify_immutable
+                    rdma_cap_ib_mad -> rdma_cap_ib_mad - 检查设备的端口是否支持 Infiniband 管理数据报。 @device：要检查的设备 @port_num：要检查的端口号 管理数据报 (MAD) 是 InfiniBand 规范的必需部分，并且受所有 InfiniBand 设备支持。 OPA 接口还支持稍微扩展的版本。 返回：如果端口支持发送/接收MAD数据包，则返回true
+                        device->port_data[port_num].immutable.core_cap_flags & RDMA_CORE_CAP_IB_MAD
+                    rdma_max_mad_size -> rdma_max_mad_size - 返回此 RDMA 端口所需的最大 MAD 大小。 @device：设备 @port_num：端口号 该 MAD 大小包括 MAD 标头和 MAD 负载。 不包含其他标头。 返回端口所需的最大 MAD 大小。 如果端口不支持 MAD，则返回 0
+        device->ops.query_device
+    ib_cache_setup_one(device) -> IB/核心：添加 RoCE GID 表管理，RoCE GID 基于与 RDMA (RoCE) 设备端口相关的以太网网络设备上配置的 IP 地址。 目前，每个支持 RoCE（ocrdma、mlx4）的低级驱动程序都管理自己的 RoCE 端口 GID 表。 由于本质上没有任何特定于供应商的内容，因此我们对其进行概括，并增强 RDMA 核心 GID 缓存来完成这项工作。 为了填充 GID 表，我们监听事件： (a) netdev up/down/change_addr 事件 - 如果 netdev 构建在我们的 RoCE 设备上，我们需要添加/删除其 IP。 这涉及添加与此 ndev 相关的所有 GID、添加默认 GID 等。 (b) inet 事件 - 将新 GID（根据 IP 地址）添加到表中。 为了对端口 RoCE GID 表进行编程，提供商必须实现 add_gid 和 del_gid 回调。 RoCE GID 管理要求我们在 GID 旁边声明关联的 net_device。 为了管理 GID 表，此信息是必需的。 例如，当删除 net_device 时，其关联的 GID 也需要删除。 RoCE 要求根据相关网络设备的 IPv6 本地链路为每个端口生成默认 GID。 与基于常规 IPv6 链路本地的 GID（因为我们为每个 IP 地址生成 GID）相反，当网络设备关闭时，默认 GID 也可用（为了支持环回）。 锁定的完成方式如下：该补丁修改了 GID 表代码，适用于实现 add_gid/del_gid 回调的新 RoCE 驱动程序以及未实现 add_gid/del_gid 回调的当前 RoCE 和 IB 驱动程序。 更新表的流程不同，因此锁定要求也不同。 更新 RoCE GID 表时，通过 mutex_lock(&table->lock) 实现针对多个写入者的保护。 由于写入表需要我们在表中查找一个条目（可能是空闲条目）然后修改它，因此该互斥锁保护 find_gid 和 write_gid 确保操作的原子性。 GID 缓存中的每个条目均受 rwlock 保护。 在 RoCE 中，写入（通常来自 netdev 通知程序的结果）涉及调用供应商的 add_gid 和 del_gid 回调，这些回调可能会休眠。 因此，为每个条目添加无效标志。 RoCE 的更新是通过工作队列完成的，因此允许休眠。 在IB中，更新是在write_lock_irq(&device->cache.lock)中完成的，因此write_gid不允许休眠并且add_gid/del_gid不会被调用。 当将网络设备传入/传出 GID 缓存时，该设备始终被传递为保持 (dev_hold)。 该代码使用单个工作项来更新所有 RDMA 设备，遵循 netdev 或 inet 通知程序。 该补丁将缓存从客户端（这是不正确的，因为缓存是 IB 基础设施的一部分）转变为在设备注册/删除时显式初始化/释放
+        gid_table_setup_one
+            _gid_table_setup_one
+            rdma_roce_rescan_device -> {net, IB}/mlx5：管理多端口 RoCE 的端口关联，调用 mlx5_ib_add 时确定要添加的 mlx5 核心设备是否能够进行双端口 RoCE 操作。 如果是，请使用 num_vhca_ports 和affiliate_nic_vport_criteria 功能确定它是主设备还是从设备。 如果该设备是从属设备，请尝试找到与其关联的主设备。 可以关联的设备将共享系统映像 GUID。 如果没有找到，请将其放入非关联端口列表中。 如果找到主设备，则通过在 NIC vport 上下文中配置端口从属关系将端口绑定到它。 同样，当调用 mlx5_ib_remove 时确定端口类型。 如果它是从端口，则将其与主设备取消关联，否则只需将其从非关联端口列表中删除即可。 即使第二个端口不可用于关联，IB 设备也会注册为多端口设备。 当第二个端口稍后附属时，必须刷新 GID 缓存才能获取缓存中第二个端口的默认 GID。 导出roce_rescan_device以提供在绑定新端口后刷新缓存的机制。 在多端口配置中，所有 IB 对象（QP、MR、PD 等）相关命令应流经主站 mlx5_core_dev，其他命令必须发送到从端口 mlx5_core_mdev，提供一个接口来获取非 IB 对象命令的正确 mdev
+                ib_enum_roce_netdev pass_all_filter enum_all_gids_of_dev_cb
+        rdma_for_each_port
+            ib_cache_update -> IB/核心：仅在相应事件上更新 PKEY 和 GID 缓存，HCA 中的 PKEY 和 GID 表都可以保存数百个条目。 阅读它们是昂贵的。 部分原因是用于检索它们的 API 一次仅返回一个条目。 此外，在某些实现上，例如 CX-3，VF 在这方面是半虚拟化的，并且必须依赖 PF 驱动程序来执行读取。 这再次需要 VF 到 PF 的通信。 IB Core 的缓存会根据所有事件进行刷新。 因此，根据收到的事件分别为 IB_EVENT_PKEY_CHANGE 和 IB_EVENT_GID_CHANGE 来过滤 PKEY 和 GID 缓存的刷新
+                rdma_is_port_valid
+                ib_query_port
+                rdma_protocol_roce
+                config_non_roce_gid_cache
+                ib_query_pkey
+                ib_security_cache_change
+    ib_setup_device_attrs
+    ib_device_register_rdmacg
+    rdma_counter_init
+    dev_set_uevent_suppress
+    ib_setup_port_attrs
+    enable_device_and_get
+        add_client_context
+            client->add(device) -> .add    = ib_uverbs_add_one,
+    dev_set_uevent_suppress
+    kobject_uevent(&device->dev.kobj, KOBJ_ADD)
+    ib_device_put
+
+
+static struct ib_client uverbs_client = {
+    .name   = "uverbs",
+    .no_kverbs_req = true,
+    .add    = ib_uverbs_add_one,
+    .remove = ib_uverbs_remove_one,
+    .get_nl_info = ib_uverbs_get_nl_info,
+};
+
+ib_uverbs_add_one  -> RDMA：允许 ib_client 在调用 add() 时失败，添加客户端时不允许失败，但所有客户端在其添加例程中都有各种失败路径。 这会产生一种非常边缘的情况：添加客户端后，在添加过程中失败并且未设置 client_data。 然后，核心代码仍然会使用 NULL client_data 调用其他以 client_data 为中心的操作，例如 remove()、rename()、get_nl_info() 和 get_net_dev_by_params() - 这是令人困惑和意外的。 如果 add() 回调失败，则不要再为设备调用任何客户端操作，甚至删除。 删除操作回调中现在对 NULL client_data 的所有冗余检查。 更新所有 add() 回调以正确返回错误代码。 EOPNOTSUPP 用于 ULP 不支持 ib_device 的情况 - 例如，因为它仅适用于 IB
+参考: https://www.cnblogs.com/vlhn/p/8301427.html
+    ib_uverbs_create_uapi
+        uverbs_alloc_api
+            uapi_merge_def(uapi, ibdev, uverbs_core_api, false)
+                uapi_merge_obj_tree
+                    uapi_merge_method
+                case UAPI_DEF_WRITE:
+		            rc = uapi_create_write(uapi, ibdev, def, cur_obj_key, &cur_method_key);
+                        method_elm->handler = def->func_write
+    dev_set_name
+    cdev_init
+    cdev_device_add
+    ib_set_client_data
+
+
+static const struct uapi_definition uverbs_core_api[] = {
+	UAPI_DEF_CHAIN(uverbs_def_obj_counters),
+	UAPI_DEF_CHAIN(uverbs_def_obj_cq),
+	UAPI_DEF_CHAIN(uverbs_def_obj_device),
+	UAPI_DEF_CHAIN(uverbs_def_obj_dm),
+	UAPI_DEF_CHAIN(uverbs_def_obj_flow_action),
+	UAPI_DEF_CHAIN(uverbs_def_obj_intf),
+	UAPI_DEF_CHAIN(uverbs_def_obj_mr),
+	UAPI_DEF_CHAIN(uverbs_def_write_intf),
+	{},
+};
+
+rdma user/kernel api/abi:
+const struct uapi_definition uverbs_def_write_intf[] = {
+    ...
+    DECLARE_UVERBS_OBJECT(
+    UVERBS_OBJECT_PD,
+    DECLARE_UVERBS_WRITE(
+        IB_USER_VERBS_CMD_ALLOC_PD,
+        ib_uverbs_alloc_pd,
+        UAPI_DEF_WRITE_UDATA_IO(struct ib_uverbs_alloc_pd,
+                    struct ib_uverbs_alloc_pd_resp),
+        UAPI_DEF_METHOD_NEEDS_FN(alloc_pd)),
+    DECLARE_UVERBS_WRITE(
+        IB_USER_VERBS_CMD_DEALLOC_PD,
+        ib_uverbs_dealloc_pd,
+        UAPI_DEF_WRITE_I(struct ib_uverbs_dealloc_pd),
+        UAPI_DEF_METHOD_NEEDS_FN(dealloc_pd))),
+    ...
+}
+====>
+{
+    .kind = UAPI_DEF_OBJECT_START, 
+    .object_start = { .object_id = UVERBS_OBJECT_PD }, 
+},
+{ 
+    .kind = UAPI_DEF_WRITE, 
+    .scope = UAPI_SCOPE_OBJECT, 
+    .write = { 
+        .is_ex = 0, 
+        .command_num = IB_USER_VERBS_CMD_ALLOC_PD 
+        }, 
+        .func_write = ib_uverbs_alloc_pd,   <- method_elm->handler = def->func_write
+        .write.has_resp = 1 + (sizeof(struct { int:(-!!(offsetof(struct ib_uverbs_alloc_pd, response) != 0)); })) + (sizeof(struct { int:(-!!(sizeof(((struct ib_uverbs_alloc_pd *)0)->response) != sizeof(u64))); })), 
+        .write.req_size = sizeof(struct ib_uverbs_alloc_pd), .write.resp_size = sizeof(struct ib_uverbs_alloc_pd_resp), 
+        .write.has_udata = 1 + (sizeof(struct { int:(-!!(offsetof(struct ib_uverbs_alloc_pd, driver_data) != sizeof(struct ib_uverbs_alloc_pd))); })) + (sizeof(struct { int:(-!!(offsetof(struct ib_uverbs_alloc_pd_resp, driver_data) != sizeof(struct ib_uverbs_alloc_pd_resp))); })), 
+},
+{ 
+    .kind = UAPI_DEF_IS_SUPPORTED_DEV_FN, 
+    .scope = UAPI_SCOPE_METHOD, 
+    .needs_fn_offset = offsetof(struct ib_device_ops, alloc_pd) + (sizeof(struct { int:(-!!(sizeof(((struct ib_device_ops *)0)->alloc_pd) != sizeof(void *))); })), }, 
+{ 
+    .kind = UAPI_DEF_WRITE, 
+    .scope = UAPI_SCOPE_OBJECT, 
+    .write = { 
+        .is_ex = 0, 
+        .command_num = IB_USER_VERBS_CMD_DEALLOC_PD 
+    }, 
+    .func_write = ib_uverbs_dealloc_pd, 
+    .write.req_size = sizeof(struct ib_uverbs_dealloc_pd), 
+},
+{ 
+    .kind = UAPI_DEF_IS_SUPPORTED_DEV_FN, 
+    .scope = UAPI_SCOPE_METHOD, 
+    .needs_fn_offset = offsetof(struct ib_device_ops, dealloc_pd) + (sizeof(struct { int:(-!!(sizeof(((struct ib_device_ops *)0)->dealloc_pd) != sizeof(void *))); })), 
+}
+
+
+    
+
+qemu guest vm:
+ibv_alloc_pd
+root@u20:~/project/rdma/rdma-core/build/bin# ./ibv_rc_pingpong -d rxe_ens3 -g 0
+Thread 3 hit Breakpoint 2, ib_uverbs_alloc_pd (attrs=0xffffc900045f3c88) at drivers/infiniband/core/uverbs_cmd.c:406
+406     {
+(gdb) bt
+#0  ib_uverbs_alloc_pd (attrs=0xffffc900045f3c88) at drivers/infiniband/core/uverbs_cmd.c:406
+#1  0xffffffffa065c825 in ib_uverbs_handler_UVERBS_METHOD_INVOKE_WRITE (attrs=0xffffc900045f3c88) at drivers/infiniband/core/uverbs_std_types_device.c:41
+#2  0xffffffffa0659a95 in ib_uverbs_run_method (num_attrs=<optimized out>, pbundle=<optimized out>) at drivers/infiniband/core/uverbs_ioctl.c:471
+#3  ib_uverbs_cmd_verbs (ufile=<optimized out>, hdr=<optimized out>, user_attrs=<optimized out>) at drivers/infiniband/core/uverbs_ioctl.c:612
+#4  0xffffffffa0659cc8 in ib_uverbs_ioctl (filp=<optimized out>, cmd=<optimized out>, arg=140726932025184) at drivers/infiniband/core/uverbs_ioctl.c:644
+#5  0xffffffff81371f87 in vfs_ioctl (arg=<optimized out>, cmd=<optimized out>, filp=<optimized out>) at fs/ioctl.c:47
+#6  file_ioctl (arg=<optimized out>, cmd=<optimized out>, filp=<optimized out>) at fs/ioctl.c:510
+#7  do_vfs_ioctl (filp=0xffff8880aa0dff00, fd=<optimized out>, cmd=<optimized out>, arg=140726932025184) at fs/ioctl.c:697
+#8  0xffffffff81372257 in ksys_ioctl (fd=3, cmd=3222805249, arg=140726932025184) at fs/ioctl.c:714
+#9  0xffffffff8137229a in __do_sys_ioctl (arg=<optimized out>, cmd=<optimized out>, fd=<optimized out>) at fs/ioctl.c:721
+#10 __se_sys_ioctl (arg=<optimized out>, cmd=<optimized out>, fd=<optimized out>) at fs/ioctl.c:719
+#11 __x64_sys_ioctl (regs=<optimized out>) at fs/ioctl.c:719
+#12 0xffffffff81005497 in do_syscall_64 (nr=<optimized out>, regs=0xffffc900045f3f58) at arch/x86/entry/common.c:290
+#13 0xffffffff81e0008c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:175
+#14 0x0000000000000004 in fixed_percpu_data ()
+#15 0x00005596cd698260 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#16 0x0000000000000004 in fixed_percpu_data ()
+#17 0x00007ffd8acb30ec in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#18 0x00007ffd8acb2f78 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#19 0x00007ffd8acb2f40 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#20 0x0000000000000246 in ib_umem_odp_unmap_dma_pages (umem_odp=0x0 <fixed_percpu_data>, virt=<optimized out>, bound=<optimized out>)
+
+(gdb) info threads
+  Id   Target Id                    Frame 
+  1    Thread 1.1 (CPU#0 [running]) timerqueue_add (head=0xffff88813ba1dee0, node=0xffff88813ba1e3a0) at lib/timerqueue.c:37
+  2    Thread 1.2 (CPU#1 [running]) vring_map_single (vq=0xffff88813a868a80, cpu_addr=0xffff888138762e00, size=432, direction=<optimized out>) at drivers/virtio/virtio_ring.c:342
+* 3    Thread 1.3 (CPU#2 [running]) timerqueue_add (head=0xffff88813ba9dee0, node=0xffff88813ba9e3a0) at lib/timerqueue.c:47
+  4    Thread 1.4 (CPU#3 [running]) 0xffffffff811e5125 in seccomp_run_filters (match=<optimized out>, sd=<optimized out>) at kernel/seccomp.c:272
+  5    Thread 1.5 (CPU#4 [halted ]) 0xffffffff81c46cce in native_safe_halt () at ./arch/x86/include/asm/irqflags.h:60
+  6    Thread 1.6 (CPU#5 [halted ]) 0xffffffff81c46cce in native_safe_halt () at ./arch/x86/include/asm/irqflags.h:60
+  7    Thread 1.7 (CPU#6 [halted ]) 0xffffffff81c46cce in native_safe_halt () at ./arch/x86/include/asm/irqflags.h:60
+  8    Thread 1.8 (CPU#7 [running]) 0x00007f99178f6142 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+
+
+ibv_alloc_pd
+
+
+
+ib_uverbs_ex_create_flow
+
+
+static const struct file_operations uverbs_fops = {
+	.owner	 = THIS_MODULE,
+	.write	 = ib_uverbs_write,
+	.open	 = ib_uverbs_open,
+	.release = ib_uverbs_close,
+	.llseek	 = no_llseek,
+	.unlocked_ioctl = ib_uverbs_ioctl,
+	.compat_ioctl = ib_uverbs_ioctl,
+};
+
+...
+ib_uverbs_add_one
+    cdev_init(&uverbs_dev->cdev,device->ops.mmap ? &uverbs_mmap_fops : &uverbs_fops);
+
+ioctl:
+...
+ENTRY(entry_SYSCALL_64)
+    movq	%rsp, %rsi
+    call	do_syscall_64 /* returns with IRQs disabled */ <- entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:175 -> __visible void do_syscall_64
+        enter_from_user_mode
+        ti = current_thread_info()
+        regs->ax = sys_call_table[nr](regs) -> SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)-> ksys_ioctl(fd, cmd, arg)
+            security_file_ioctl
+            error = do_vfs_ioctl(f.file, fd, cmd, arg)
+                switch (cmd)
+                default:
+                    error = file_ioctl(filp, cmd, arg)
+                        switch (cmd)
+                        vfs_ioctl(filp, cmd, arg) -> error = filp->f_op->unlocked_ioctl(filp, cmd, arg) <- .unlocked_ioctl = ib_uverbs_ioctl
+                            copy_from_user
+                            srcu_read_lock
+                            ib_uverbs_cmd_verbs
+                                radix_tree_iter_lookup uapi_key_ioctl_method(hdr->method_id)
+                                ib_uverbs_run_method -> ret = handler(&pbundle->bundle) -> static int UVERBS_HANDLER(UVERBS_METHOD_INVOKE_WRITE)
+                                    return method_elm->handler(attrs)
+                                        ib_uverbs_alloc_pd
+
+                            srcu_read_unlock
+        syscall_return_slowpath(regs)
+
+
+
+#define DECLARE_UVERBS_NAMED_METHOD(_method_id, ...)                           \
+	static const struct uverbs_attr_def *const UVERBS_METHOD_ATTRS(        \
+		_method_id)[] = { __VA_ARGS__ };                               \
+	static const struct uverbs_method_def UVERBS_METHOD(_method_id) = {    \
+		.id = _method_id,                                              \
+		.handler = UVERBS_HANDLER(_method_id),                         \
+		.num_attrs = ARRAY_SIZE(UVERBS_METHOD_ATTRS(_method_id)),      \
+		.attrs = &UVERBS_METHOD_ATTRS(_method_id),                     \
+	}    
+
+
+...
+ib_uverbs_alloc_pd
+    uverbs_request
+    uobj_alloc(UVERBS_OBJECT_PD, attrs, &ib_dev) -> handle SIGTRAP nostop noprint ignore
+    rdma_zalloc_drv_obj(ib_dev, ib_pd)
+    pd->res.type = RDMA_RESTRACK_PD
+    ret = ib_dev->ops.alloc_pd(pd, &attrs->driver_udata) -> rxe_alloc_pd
+        rxe_add_to_pool
+            might_sleep_if -> _cond_resched
+                should_resched -> unlikely(raw_cpu_read_4(__preempt_count) == preempt_offset)
+                preempt_schedule_common
+                do
+                    preempt_latency_start
+                    __schedule(true)
+                    preempt_latency_stop(1)
+                    preempt_enable_no_resched_notrace()
+                rcu_all_qs
+            kref_get
+            ib_device_try_get
+            elem->pool = pool
+            kref_init
+    uobj->object = pd
+    rdma_restrack_uadd(&pd->res)
+    uverbs_response
+    uobj_alloc_commit
+
+...
+.create_qp = rxe_create_qp,
+rxe_create_qp
+    rxe_qp_from_init
+        rxe_qp_init_req
+            rxe_init_task(rxe, &qp->comp.task, qp, rxe_completer, "comp")
+            timer_setup(&qp->rnr_nak_timer, rnr_nak_timer, 0)
+            timer_setup(&qp->retrans_timer, retransmit_timer, 0) <- mod_timer(&qp->retrans_timer
+        rxe_qp_init_resp
+            rxe_init_task(rxe, &qp->resp.task, qp, rxe_responder, "resp");
+                check_resource
+                    if (pkt->mask & RXE_RWR_MASK)
+                        get_srq_wqe
+                            wqe = queue_head(q)
+                            memcpy(&qp->resp.srq_wqe, wqe, sizeof(qp->resp.srq_wqe))
+                            qp->resp.wqe = &qp->resp.srq_wqe.wqe
+                            advance_consumer(q)
+                            srq->ibsrq.event_handler(&ev, srq->ibsrq.srq_context)
+                        qp->resp.wqe = queue_head(qp->rq.queue);
+rxe_completer
+    case COMPST_GET_WQE
+        state = get_wqe(qp, pkt, &wqe)
+
+
+
+bool timerqueue_add
+    rb_link_node(&node->node, parent, p)
+
+
+
+virtqueue_add_split
+    static dma_addr_t vring_map_single
+
+
+(gdb) thread 2
+[Switching to thread 2 (Thread 1.2)]
+#0  vring_map_single (vq=0xffff88813a868a80, cpu_addr=0xffff888138762e00, size=432, direction=<optimized out>) at drivers/virtio/virtio_ring.c:342
+342     static dma_addr_t vring_map_single(const struct vring_virtqueue *vq,
+(gdb) bt
+#0  vring_map_single (vq=0xffff88813a868a80, cpu_addr=0xffff888138762e00, size=432, direction=<optimized out>) at drivers/virtio/virtio_ring.c:342
+#1  0xffffffff8174396e in virtqueue_add_split (gfp=<optimized out>, ctx=<optimized out>, data=<optimized out>, in_sgs=<optimized out>, out_sgs=<optimized out>, total_sg=<optimized out>, sgs=<optimized out>, _vq=<optimized out>) at drivers/virtio/virtio_ring.c:512
+#2  virtqueue_add (gfp=<optimized out>, ctx=<optimized out>, data=<optimized out>, in_sgs=<optimized out>, out_sgs=<optimized out>, total_sg=<optimized out>, sgs=<optimized out>, _vq=<optimized out>) at drivers/virtio/virtio_ring.c:1706
+#3  virtqueue_add_sgs (_vq=0xffff88813a868a80, sgs=<optimized out>, out_sgs=<optimized out>, in_sgs=947269120, data=<optimized out>, gfp=<optimized out>) at drivers/virtio/virtio_ring.c:1740
+#4  0xffffffffa0016d7b in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#5  0x0000000000000010 in fixed_percpu_data ()
+#6  0x0000000100000000 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#7  0xffff88813a868a80 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#8  0xffffc90001143a18 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#9  0x0000000000000286 in consumer_addr (q=<optimized out>) at drivers/infiniband/sw/rxe/rxe_resp.c:923
+#10 queue_head (q=<optimized out>) at drivers/infiniband/sw/rxe/rxe_queue.h:171
+#11 check_resource (pkt=<optimized out>, qp=<optimized out>) at drivers/infiniband/sw/rxe/rxe_resp.c:395
+#12 rxe_responder (arg=0x2 <fixed_percpu_data+2>) at drivers/infiniband/sw/rxe/rxe_resp.c:1264
+#13 0xffffffff815a2426 in __blk_mq_issue_directly (last=<optimized out>, cookie=<optimized out>, rq=<optimized out>, hctx=<optimized out>) at block/blk-mq.c:1809
+#14 __blk_mq_try_issue_directly (hctx=0xffff888035689000, rq=0xffff8880363363c0, cookie=0xffffc90001143a74, bypass_insert=true, last=<optimized out>) at block/blk-mq.c:1861
+#15 0xffffffff815a30eb in blk_mq_request_issue_directly (rq=0xffff8880363363c0, last=<optimized out>) at block/blk-mq.c:1897
+#16 0xffffffff815a31c6 in blk_mq_try_issue_list_directly (hctx=0xffff888035689000, list=0xffffc90001143b50) at ./include/linux/list.h:268
+#17 0xffffffff815a880e in blk_mq_sched_insert_requests (hctx=0xffff888035689000, ctx=0xffffe8ffffc47bc0, list=<optimized out>, run_queue_async=false) at block/blk-mq-sched.c:437
+#18 0xffffffff815a2ff2 in blk_mq_flush_plug_list (plug=<optimized out>, from_schedule=<optimized out>) at block/blk-mq.c:1772
+#19 0xffffffff815977d3 in blk_flush_plug_list (plug=0xffffc90001143c70, from_schedule=<optimized out>) at block/blk-core.c:1769
+#20 0xffffffff81597826 in blk_finish_plug (plug=<optimized out>) at block/blk-core.c:1786
+#21 blk_finish_plug (plug=<optimized out>) at block/blk-core.c:1782
+#22 0xffffffff8143cd58 in ext4_writepages (mapping=<optimized out>, wbc=<optimized out>) at fs/ext4/inode.c:2939
+#23 0xffffffff812973e3 in do_writepages (mapping=0xffff8881153170d8, wbc=0xffffc90001143dc0) at mm/page-writeback.c:2344
+#24 0xffffffff8128d0c5 in __filemap_fdatawrite_range (mapping=0xffff8881153170d8, start=<optimized out>, end=<optimized out>, sync_mode=<optimized out>) at mm/filemap.c:421
+#25 0xffffffff8128e574 in file_write_and_wait_range (file=0xffff888138ae7d00, lstart=0, lend=9223372036854775807) at mm/filemap.c:782
+#26 0xffffffff8142a023 in ext4_sync_file (file=0xffff888138ae7d00, start=<optimized out>, end=9223372036854775807, datasync=0) at fs/ext4/fsync.c:128
+#27 0xffffffff81398449 in vfs_fsync_range (file=0xffff888138ae7d00, start=0, end=<optimized out>, datasync=<optimized out>) at fs/sync.c:197
+#28 0xffffffff813984dd in vfs_fsync (datasync=<optimized out>, file=<optimized out>) at fs/sync.c:221
+#29 do_fsync (fd=<optimized out>, datasync=0) at fs/sync.c:221
+#30 0xffffffff81398524 in __do_sys_fsync (fd=<optimized out>) at fs/sync.c:229
+#31 __se_sys_fsync (fd=<optimized out>) at fs/sync.c:227
+#32 __x64_sys_fsync (regs=<optimized out>) at fs/sync.c:227
+#33 0xffffffff81005497 in do_syscall_64 (nr=<optimized out>, regs=0xffffc90001143f58) at arch/x86/entry/common.c:290
+#34 0xffffffff81e0008c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:175
+#35 0x0000000000000000 in ?? ()
+
+
+
+
+
+(gdb) bt
+#0  ib_uverbs_alloc_pd (attrs=0xffffc90004243c88) at drivers/infiniband/core/uverbs_cmd.c:406
+#1  0xffffffffa065c825 in ib_uverbs_handler_UVERBS_METHOD_INVOKE_WRITE (attrs=0xffffc90004243c88) at drivers/infiniband/core/uverbs_std_types_device.c:41
+#2  0xffffffffa0659a95 in ib_uverbs_run_method (num_attrs=<optimized out>, pbundle=<optimized out>) at drivers/infiniband/core/uverbs_ioctl.c:471
+#3  ib_uverbs_cmd_verbs (ufile=<optimized out>, hdr=<optimized out>, user_attrs=<optimized out>) at drivers/infiniband/core/uverbs_ioctl.c:612
+#4  0xffffffffa0659cc8 in ib_uverbs_ioctl (filp=<optimized out>, cmd=<optimized out>, arg=140737488346176) at drivers/infiniband/core/uverbs_ioctl.c:644
+#5  0xffffffff81371f87 in vfs_ioctl (arg=<optimized out>, cmd=<optimized out>, filp=<optimized out>) at fs/ioctl.c:47
+#6  file_ioctl (arg=<optimized out>, cmd=<optimized out>, filp=<optimized out>) at fs/ioctl.c:510
+#7  do_vfs_ioctl (filp=0xffff8880b6aa8600, fd=<optimized out>, cmd=<optimized out>, arg=140737488346176) at fs/ioctl.c:697
+#8  0xffffffff81372257 in ksys_ioctl (fd=3, cmd=3222805249, arg=140737488346176) at fs/ioctl.c:714
+#9  0xffffffff8137229a in __do_sys_ioctl (arg=<optimized out>, cmd=<optimized out>, fd=<optimized out>) at fs/ioctl.c:721
+#10 __se_sys_ioctl (arg=<optimized out>, cmd=<optimized out>, fd=<optimized out>) at fs/ioctl.c:719
+#11 __x64_sys_ioctl (regs=<optimized out>) at fs/ioctl.c:719
+#12 0xffffffff81005497 in do_syscall_64 (nr=<optimized out>, regs=0xffffc90004243f58) at arch/x86/entry/common.c:290
+#13 0xffffffff81e0008c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:175
+#14 0x0000000000000004 in fixed_percpu_data ()
+#15 0x0000555555567260 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#16 0x0000000000000004 in fixed_percpu_data ()
+#17 0x00007fffffffddcc in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#18 0x00007fffffffdc58 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#19 0x00007fffffffdc20 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
+#20 0x0000000000000246 in consumer_addr (q=<optimized out>) at drivers/infiniband/sw/rxe/rxe_resp.c:974
+#21 queue_head (q=<optimized out>) at drivers/infiniband/sw/rxe/rxe_queue.h:171
+#22 get_srq_wqe (qp=<optimized out>) at drivers/infiniband/sw/rxe/rxe_resp.c:328
+#23 check_resource (pkt=<optimized out>, qp=<optimized out>) at drivers/infiniband/sw/rxe/rxe_resp.c:393
+#24 rxe_responder (arg=0x0 <fixed_percpu_data>) at drivers/infiniband/sw/rxe/rxe_resp.c:1264
+
+
+
+
+
+
+
+
+rxe:
+commit: https://github.com/ssbandjl/linux/commit/8700e3e7c4857d28ebaa824509934556da0b3e76
+
+Soft RoCE 驱动程序 Soft RoCE (RXE) - 软件 RoCE 驱动程序 ib_rxe 实现 RDMA 传输并作为内核动词提供程序注册到 RDMA 核心设备。 它还实现了数据包IO层。 另一方面，ib_rxe 作为 udp 封装协议（在这种情况下为 RDMA）注册到 Linux netdev 堆栈，用于通过任何以太网设备发送和接收数据包。 这会在 UDP/以太网网络层上产生 RDMA 传输，形成 RoCEv2 兼容设备。 Soft RoCE 驱动程序的配置过程需要绑定到任何现有的以太网网络设备。 这是通过 /sys 接口完成的。 用户空间 Soft RoCE 库 (librxe) 为用户应用程序提供了与 Soft RoCE 设备一起运行的能力。 在用户空间中使用 rxe 动词需要包含 librxe 作为 libibverbs 的设备特定插件。 librxe是单独打包的
+
+Architecture:
+
+     +-----------------------------------------------------------+
+     |                          Application                      |
+     +-----------------------------------------------------------+
+                            +-----------------------------------+
+                            |             libibverbs            |
+User                        +-----------------------------------+
+                            +----------------+ +----------------+
+                            | librxe         | | HW RoCE lib    |
+                            +----------------+ +----------------+
++---------------------------------------------------------------+
+     +--------------+                           +------------+
+     | Sockets      |                           | RDMA ULP   |
+     +--------------+                           +------------+
+     +--------------+                  +---------------------+
+     | TCP/IP       |                  | ib_core             |
+     +--------------+                  +---------------------+
+                             +------------+ +----------------+
+Kernel                       | ib_rxe     | | HW RoCE driver |
+                             +------------+ +----------------+
+     +------------------------------------+
+     | NIC driver                         |
+     +------------------------------------+
+
+
+
+
+
+late_initcall(rxe_module_init); -> rxe_module_init -> rdma_rxe：确保rdma_rxe init在正确的时间发生，当CONFIG_RDMA_RXE=y且CONFIG_IPV6=y时出现问题。 这会导致 rdma_rxe 初始化在 IPv6 服务准备就绪之前发生。 该补丁将 rdma_rxe 的初始化延迟到 IPv6 服务准备就绪之后。 此修复基于 Logan Gunthorpe 在更旧的代码库上提出的修复
+    rxe_alloc_wq
+        rxe_wq = alloc_workqueue("rxe_wq", WQ_UNBOUND, WQ_MAX_ACTIVE)
+    rxe_net_init
+        rxe_net_ipv4_init
+            rxe_setup_udp_tunnel
+                udp_sock_create
+                    udp_sock_create4
+                        sock_create_kern
+                        kernel_bind
+                    or udp_sock_create6
+                tnl_cfg.encap_rcv = rxe_udp_encap_recv
+                    rxe_get_dev_from_net
+                    if (skb_linearize(skb))
+                    udph = udp_hdr(skb)
+                    pkt->paylen = be16_to_cpu(udph->len) - sizeof(*udph)
+                    skb_pull(skb, sizeof(struct udphdr))
+                    rxe_rcv(skb)
+                        rxe_chk_dgid
+                        pkt->opcode = bth_opcode(pkt)
+                        pkt->psn = bth_psn(pkt)
+                        pkt->mask |= rxe_opcode[pkt->opcode].mask -> struct rxe_opcode_info rxe_opcode[RXE_NUM_OPCODE]
+                        hdr_check
+                        rxe_icrc_check
+                            rxe_icrc_hdr
+                            rxe_crc32
+                                SHASH_DESC_ON_STACK
+                                crypto_shash_update
+                                shash_desc_ctx
+                                barrier_data
+                            icrc = ~icrc
+                        rxe_counter_inc
+                            atomic64_inc(&rxe->stats_counters[index])
+                        rxe_rcv_pkt(pkt, skb)
+                            rxe_resp_queue_pkt
+                            or rxe_comp_queue_pkt
+                                skb_queue_tail(&qp->resp_pkts, skb)
+                                rxe_sched_task(&qp->comp.task)
+                                or rxe_run_task(&qp->comp.task)
+                setup_udp_tunnel_sock
+        rxe_net_ipv6_init
+        register_netdevice_notifier(&rxe_net_notifier)
+    rdma_link_register(&rxe_link_ops) -> RDMA/core：添加 RDMA_NLDEV_CMD_NEWLINK/DELLINK 支持，添加对新 LINK 消息的支持以允许添加和删除 rdma 接口。 这最初将用于软 rdma 驱动程序，该驱动程序由管理员指定要使用的 netdev 设备动态实例化设备实例。 rdma_rxe 模块将是这些消息的第一个用户。 该设计是根据 RTNL_NEWLINK/DELLINK 建模的：如果 rdma 驱动程序提供链接添加/删除功能，则它们会向 rdma 内核注册。 每个驱动程序都注册一个唯一的“类型”字符串，用于调度来自用户空间的消息。 为“type”字符串定义了新的 RDMA_NLDEV_ATTR。 用户模式将在 NEWLINK 消息中传递 3 个属性：RDMA_NLDEV_ATTR_DEV_NAME 表示要创建的所需 rdma 设备名称，RDMA_NLDEV_ATTR_LINK_TYPE 表示要添加的链接“类型”，RDMA_NLDEV_ATTR_NDEV_NAME 表示用于此链接的 net_device 接口。 DELLINK 消息将包含要删除的设备的 RDMA_NLDEV_ATTR_DEV_INDEX
+        down_write(&link_ops_rwsem)
+        list_add(&ops->list, &link_ops)
+        up_write(&link_ops_rwsem)
+    pr_info("loaded\n")
+
+
+static struct rdma_link_ops rxe_link_ops = {
+	.type = "rxe",
+	.newlink = rxe_newlink,
+};
+rxe_newlink -> 添加对 RDMA_NLDEV_CMD_NEWLINK/DELLINK 消息的支持，允许动态添加新的 RXE 链接。 暂时弃用旧的模块选项
+    is_vlan_dev -> RDMA/rxe：防止在 vlan 接口之上创建 rxe，在 vlan 接口之上创建 rxe 设备将创建一个无功能的设备，该设备具有空的 gids 表，并且不能用于 rdma cm 通信。 这是由 enum_all_gids_of_dev_cb()/is_eth_port_of_netdev() 中的逻辑引起的，该逻辑仅考虑连接到已配置网络设备的“上层设备”的网络，导致 vlan 接口的 gid 集为空，并尝试通过此 rdma 连接 由于无法解析 gid，设备在 cm_init_av_for_response 中失败。 显然，实现此行为是为了适应为每个端口创建 RoCE 设备的 HW-RoCE 设备，因此 RXE 的行为必须与 HW-RoCE 设备相同，并且仅为每个真实设备创建 rxe 设备。 为了通过 vlan 接口进行通信，用户必须使用 vlan 地址的 gid 索引，而不是通过 vlan 创建 rxe
+    rxe_get_dev_from_net
+    rxe_net_add
+        ib_alloc_device
+        rxe_add
+            rxe_init -> RDMA/rxe：用xarray替换红黑树，当前rxe驱动程序使用红黑树向rxe对象池添加索引。 Linux xarrays 提供了一种更好的方法来实现索引的相同功能。 此补丁将池对象的红黑树替换为 xarray。 由于 xarray 已经有一个自旋锁，请使用它来代替池 rwlock。 确保 xarray(index) 和 kref(ref count) 中的所有更改均以原子方式发生
+                rxe_init_device_param
+                    rxe->attr.vendor_id			= RXE_VENDOR_ID
+                    addrconf_addr_eui48((unsigned char *)&rxe->attr.sys_image_guid -> RDMA/rxe：将 sys_image_guid 设置为与 HW IB 设备对齐，RXE 驱动程序不设置 sys_image_guid，并且用户空间应用程序看到零。 这会导致 pyverbs 测试失败并出现以下回溯，因为 IBTA 规范要求具有有效的 sys_image_guid。 回溯（最近一次调用最后一次）：文件“./tests/test_device.py”，第 51 行，在 test_query_device self.verify_device_attr(attr) 文件“./tests/test_device.py”，第 74 行，在 verify_device_attr 中断言 attr.sys_image_guid != 0 为了修复它，请将 sys_image_guid 设置为等于 node_guid
+                rxe_init_ports -> RDMA/rxe：删除 pkey 表，RoCE 规范要求 RoCE 设备仅支持默认 pkey。 然而，rxe 驱动程序维护一个 64 个实体的 pkey 表，并且仅使用第一个条目。 删除 pkey 表并使用默认 pkey 硬连接长度为 1 的表进行硬编码。 将 pkey_table 的所有检查替换为与 default_pkey 的比较
+                    rxe_init_port_param
+                        port->attr.state		= IB_PORT_DOWN
+                        ...
+                rxe_init_pools
+                    rxe_pool_init(rxe, &rxe->uc_pool, RXE_TYPE_UC)
+                        pool->rxe		= rxe
+                        pool->elem_size		= ALIGN(info->size, RXE_POOL_ALIGN)
+                        xa_init_flags(&pool->xa, XA_FLAGS_ALLOC)
+                rxe->mcg_tree = RB_ROOT
+            rxe_set_mtu
+                eth_mtu_int_to_enum
+                mtu = mtu ? min_t(enum ib_mtu, mtu, IB_MTU_4096) : IB_MTU_256
+            rxe_register_device(rxe, ibdev_name)
+                dev->node_type = RDMA_NODE_IB_CA
+                ib_set_device_ops(dev, &rxe_dev_ops)
+                ib_device_set_netdev(&rxe->ib_dev, rxe->ndev, 1)
+                    alloc_port_data
+                    add_ndev_hash
+                        hash_add_rcu(ndev_hash, &pdata->ndev_hash_link,
+                rxe_icrc_init
+                    crypto_alloc_shash
+                ib_register_device
+                
+
+rxe设备操作表
+static const struct ib_device_ops rxe_dev_ops = {
+	.owner = THIS_MODULE,
+	.driver_id = RDMA_DRIVER_RXE,
+	.uverbs_abi_ver = RXE_UVERBS_ABI_VERSION,
+
+	.alloc_hw_port_stats = rxe_ib_alloc_hw_port_stats,
+	.alloc_mr = rxe_alloc_mr,
+	.alloc_mw = rxe_alloc_mw,
+	.alloc_pd = rxe_alloc_pd,
+	.alloc_ucontext = rxe_alloc_ucontext,
+	.attach_mcast = rxe_attach_mcast,
+	.create_ah = rxe_create_ah,
+	.create_cq = rxe_create_cq,
+	.create_qp = rxe_create_qp,
+	.create_srq = rxe_create_srq,
+	.create_user_ah = rxe_create_ah,
+	.dealloc_driver = rxe_dealloc,
+	.dealloc_mw = rxe_dealloc_mw,
+	.dealloc_pd = rxe_dealloc_pd,
+	.dealloc_ucontext = rxe_dealloc_ucontext,
+	.dereg_mr = rxe_dereg_mr,
+	.destroy_ah = rxe_destroy_ah,
+	.destroy_cq = rxe_destroy_cq,
+	.destroy_qp = rxe_destroy_qp,
+	.destroy_srq = rxe_destroy_srq,
+	.detach_mcast = rxe_detach_mcast,
+	.device_group = &rxe_attr_group,
+	.enable_driver = rxe_enable_driver,
+	.get_dma_mr = rxe_get_dma_mr,
+	.get_hw_stats = rxe_ib_get_hw_stats,
+	.get_link_layer = rxe_get_link_layer,
+	.get_port_immutable = rxe_port_immutable,
+	.map_mr_sg = rxe_map_mr_sg,
+	.mmap = rxe_mmap,
+	.modify_ah = rxe_modify_ah,
+	.modify_device = rxe_modify_device,
+	.modify_port = rxe_modify_port,
+	.modify_qp = rxe_modify_qp,
+	.modify_srq = rxe_modify_srq,
+	.peek_cq = rxe_peek_cq,
+	.poll_cq = rxe_poll_cq,
+	.post_recv = rxe_post_recv,
+	.post_send = rxe_post_send,
+	.post_srq_recv = rxe_post_srq_recv,
+	.query_ah = rxe_query_ah,
+	.query_device = rxe_query_device,
+	.query_pkey = rxe_query_pkey,
+	.query_port = rxe_query_port,
+	.query_qp = rxe_query_qp,
+	.query_srq = rxe_query_srq,
+	.reg_user_mr = rxe_reg_user_mr,
+	.req_notify_cq = rxe_req_notify_cq,
+	.rereg_user_mr = rxe_rereg_user_mr,
+	.resize_cq = rxe_resize_cq,
+
+	INIT_RDMA_OBJ_SIZE(ib_ah, rxe_ah, ibah),
+	INIT_RDMA_OBJ_SIZE(ib_cq, rxe_cq, ibcq),
+	INIT_RDMA_OBJ_SIZE(ib_pd, rxe_pd, ibpd),
+	INIT_RDMA_OBJ_SIZE(ib_qp, rxe_qp, ibqp),
+	INIT_RDMA_OBJ_SIZE(ib_srq, rxe_srq, ibsrq),
+	INIT_RDMA_OBJ_SIZE(ib_ucontext, rxe_ucontext, ibuc),
+	INIT_RDMA_OBJ_SIZE(ib_mw, rxe_mw, ibmw),
+};
+
+
+check_resource
+    get_srq_wqe
+        queue_advance_consumer -> RDMA/rxe：向内核队列添加内存屏障，早期补丁添加内存屏障以保护用户空间到内核空间的通信。 先前显示用户空间队列偶尔会出现内存同步错误，这些错误通过添加 smp_load_acquire、smp_store_release 屏障来消除。 该补丁将其扩展到内核空间线程之间使用队列的情况。 此补丁还扩展了队列类型以包括内核 ULP 队列，这些队列在内核动词调用（如 poll_cq 和 post_send/recv）中访问队列的另一端
+            switch (type)
+            case QUEUE_TYPE_FROM_CLIENT
+            ...
+
+
+
+[RDMA_NLDEV_CMD_NEWLINK] = {
+    .doit = nldev_newlink,
+    .flags = RDMA_NL_ADMIN_PERM,
+},
+static int nldev_newlink
+    nlmsg_parse_deprecated
+    ops = link_ops_get(type)
+    ops->newlink(ibdev_name, ndev)
+
+
+ib端口状态及位宽等:
+enum ib_port_state {
+	IB_PORT_NOP		= 0,
+	IB_PORT_DOWN		= 1,
+	IB_PORT_INIT		= 2,
+	IB_PORT_ARMED		= 3,
+	IB_PORT_ACTIVE		= 4,
+	IB_PORT_ACTIVE_DEFER	= 5
+};
+
+enum ib_port_phys_state {
+	IB_PORT_PHYS_STATE_SLEEP = 1,
+	IB_PORT_PHYS_STATE_POLLING = 2,
+	IB_PORT_PHYS_STATE_DISABLED = 3,
+	IB_PORT_PHYS_STATE_PORT_CONFIGURATION_TRAINING = 4,
+	IB_PORT_PHYS_STATE_LINK_UP = 5,
+	IB_PORT_PHYS_STATE_LINK_ERROR_RECOVERY = 6,
+	IB_PORT_PHYS_STATE_PHY_TEST = 7,
+};
+
+enum ib_port_width {
+	IB_WIDTH_1X	= 1,
+	IB_WIDTH_2X	= 16,
+	IB_WIDTH_4X	= 2,
+	IB_WIDTH_8X	= 4,
+	IB_WIDTH_12X	= 8
+};
+
+
+

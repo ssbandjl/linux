@@ -10,3 +10,5 @@ qemu-system-x86_64 -m 4096 -enable-kvm -cpu host -smp cores=8,sockets=1 -drive f
 
 
 
+qemu-system-x86_64 -M pc -kernel ./linux-4.9.304/arch/x86/boot/bzImage -drive file=rootfs.ext2,format=raw -append "root=/dev/sda rootfstype=ext2 console=tty1 console=ttyS0 nokaslr" -serial stdio -net nic -net user -S -s
+
