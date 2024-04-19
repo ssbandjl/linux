@@ -1,0 +1,45 @@
+ib_cache_setup_one
+    static struct ib_gid_table *alloc_gid_table(int sz)
+    void rdma_roce_rescan_device(struct ib_device *ib_dev) -> {net, IB}/mlx5：管理多端口 RoCE 的端口关联，调用 mlx5_ib_add 时确定要添加的 mlx5 核心设备是否能够进行双端口 RoCE 操作。 如果是，请使用 num_vhca_ports 和affiliate_nic_vport_criteria 功能确定它是主设备还是从设备。 如果该设备是从属设备，请尝试找到与其关联的主设备。 可以关联的设备将共享系统映像 GUID。 如果没有找到，请将其放入非关联端口列表中。 如果找到主设备，则通过在 NIC vport 上下文中配置端口从属关系将端口绑定到它。 同样，当调用 mlx5_ib_remove 时确定端口类型。 如果它是从端口，则将其与主设备取消关联，否则只需将其从非关联端口列表中删除即可。 即使第二个端口不可用于关联，IB 设备也会注册为多端口设备。 当第二个端口稍后附属时，必须刷新 GID 缓存才能获取缓存中第二个端口的默认 GID。 导出roce_rescan_device以提供在绑定新端口后刷新缓存的机制。 在多端口配置中，所有 IB 对象（QP、MR、PD 等）相关命令应流过主站 mlx5_core_dev，其他命令必须发送到从端口 mlx5_core_mdev，提供一个接口来获取非 IB 对象命令的正确 mdev
+        enum_all_gids_of_dev_cb
+
+
+
+ib_device_get_netdev -> RDMA/device：添加 ib_device_set_netdev() 作为 get_netdev 的替代方案，关联的 netdev 实际上不应该非常动态，因此对于大多数驱动程序来说，没有理由进行这样的回调。 提供一个 API 来通知核心代码有关网络开发从属关系，并使用核心维护的数据结构。 这使得核心代码能够更加了解 ndev 关系，从而允许一些基于此的新 API。 这也使用了某种意义上的锁定，许多驱动程序都有令人困惑的 RCU 锁定，或者缺少不正确的锁定
+
+
+
+ib_uverbs_handler_UVERBS_METHOD_QUERY_PORT
+ib_uverbs_query_port
+    copy_port_attr_to_resp
+        resp->gid_tbl_len = attr->gid_tbl_len;
+
+
+netif_is_bond_slave -> 
+netif_is_bond_master
+IB/core：添加绑定主网络设备的默认 GID，目前存在以下问题： 1. 如果添加绑定网络设备，则下级（从属）网络设备的默认 GID。 相反，默认 GID 应该是绑定主网络设备。 2. 因此，当发生故障转移事件时，FAILOVER 事件处理程序会尝试删除上位设备的 GID，并尝试添加下位设备的默认 GID。 这是不正确的行为。 要获得简单且正确的代码： (a) 将默认 GID 添加从 add_netdev_ips() 中分离出来。 如果删除 RoCE 默认 GID，将来可以更轻松地删除。 (b) 使用正确的过滤器和回调函数添加绑定主设备的默认 GID。 (c) 删除未使用的函数 enum_netdev_default_gids()
+
+
+static inline bool is_vlan_dev(const struct net_device *dev)
+{
+        return dev->priv_flags & IFF_802_1Q_VLAN;
+}
+
+
+ib_cache_gid_set_default_gid
+    make_default_gid
+        gid->global.subnet_prefix = cpu_to_be64(0xfe80000000000000LL)
+
+IB/核心：重构RoCE的GID修改代码，代码被重构为RoCE准备单独的函数，可以执行与引用计数相关的更复杂的操作，同时仍然保持代码的可读性。 这包括 (a) 简化为不执行 IB 链路层的网络设备检查和修改。 (b) 不要添加具有 NULL 网络设备的 RoCE GID 条目； 相反，返回一个错误。 (c) 如果 GID 添加在提供者级别 add_gid() 失败，则不要在缓存中添加该条目并保持该条目标记为 INVALID。 (d) 简化并重用 ib_cache_gid_add()/del() 例程，以便它们甚至可以用于修改默认 GID。 这避免了修改默认 GID 时的一些代码重复。 (e) find_gid() 例程引用数据条目标志来将 GID 限定为有效或无效 GID，而不是依赖于 GID 内容的属性和零。 (f) gid_table_reserve_default() 在设置 GID 表时一开始就设置 GID 默认属性。 无需在 write_gid()、add_gid()、del_gid() 等低级函数中使用 default_gid 标志，因为它们在 GID 表更新期间永远不需要更新 GID 条目的 DEFAULT 属性。 作为此重构的结果，保留的 GID 0:0:0:0:0:0:0:0 不再可搜索，如下所述。 根据 IB 规范版本 1.3 第 4.1.1 节第 (6) 点，单播 GID 条目 0:0:0:0:0:0:0:0 是保留 GID，其片段如下。 “单播 GID 地址 0:0:0:0:0:0:0:0 是保留的 - 称为保留 GID。它不得分配给任何终端端口。它不得用作目标地址或 全局路由标头（GRH）。” GID 表缓存现在仅存储有效的 GID 条目。 在此补丁之前，可以使用 ib_find_cached_gid_by_port() 和其他类似的查找例程在 GID 表中搜索保留 GID 0:0:0:0:0:0:0:0。 零 GID 不再可搜索，因为它不应出现在 GRH 或路径记录条目中，如 IB 规范版本 1.3 第 4.1.1 节第 (6) 点、第 12.7.10 节和第 12.7.20 节中所述。 ib_cache_update() 被简化为检查链路层一次，对所有链路层使用统一的锁定方案，删除临时 gid 表分配/释放逻辑。 此外，(a) 扩展 ib_gid_attr 以存储端口和索引，以便 GID 查询例程可以从属性结构中获取端口和索引信息。 (b) 扩展 ib_gid_attr 来存储设备，以便在将来的代码中，当完成 GID 引用计数时，设备用于返回到 GID 表条目
+
+
+__ib_cache_gid_add
+IB/core：引入GID条目引用计数，为了能够公开指向GID表中ib_gid_attrs的指针，我们需要使其指针的值无法更改。 因此，每个 GID 表条目都会获得一块唯一的 kref'd 内存，该内存仅在初始化期间写入，并在其生命周期内保持不变。 这最终将允许返回 ib_gid_attrs 结构体，而无需从许多查询 API 进行复制，但它也提供了一种跟踪硬件表索引的所有用户何时离开的方法。 对于 roce，我们不再允许将正在使用的硬件表索引重新用于新的不同条目。 当需要删除 GID 表条目时，它将在查找 API 中隐藏，但仍保留为有效的硬件索引，并且所有 ib_gid_attr 点仍然有效。 直到所有用户都放置了 kref 后，硬件索引才会被释放。 后续补丁将广泛使用 kref'd 结构替换 sgid_index 整数的使用。 最终，这将防止出现安全问题，即操作系统更改 HW GID 表条目的属性，而活动用户对象仍在使用该条目
+
+
+add_gid
+
+
+mlx5r_add_gid_macsec_operations
+RDMA/mlx5：实现 MACsec gid 添加和删除，处理 MACsec IP 歧义问题，因为当具有相同 IP 地址时，mlx5 硬件无法支持对 MACsec 和物理 gid 进行编程，因为它不知道该引导谁 交通。 因此，在这种情况下，我们从硬件 gid 表中删除物理 gid，这将导致通过它发送的所有流量失败，并且我们只能通过 MACsec gid 发送流量
+

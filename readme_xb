@@ -2649,42 +2649,7 @@ ioctl -> ib_uverbs_modify_qp -> return modify_qp(attrs, &cmd)
     if (cmd->base.attr_mask & IB_QP_RQ_PSN)
     ...
 
-ibv_modify_qp -> IB_USER_VERBS_EX_CMD_MODIFY_QP -> ib_uverbs_ex_modify_qp
-    modify_qp
-        uobj_get_obj_read UVERBS_OBJECT_QP
-        校验参数
-        ...
-        ib_modify_qp_with_udata
-            _ib_modify_qp -> IB/core：将 DMAC 解析限制为用户空间 QP，当前 ah_attr 由 ib_cm 层针对基于 rdma_cm 的应用程序进行初始化。 对于 RoCE 传输，ah_attr.roce.dmac 已由 ib_cm、rdma_cm 从 wc、路径记录、路由解析、显式路径记录设置（取决于主动方或被动方 QP）初始化。 因此避免为内核消费者的 QP 解析 DMAC
-                attr_mask & IB_QP_AV -> IBV_QP_AV，主要用来指示内核做地址解析，对于RoCE，则进行L3到MAC地址的转换
-                rdma_fill_sgid_attr
-                    rdma_check_ah_attr
-                    rdma_ah_retrieve_grh
-                    rdma_get_gid_attr
-                        rdma_gid_table
-                        get_gid_entry
-                ib_resolve_eth_dmac -> 调用ib_resolve_eth_dmac解析remote gid对应的MAC地址
-                    ...
-                    rdma_resolve_ip resolve_cb
-                        complete -> IB/core：verbs/cm 结构中的以太网 L2 属性 ，此补丁添加了对 verbs/cm/cma 结构中的以太网 L2 属性的支持。 在处理 L2 以太网时，我们应该以与使用 IB L2（和 L4 PKEY）属性类似的方式使用 smac、dmac、vlan ID 和优先级。 因此，这些属性被添加到以下结构中： * ib_ah_attr - 添加了 dmac * ib_qp_attr - 添加了 smac 和 vlan_id，（sl 保留 vlan 优先级） * ib_wc - 添加了 smac、vlan_id * ib_sa_path_rec - 添加了 smac、dmac、vlan_id * cm_av - 添加了 smac 和 vlan_id 对于路径记录结构，在将其打包为有线格式时特别注意避免新字段，因此我们不会破坏 IB CM 和 SA 有线协议。 在主动侧，CM 被填充。 其内部结构来自 ULP 提供的路径。 我们添加了 ETH L2 属性并将它们放入 CM 地址句柄（struct cm_av）中。 在被动侧，CM 从与 REQ 消息关联的 WC 中填充其内部结构。 我们添加了从 WC 获取 ETH L2 属性的内容。 当硬件驱动程序在 WC 中提供所需的 ETH L2 属性时，它们会设置 IB_WC_WITH_SMAC 和 IB_WC_WITH_VLAN 标志。 IB 核心代码检查这些标志是否存在，如果没有，则从 ib_init_ah_from_wc() 辅助函数进行地址解析。 ib_modify_qp_is_ok 也被更新以考虑链路层。 有些参数对于以太网链路层是必需的，而对于IB来说则无关。 修改供应商驱动程序以支持新的函数签名
-                rdma_lag_get_ah_roce_slave
-                    rdma_read_gid_attr_ndev_rcu
-                    rdma_get_xmit_slave_udp
-                        rdma_build_skb
-                        netdev_get_xmit_slave RDMA_LAG_FLAGS_HASH_ALL_SLAVES
-                rdma_counter_bind_qp_auto -> RDMA/计数器：添加“自动”配置模式支持，在自动模式下，属于一个类别的所有 QP 都会自动绑定到单个计数器集。 目前仅支持“qp 类型”。 在此模式下，qp 计数器在 RST2INIT 修改中设置，当 qp 被销毁时，计数器将解除绑定
-                    ... -> ref rdma
-                ib_security_modify_qp -> IB/核心：在 QP 上强制执行 PKey 安全性，添加新的 LSM 挂钩以分配和释放安全上下文并检查访问 PKey 的权限。 创建和销毁 QP 时分配和释放安全上下文。 此上下文用于控制对 PKey 的访问。 当请求修改 QP 来更改端口、PKey 索引或备用路径时，请检查 QP 是否具有对该端口子网前缀上的 PKey 表索引中的 PKey 的权限。 如果 QP 是共享的，请确保 QP 的所有句柄也具有访问权限。 存储 QP 正在使用的端口和 PKey 索引。 重置到初始化转换后，用户可以独立修改端口、PKey 索引和备用路径。 因此，端口和 PKey 设置更改可以是先前设置和新设置的合并。 为了在 PKey 表或子网前缀更改时维持访问控制，请保留每个端口上使用每个 PKey 索引的所有 QP 的列表。 如果发生更改，则使用该设备和端口的所有 QP 都必须强制执行新缓存设置的访问权限。 这些更改将事务添加到 QP 修改过程中。 如果修改失败，则必须保持与旧端口和 PKey 索引的关联；如果修改成功，则必须将其删除。 必须在修改之前建立与新端口和 PKey 索引的关联，如果修改失败则将其删除。 1. 当 QP 被修改为特定端口时，PKey 索引或备用路径将该 QP 插入到适当的列表中。 2. 检查访问新设置的权限。 3. 如果步骤 2 授予访问权限，则尝试修改 QP。 4a. 如果步骤 2 和 3 成功，则删除任何先前的关联。 4b. 如果以太失败，请删除新的设置关联。 如果 PKey 表或子网前缀发生更改，则遍历 QP 列表并检查它们是否具有权限。 如果没有，则将 QP 发送到错误状态并引发致命错误事件。 如果它是共享 QP，请确保共享 real_qp 的所有 QP 也具有权限。 如果拥有安全结构的 QP 被拒绝访问，则安全结构将被标记为此类，并且 QP 将被添加到 error_list 中。 一旦将 QP 移至错误完成，安全结构标记就会被清除。 正确维护列表会将 QP 销毁转变为事务。 设备的硬件驱动程序释放 ib_qp 结构，因此当销毁正在进行时，ib_qp_security 结构中的 ib_qp 指针未定义。 当销毁过程开始时，ib_qp_security 结构被标记为正在销毁。 这可以防止对 QP 指针采取任何操作。 QP 成功销毁后，它仍然可以列在 error_list 上，等待该流处理它，然后再清理结构。 如果销毁失败，则 QP 端口和 PKey 设置将重新插入到适当的列表中，销毁标志将被清除，并强制执行访问控制，以防在销毁流程期间发生任何缓存更改。 为了保持安全更改隔离，使用新文件来保存与安全相关的功能
-                    port_pkey_list_insert -> 在检查权限之前，将此 QP 添加到新端口和 pkey 设置的列表中，以防发生并发缓存更新。 遍历列表进行缓存更改不会获取安全互斥体，除非将 QP 发送到错误
-                    check_qp_port_pkey_settings
-                        get_pkey_and_subnet_prefix
-                            ib_get_cached_pkey
-                            ib_get_cached_subnet_prefix
-                        enforce_qp_pkey_security
-                    modify_qp -> .modify_qp = irdma_modify_qp_roce
-                rdma_lag_put_ah_roce_slave
-        release_qp:
-        rdma_lookup_put_uobject
+
 
 irdma_modify_qp
 irdma_modify_qp_roce
@@ -6354,8 +6319,7 @@ drivers/infiniband/core/uverbs_main.c
                 client->add(device) -> ib_uverbs_add_one
 
 
-
-probe, add(dev)
+drivers/infiniband/core/device.c -> ib_register_device - 向 IB 核心注册 IB 设备 @device：要注册的设备 @name：唯一的字符串设备名称。 这可能包括“%”，这将导致将唯一索引添加到传递的设备名称中。 @dma_device：指向支持 DMA 的设备的指针。 如果%NULL，则将使用IB 设备。 在这种情况下，调用者应该为 DMA 完全设置 ibdev。 这通常意味着使用 dma_virt_ops。 低级驱动程序使用 ib_register_device() 将其设备注册到 IB 内核。 所有注册的客户端都将收到添加的每个设备的回调。 @device 必须使用 ib_alloc_device() 进行分配。 如果驱动程序使用 ops.dealloc_driver 并异步调用任何 ib_unregister_device() ，则一旦该函数返回，设备指针可能会被释放
 int ib_register_device(struct ib_device *device, const char *name, struct device *dma_device) -> roce和IB注册的flow: https://blog.csdn.net/tiantao2012/article/details/77746141
     assign_name(device, name) -> DMA/devices：使用 xarray 来存储 client_data，现在我们为每个客户端都有了一个小 ID，我们可以使用 xarray 而不是线性搜索链表来获取客户端数据。 这将提供更快且可扩展的客户端数据查找，并使我们能够修改锁定方案。 由于xarray可以使用标记来存储'going_down'，因此完全消除了struct ib_client_data并将client_data值直接存储在xarray中。 然而，这确实需要一个特殊的迭代器，因为我们仍然必须迭代任何 NULL client_data 值。 还消除了 client_data_lock 以支持内部 xarray 锁定
         dev_set_name
@@ -6363,7 +6327,7 @@ int ib_register_device(struct ib_device *device, const char *name, struct device
         __ib_device_get_by_name <- static DEFINE_XARRAY_FLAGS(devices, XA_FLAGS_ALLOC);
             xa_for_each (&devices, index, device)
     setup_device(device) -> ib_register_device() 执行多个分配和初始化步骤。 将其拆分为更小、更易读的函数，以便于审查和维护 -> setup_device() 分配内存并设置需要调用设备操作的数据，这是在 ib_alloc_device 期间未完成这些操作的唯一原因。 它由 ib_dealloc_device() 撤消
-        ib_device_check_mandatory
+        ib_device_check_mandatory -> must option
             IB_MANDATORY_FUNC
             mandatory_table
             IB_MANDATORY_FUNC(query_device),
@@ -6375,27 +6339,89 @@ int ib_register_device(struct ib_device *device, const char *name, struct device
                     INIT_LIST_HEAD(&pdata->pkey_list)
                     INIT_HLIST_NODE(&pdata->ndev_hash_link)
             rdma_for_each_port
-                get_port_immutable -> .get_port_immutable = irdma_roce_port_immutable
-                    ib_query_port
+                get_port_immutable -> .get_port_immutable = irdma_roce_port_immutable -> 获取端口信息并固化
+                    ib_query_port -> 校验端口有效性, 是否iwarp -> __ib_query_port
+                        return device->ops.query_port(device, port_num, port_attr) -> or xtrdma_qeury_port
+                            static int irdma_query_port(struct ib_device *ibdev, u32 port,
+                                props->max_mtu = IB_MTU_4096
+                                props->lid = 1;
+                                props->lmc = 0;
+                                props->sm_lid = 0;
+                                props->sm_sl = 0;
+                                props->state = IB_PORT_ACTIVE;
+                                ib_get_eth_speed(ibdev, port, &props->active_speed,
+                                    rdma_port_get_link_layer -> IB_LINK_LAYER_ETHERNET
+                                    ib_device_get_netdev -> RDMA/device：添加 ib_device_set_netdev() 作为 get_netdev 的替代方案，关联的 netdev 实际上不应该非常动态，因此对于大多数驱动程序来说，没有理由进行这样的回调。 提供一个 API 来通知核心代码有关网络开发从属关系，并使用核心维护的数据结构。 这使得核心代码能够更加了解 ndev 关系，从而允许一些基于此的新 API。 这也使用了某种意义上的锁定，许多驱动程序都有令人困惑的 RCU 锁定，或者缺少不正确的锁定
+                                        pdata = &ib_dev->port_data[port]
+                                        ib_dev->ops.get_netdev(ib_dev, port) -> mlx5_ib_get_netdev -> IB/mlx5：支持 IB 设备的回调以获取其 netdev，仅适用于 Eth 端口：在 mlx5_ib_device 中维护网络设备指针，如果网络设备和 IB 设备具有相同的 PCI 父设备，则在 NETDEV_REGISTER 和 NETDEV_UNREGISTER 事件时更新它。 实现 get_netdev 回调以返回该网络设备
+                                            mdev = mlx5_ib_get_native_port_mdev(ibdev, port_num, NULL)
+                                                mlx5_ib_port_link_layer
+                                                mlx5_core_mp_enabled
+                                            ndev = mlx5_lag_get_roce_netdev(mdev) -> net/mlx5：获取 RoCE netdev，当 LAG 处于活动状态时，IB 驱动程序使用它来确定 IB 绑定设备的 netdev。 如果模式不是主动备份，则返回 PF0 的 netdev；如果模式是主动备份，则返回主动从机的 PF netdev
+                                                ldev = mlx5_lag_dev(dev) -> net/mlx5：更改lag的所有权模型，Lag用于将同一HCA的两个PCI功能组合成单个逻辑单元。 这是核心功能，因此应由核心驱动程序管理。 目前情况并非如此。 当我们将滞后软件结构存储在较低设备内时，其生命周期（创建/销毁）由 mlx5e 部分决定。 更改所有权模型，使延迟与较低级别驱动程序的生命周期相关，而不是与 mlx5e 部分相关
+                                                ldev && __mlx5_lag_is_roce(ldev)
+                                            mlx5_ib_put_native_port_mdev(ibdev, port_num)
+                                                mlx5_core_mp_enabled
+                                                mpi = ibdev->port[port_num - 1].mp.mpi
+                                        rcu_dereference_protected -> rcu_dereference_protected() - 当更新被阻止时获取 RCU 指针 @p：在解除引用之前要读取的指针 @c：发生解除引用的条件 返回指定 RCU 保护指针的值，但省略 READ_ONCE() 。 这在更新端锁阻止指针值更改的情况下很有用。 请注意，此原语不会阻止编译器重复此引用或将其与其他引用组合，因此不应在没有适当锁保护的情况下使用它。 该功能仅供更新端使用。 仅受 rcu_read_lock() 保护时使用此函数将导致罕见但非常难看的失败
+                                            __rcu_dereference_protected
+                                        如果我们开始通过防止传播取消注册的 netdev 来加快取消注册的速度
+                                    __ethtool_get_link_ksettings -> net: ethtool: 添加新的 ETHTOOL_xLINKSETTINGS API，此补丁定义了新的 ETHTOOL_GLINKSETTINGS/SLINKSETTINGS API，由新的 get_link_ksettings/set_link_ksettings 回调处理。 此 API 提供对大多数旧版 ethtool_cmd 字段的支持，添加对更大链接模式掩码（最多 4064 位，可变长度）的支持，并删除 ethtool_cmd 已弃用的字段（transceiver/maxrxpkt/maxtxpkt）。 此 API 弃用了旧版 ETHTOOL_GSET/SSET API，并提供以下向后兼容性属性： - 带有旧版驱动程序的旧版 ethtool：没有变化，仍然使用 get_settings/set_settings 回调。 - 具有新 get/set_link_ksettings 驱动程序的旧版 ethtool：使用新的驱动程序回调，数据在内部转换为旧版 ethtool_cmd。 ETHTOOL_GSET 将仅返回每个链接模式掩码的第一个 32b。 如果用户尝试将 ethtool_cmd 弃用字段设置为非 0（收发器/maxrxpkt/maxtxpkt），ETHTOOL_SSET 将失败。 如果驱动程序设置较高位，则会记录内核警告。 - 未来的 ethtool 与遗留驱动程序：没有变化，仍然使用 get_settings/set_settings 回调，内部转换为新的数据结构。 不推荐使用的字段（transceiver/maxrxpkt/maxtxpkt）将被忽略，并在用户空间中被视为 0。 请注意，“未来”的 ethtool 工具将不允许更改这些已弃用的字段。 - 未来的 ethtool 具有新的驱动程序：直接调用新的回调。 “未来”ethtool 的含义是： - 查询：首先尝试 ETHTOOL_GLINKSETTINGS，如果失败则恢复到 ETHTOOL_GSET - 设置：首先查询并记住 ETHTOOL_GLINKSETTINGS 或 ETHTOOL_GSET 中哪一个成功了 + 如果 ETHTOOL_GLINKSETTINGS 成功，则使用 ETHTOOL_SLINKSETTINGS 更改配置。 失败是最终的（不要尝试 ETHTOOL_SSET）。 + 否则 ETHTOOL_GSET 成功，使用 ETHTOOL_SSET 更改配置。 失败是最终的（不要尝试 ETHTOOL_SLINKSETTINGS）。 通过新 API 的交互用户/内核首先需要进行一次小的 ETHTOOL_GLINKSETTINGS 握手，以就链接模式位图的长度达成一致。 如果内核不同意用户的要求，它将返回用户期望的位图长度作为负长度（并且 cmd 字段为 0）。 当内核和用户同意时，内核返回所有字段中的有效信息（即链接模式长度> 0且cmd为ETHTOOL_GLINKSETTINGS）。 跨越用户/内核边界的数据结构与 32/64 位无关。 在内部转换为合法的内核位图。 当第一个“link_settings”驱动程序开始出现时，内部 __ethtool_get_settings 内核帮助程序将逐渐被 __ethtool_get_link_ksettings 取代。 所以这个补丁并没有改变它，在需要改变之前它就会被删除
+                                        dev->ethtool_ops->get_link_ksettings(dev, link_ksettings)
+                                            cmd->base.duplex = DUPLEX_FULL;
+                                    ib_get_width_and_speed -> 获取/计算RDMA网卡位宽和速度 -> RDMA/core：从netdev获取IB宽度和速度，以前无法查询网卡的通道数(lanes )，因此相同的netdev_speed会得到固定的位宽和速度。 随着网卡规格越来越多样化，这种固定模式已经不再适用，因此需要一种方法来根据通道数获取正确的宽度和速度。 该补丁从 net_device 检索 netdev 通道和速度，并将其转换为 IB 位宽和速度
+                                props->gid_tbl_len = 32;
+                                props->pkey_tbl_len = IRDMA_PKEY_TBL_SZ -> 1
+                                props->max_msg_sz = iwdev->rf->sc_dev.hw_attrs.max_hw_outbound_msg_size
+                            ib_get_cached_subnet_prefix -> IB/core：通过缓存读取ib_query_port中的subnet_prefix。 ib_query_port() 调用 device->ops.query_port() 来获取端口属性。 查询方法是特定于设备驱动程序的。 相同的函数调用device->ops.query_gid()来获取GID并提取subnet_prefix (gid_prefix)。 GID 和subnet_prefix 存储在缓存中。 但如果设备是 Infiniband 设备，则不会从缓存中读取它们。 以下更改利用了缓存的subnet_prefix。 RDBMS 测试表明，此更改使性能有了显着提高
+                                *sn_pfx = device->port_data[port_num].cache.subnet_prefix;
                     immutable->max_mad_size = IB_MGMT_MAD_SIZE
-                verify_immutable
+                verify_immutable -> 校验固化的端口数据
                     rdma_cap_ib_mad -> rdma_cap_ib_mad - 检查设备的端口是否支持 Infiniband 管理数据报。 @device：要检查的设备 @port_num：要检查的端口号 管理数据报 (MAD) 是 InfiniBand 规范的必需部分，并且受所有 InfiniBand 设备支持。 OPA 接口还支持稍微扩展的版本。 返回：如果端口支持发送/接收MAD数据包，则返回true
                         device->port_data[port_num].immutable.core_cap_flags & RDMA_CORE_CAP_IB_MAD
-                    rdma_max_mad_size -> rdma_max_mad_size - 返回此 RDMA 端口所需的最大 MAD 大小。 @device：设备 @port_num：端口号 该 MAD 大小包括 MAD 标头和 MAD 负载。 不包含其他标头。 返回端口所需的最大 MAD 大小。 如果端口不支持 MAD，则返回 0
-        device->ops.query_device(device, &device->attrs, &uhw)
-    ib_cache_setup_one(device) -> IB/核心：添加 RoCE GID 表管理，RoCE GID 基于与 RDMA (RoCE) 设备端口相关的以太网网络设备上配置的 IP 地址。 目前，每个支持 RoCE（ocrdma、mlx4）的低级驱动程序都管理自己的 RoCE 端口 GID 表。 由于本质上没有任何特定于供应商的内容，因此我们对其进行概括，并增强 RDMA 核心 GID 缓存来完成这项工作。 为了填充 GID 表，我们监听事件： (a) netdev up/down/change_addr 事件 - 如果 netdev 构建在我们的 RoCE 设备上，我们需要添加/删除其 IP。 这涉及添加与此 ndev 相关的所有 GID、添加默认 GID 等。 (b) inet 事件 - 将新 GID（根据 IP 地址）添加到表中。 为了对端口 RoCE GID 表进行编程，提供商必须实现 add_gid 和 del_gid 回调。 RoCE GID 管理要求我们在 GID 旁边声明关联的 net_device。 为了管理 GID 表，此信息是必需的。 例如，当删除 net_device 时，其关联的 GID 也需要删除。 RoCE 要求根据相关网络设备的 IPv6 本地链路为每个端口生成默认 GID。 与基于常规 IPv6 链路本地的 GID（因为我们为每个 IP 地址生成 GID）相反，当网络设备关闭时，默认 GID 也可用（为了支持环回）。 锁定的完成方式如下：该补丁修改了 GID 表代码，适用于实现 add_gid/del_gid 回调的新 RoCE 驱动程序以及未实现 add_gid/del_gid 回调的当前 RoCE 和 IB 驱动程序。 更新表的流程不同，因此锁定要求也不同。 更新 RoCE GID 表时，通过 mutex_lock(&table->lock) 实现针对多个写入者的保护。 由于写入表需要我们在表中查找一个条目（可能是空闲条目）然后修改它，因此该互斥锁保护 find_gid 和 write_gid 确保操作的原子性。 GID 缓存中的每个条目均受 rwlock 保护。 在 RoCE 中，写入（通常来自 netdev 通知程序的结果）涉及调用供应商的 add_gid 和 del_gid 回调，这些回调可能会休眠。 因此，为每个条目添加无效标志。 RoCE 的更新是通过工作队列完成的，因此允许休眠。 在IB中，更新是在write_lock_irq(&device->cache.lock)中完成的，因此write_gid不允许休眠并且add_gid/del_gid不会被调用。 当将网络设备传入/传出 GID 缓存时，该设备始终被传递为保持 (dev_hold)。 该代码使用单个工作项来更新所有 RDMA 设备，遵循 netdev 或 inet 通知程序。 该补丁将缓存从客户端（这是不正确的，因为缓存是 IB 基础设施的一部分）转变为在设备注册/删除时显式初始化/释放
+                    rdma_max_mad_size -> 返回此 RDMA 端口所需的最大 MAD 大小。 @device：设备 @port_num：端口号 该 MAD 大小包括 MAD 标头和 MAD 负载。 不包含其他标头。 返回端口所需的最大 MAD 大小。 如果端口不支持 MAD，则返回 0
+                         device->port_data[port_num].immutable.max_mad_size
+        device->ops.query_device(device, &device->attrs, &uhw) -> irdma_query_device
+    ib_cache_setup_one(device) -> 设置IB(GID)缓存 -> IB/核心：添加 RoCE GID 表管理，RoCE GID 基于与 RDMA (RoCE) 设备端口相关的以太网网络设备上配置的 IP 地址。 目前，每个支持 RoCE（ocrdma、mlx4）的低级驱动程序都管理自己的 RoCE 端口 GID 表。 由于本质上没有任何特定于供应商的内容，因此我们对其进行概括，并增强 RDMA 核心 GID 缓存来完成这项工作。 为了填充 GID 表，我们监听事件： (a) netdev up/down/change_addr 事件 - 如果 netdev 构建在我们的 RoCE 设备上，我们需要添加/删除其 IP。 这涉及添加与此 ndev 相关的所有 GID、添加默认 GID 等。 (b) inet 事件 - 将新 GID（根据 IP 地址）添加到表中。 为了对端口 RoCE GID 表进行编程，提供商必须实现 add_gid 和 del_gid 回调。 RoCE GID 管理要求我们在 GID 旁边声明关联的 net_device。 为了管理 GID 表，此信息是必需的。 例如，当删除 net_device 时，其关联的 GID 也需要删除。 RoCE 要求根据相关网络设备的 IPv6 本地链路为每个端口生成默认 GID。 与基于常规 IPv6 链路本地的 GID（因为我们为每个 IP 地址生成 GID）相反，当网络设备关闭时，默认 GID 也可用（为了支持环回）。 锁定的完成方式如下：该补丁修改了 GID 表代码，适用于实现 add_gid/del_gid 回调的新 RoCE 驱动程序以及未实现 add_gid/del_gid 回调的当前 RoCE 和 IB 驱动程序。 更新表的流程不同，因此锁定要求也不同。 更新 RoCE GID 表时，通过 mutex_lock(&table->lock) 实现针对多个写入者的保护。 由于写入表需要我们在表中查找一个条目（可能是空闲条目）然后修改它，因此该互斥锁保护 find_gid 和 write_gid 确保操作的原子性。 GID 缓存中的每个条目均受 rwlock 保护。 在 RoCE 中，写入（通常来自 netdev 通知程序的结果）涉及调用供应商的 add_gid 和 del_gid 回调，这些回调可能会休眠。 因此，为每个条目添加无效标志。 RoCE 的更新是通过工作队列完成的，因此允许休眠。 在IB中，更新是在write_lock_irq(&device->cache.lock)中完成的，因此write_gid不允许休眠并且add_gid/del_gid不会被调用。 当将网络设备传入/传出 GID 缓存时，该设备始终被传递为保持 (dev_hold)。 该代码使用单个工作项来更新所有 RDMA 设备，遵循 netdev 或 inet 通知程序。 该补丁将缓存从客户端（这是不正确的，因为缓存是 IB 基础设施的一部分）转变为在设备注册/删除时显式初始化/释放
         gid_table_setup_one
             _gid_table_setup_one
-            rdma_roce_rescan_device -> {net, IB}/mlx5：管理多端口 RoCE 的端口关联，调用 mlx5_ib_add 时确定要添加的 mlx5 核心设备是否能够进行双端口 RoCE 操作。 如果是，请使用 num_vhca_ports 和affiliate_nic_vport_criteria 功能确定它是主设备还是从设备。 如果该设备是从属设备，请尝试找到与其关联的主设备。 可以关联的设备将共享系统映像 GUID。 如果没有找到，请将其放入非关联端口列表中。 如果找到主设备，则通过在 NIC vport 上下文中配置端口从属关系将端口绑定到它。 同样，当调用 mlx5_ib_remove 时确定端口类型。 如果它是从端口，则将其与主设备取消关联，否则只需将其从非关联端口列表中删除即可。 即使第二个端口不可用于关联，IB 设备也会注册为多端口设备。 当第二个端口稍后附属时，必须刷新 GID 缓存才能获取缓存中第二个端口的默认 GID。 导出roce_rescan_device以提供在绑定新端口后刷新缓存的机制。 在多端口配置中，所有 IB 对象（QP、MR、PD 等）相关命令应流经主站 mlx5_core_dev，其他命令必须发送到从端口 mlx5_core_mdev，提供一个接口来获取非 IB 对象命令的正确 mdev
+                struct ib_gid_table *table
+                rdma_for_each_port (ib_dev, rdma_port)
+                    table = alloc_gid_table(ib_dev->port_data[rdma_port].immutable.gid_tbl_len)
+                    gid_table_reserve_default(ib_dev, rdma_port, table)
+                        roce_gid_type_mask = roce_gid_type_mask_support(ib_dev, port)
+                        num_default_gids = hweight_long(roce_gid_type_mask) -> 计算1的个数
+                        table->default_gid_indices |= BIT(i)
+                    ib_dev->port_data[rdma_port].cache.gid = table -> init gid table
+            rdma_roce_rescan_device -> 重新扫描系统中的所有网络设备，并根据需要将其 gid 添加到相关 RoCE 设备 -> {net, IB}/mlx5：管理多端口 RoCE 的端口关联，调用 mlx5_ib_add 时确定要添加的 mlx5 核心设备是否能够进行双端口 RoCE 操作。 如果是，请使用 num_vhca_ports 和affiliate_nic_vport_criteria 功能确定它是主设备还是从设备。 如果该设备是从属设备，请尝试找到与其关联的主设备。 可以关联的设备将共享系统映像 GUID。 如果没有找到，请将其放入非关联端口列表中。 如果找到主设备，则通过在 NIC vport 上下文中配置端口从属关系将端口绑定到它。 同样，当调用 mlx5_ib_remove 时确定端口类型。 如果它是从端口，则将其与主设备取消关联，否则只需将其从非关联端口列表中删除即可。 即使第二个端口不可用于关联，IB 设备也会注册为多端口设备。 当第二个端口稍后附属时，必须刷新 GID 缓存才能获取缓存中第二个端口的默认 GID。 导出roce_rescan_device以提供在绑定新端口后刷新缓存的机制。 在多端口配置中，所有 IB 对象（QP、MR、PD 等）相关命令应流经主站 mlx5_core_dev，其他命令必须发送到从端口 mlx5_core_mdev，提供一个接口来获取非 IB 对象命令的正确 mdev
                 ib_enum_roce_netdev pass_all_filter enum_all_gids_of_dev_cb
         rdma_for_each_port
             ib_cache_update -> IB/核心：仅在相应事件上更新 PKEY 和 GID 缓存，HCA 中的 PKEY 和 GID 表都可以保存数百个条目。 阅读它们是昂贵的。 部分原因是用于检索它们的 API 一次仅返回一个条目。 此外，在某些实现上，例如 CX-3，VF 在这方面是半虚拟化的，并且必须依赖 PF 驱动程序来执行读取。 这再次需要 VF 到 PF 的通信。 IB Core 的缓存会根据所有事件进行刷新。 因此，根据收到的事件分别为 IB_EVENT_PKEY_CHANGE 和 IB_EVENT_GID_CHANGE 来过滤 PKEY 和 GID 缓存的刷新
                 rdma_is_port_valid
-                ib_query_port
+                ib_query_port(device, port, tprops)
                 rdma_protocol_roce
-                config_non_roce_gid_cache
-                ib_query_pkey
-                ib_security_cache_change
+                config_non_roce_gid_cache(device, port,	tprops) -> IB/核心：重构RoCE的GID修改代码，代码被重构为RoCE准备单独的函数，可以执行与引用计数相关的更复杂的操作，同时仍然保持代码的可读性。 这包括 (a) 简化为不执行 IB 链路层的网络设备检查和修改。 (b) 不要添加具有 NULL 网络设备的 RoCE GID 条目； 相反，返回一个错误。 (c) 如果 GID 添加在提供者级别 add_gid() 失败，则不要在缓存中添加该条目并保持该条目标记为 INVALID。 (d) 简化并重用 ib_cache_gid_add()/del() 例程，以便它们甚至可以用于修改默认 GID。 这避免了修改默认 GID 时的一些代码重复。 (e) find_gid() 例程引用数据条目标志来将 GID 限定为有效或无效 GID，而不是依赖于 GID 内容的属性和零。 (f) gid_table_reserve_default() 在设置 GID 表时一开始就设置 GID 默认属性。 无需在 write_gid()、add_gid()、del_gid() 等低级函数中使用 default_gid 标志，因为它们在 GID 表更新期间永远不需要更新 GID 条目的 DEFAULT 属性。 作为此重构的结果，保留的 GID 0:0:0:0:0:0:0:0 不再可搜索，如下所述。 根据 IB 规范版本 1.3 第 4.1.1 节第 (6) 点，单播 GID 条目 0:0:0:0:0:0:0:0 是保留 GID，其片段如下。 “单播 GID 地址 0:0:0:0:0:0:0:0 是保留的 - 称为保留 GID。它不得分配给任何终端端口。它不得用作目标地址或 全局路由标头（GRH）。” GID 表缓存现在仅存储有效的 GID 条目。 在此补丁之前，可以使用 ib_find_cached_gid_by_port() 和其他类似的查找例程在 GID 表中搜索保留 GID 0:0:0:0:0:0:0:0。 零 GID 不再可搜索，因为它不应出现在 GRH 或路径记录条目中，如 IB 规范版本 1.3 第 4.1.1 节第 (6) 点、第 12.7.10 节和第 12.7.20 节中所述。 ib_cache_update() 被简化为检查链路层一次，对所有链路层使用统一的锁定方案，删除临时 gid 表分配/释放逻辑。 此外，(a) 扩展 ib_gid_attr 以存储端口和索引，以便 GID 查询例程可以从属性结构中获取端口和索引信息。 (b) 扩展 ib_gid_attr 来存储设备，以便在将来的代码中，当完成 GID 引用计数时，设备用于返回到 GID 表条目
+                    device->ops.query_gid(device, port, i, &gid_attr.gid)
+                    rdma_protocol_iwarp(device, port)
+                    add_modify_gid(table, &gid_attr)
+                ib_query_pkey -> Get P_Key table entry
+                    device->ops.query_pkey(device, port_num, index, pkey) -> irdma_query_pkey -> #define IRDMA_DEFAULT_PKEY		0xFFFF
+                ib_security_cache_change -> IB/核心：在 QP 上强制执行 PKey 安全性，添加新的 LSM 挂钩以分配和释放安全上下文，并检查访问 PKey 的权限。 创建和销毁 QP 时分配和释放安全上下文。 此上下文用于控制对 PKey 的访问。 当请求修改 QP 来更改端口、PKey 索引或备用路径时，请检查 QP 是否具有对该端口子网前缀上的 PKey 表索引中的 PKey 的权限。 如果 QP 是共享的，请确保 QP 的所有句柄也具有访问权限。 存储 QP 正在使用的端口和 PKey 索引。 重置到初始化转换后，用户可以独立修改端口、PKey 索引和备用路径。 因此，端口和 PKey 设置更改可以是先前设置和新设置的合并。 为了在 PKey 表或子网前缀更改时维持访问控制，请保留每个端口上使用每个 PKey 索引的所有 QP 的列表。 如果发生更改，则使用该设备和端口的所有 QP 都必须强制执行新缓存设置的访问权限。 这些更改将事务添加到 QP 修改过程中。 如果修改失败，则必须保持与旧端口和 PKey 索引的关联；如果修改成功，则必须将其删除。 必须在修改之前建立与新端口和 PKey 索引的关联，如果修改失败则将其删除。 1. 当 QP 被修改为特定端口时，PKey 索引或备用路径将该 QP 插入到适当的列表中。 2. 检查访问新设置的权限。 3. 如果步骤 2 授予访问权限，则尝试修改 QP。 4a. 如果步骤 2 和 3 成功，则删除任何先前的关联。 4b. 如果以太失败，请删除新的设置关联。 如果 PKey 表或子网前缀发生更改，则遍历 QP 列表并检查它们是否具有权限。 如果没有，则将 QP 发送到错误状态并引发致命错误事件。 如果它是共享 QP，请确保共享 real_qp 的所有 QP 也具有权限。 如果拥有安全结构的 QP 被拒绝访问，则安全结构将被标记为此类，并且 QP 将被添加到 error_list 中。 一旦将 QP 移至错误完成，安全结构标记就会被清除。 正确维护列表会将 QP 销毁转变为事务。 设备的硬件驱动程序释放 ib_qp 结构，因此当销毁正在进行时，ib_qp_security 结构中的 ib_qp 指针未定义。 当销毁过程开始时，ib_qp_security 结构被标记为正在销毁。 这可以防止对 QP 指针采取任何操作。 QP 成功销毁后，它仍然可以列在 error_list 上，等待该流处理它，然后再清理结构。 如果销毁失败，则 QP 端口和 PKey 设置将重新插入到适当的列表中，销毁标志将被清除，并强制执行访问控制，以防在销毁流程期间发生任何缓存更改。 为了保持安全更改隔离，使用新文件来保存与安全相关的功能
+                    list_for_each_entry (pkey, &device->port_data[port_num].pkey_list,
+                        check_pkey_qps(pkey, device, port_num, subnet_prefix)
+                            ib_get_cached_pkey
+                            enforce_qp_pkey_security
+                                security_ib_pkey_access -> Check if access to an IB pkey is allowed
+                                    return call_int_hook(ib_pkey_access, 0, sec, subnet_prefix, pkey) -> selinux_ib_pkey_access
+                                        sel_ib_pkey_sid(subnet_prefix, pkey_val, &sid)
+                                        avc_has_perm(sec->sid, sid,
+                            qp_to_error(pp->sec)
+                                .qp_state = IB_QPS_ERR
+                                .event = IB_EVENT_QP_FATAL
+                                ib_modify_qp(sec->qp,
+                                sec->qp->event_handler(&event,
+                            list_del(&pp->to_error_list)
+                            complete(&pp->sec->error_complete)
     device->groups[0] = &ib_dev_attr_group; -> RDMA/core：通过普通组机制创建设备 hw_counters，而不是调用 device_add_groups() 将组添加到通过 device_add() 管理的现有组数组中。 这需要在 device_add() 之前设置 hw_counters，以便它从已经分割的端口 sysfs 流中分割出来 -> 第一组用于设备属性，第二组用于驱动程序提供的属性（可选）。 第三组是 hw_stats 它是一个以 NULL 结尾的数组
     device->groups[1] = device->ops.device_group;
     ib_setup_device_attrs
@@ -6990,13 +7016,6 @@ enum ib_port_phys_state {
 	IB_PORT_PHYS_STATE_PHY_TEST = 7,
 };
 
-enum ib_port_width {
-	IB_WIDTH_1X	= 1,
-	IB_WIDTH_2X	= 16,
-	IB_WIDTH_4X	= 2,
-	IB_WIDTH_8X	= 4,
-	IB_WIDTH_12X	= 8
-};
 
 
 
@@ -7391,7 +7410,7 @@ static struct rdma_link_ops rxe_link_ops = {
 	.newlink = rxe_newlink,
 };
 rxe_newlink
-    is_vlan_dev
+    is_vlan_dev -> 判断是否VLAN设备
         return dev->priv_flags & IFF_802_1Q_VLAN
     rxe_get_dev_from_net
         ib_device_get_by_netdev(ndev, RDMA_DRIVER_RXE)
@@ -7739,7 +7758,7 @@ mlx5_ib_handle_event()
 
 
 
-ib事件
+IB事件类型
 enum ib_event_type {
 	IB_EVENT_CQ_ERR,
 	IB_EVENT_QP_FATAL,
@@ -7759,7 +7778,7 @@ enum ib_event_type {
 	IB_EVENT_SRQ_LIMIT_REACHED,
 	IB_EVENT_QP_LAST_WQE_REACHED,
 	IB_EVENT_CLIENT_REREGISTER,
-	IB_EVENT_GID_CHANGE,
+	IB_EVENT_GID_CHANGE,  -> GID改变, 存储GID, 
 	IB_EVENT_WQ_FATAL,
 };
 
@@ -7905,19 +7924,34 @@ struct device_attribute - Interface for exporting device attributes
 
 ib port atrribute
 struct ib_port_attr {
+	u64			subnet_prefix;
+	enum ib_port_state	state; -> 端口状态
+	enum ib_mtu		max_mtu;
+	enum ib_mtu		active_mtu;
+	u32                     phys_mtu;
+	int			gid_tbl_len;
+	unsigned int		ip_gids:1;
+	/* This is the value from PortInfo CapabilityMask, defined by IBA, IB规范定义的端口信息/能力掩码 */
+	u32			port_cap_flags;
+	u32			max_msg_sz;
+	u32			bad_pkey_cntr;
+	u32			qkey_viol_cntr;
+	u16			pkey_tbl_len;
+	u32			sm_lid;
+	u32			lid;
+	u8			lmc;
+	u8			max_vl_num;
+	u8			sm_sl;
+	u8			subnet_timeout;
+	u8			init_type_reply;
+	u8			active_width;
+	u16			active_speed;
+	u8          phys_state; -> 物理状态
+	u16			port_cap_flags2;
+};
 
-}
 
 
-ib_query_port
-    __ib_query_port
-        return device->ops.query_port(device, port_num, port_attr)
-irdma_query_port
-    ib_get_eth_speed(ibdev, port, &props->active_speed,
-        rdma_port_get_link_layer
-        ib_device_get_netdev
-        __ethtool_get_link_ksettings
-        ib_get_width_and_speed
 
 
 
@@ -8055,16 +8089,336 @@ gid
 drivers/infiniband/core/cache.c
 store_gid_entry
 add_roce_gid
-add_modify_gid
 make_default_gid
 
-rdma_query_gid
 
 
 
-update_gid
-    ib_cache_gid_add
 
 
-rdma_roce_rescan_device
+static int mlx5_ib_add_gid
+    mlx5r_add_gid_macsec_operations(const struct ib_gid_attr *attr)
+        mlx5_is_macsec_roce_supported
+        get_macsec_device
+        rdma_find_gid
+        set_roce_addr
+            rdma_read_gid_l2_fields
+            ipv6_addr_v4mapped
+            mlx5_core_roce_gid_set
+        mlx5_macsec_add_roce_rule
+        mlx5_macsec_save_roce_gid
+
+
+通过扫描设备的回调枚举设备所有的GIDs(根据IP计算GID,并缓存GID)
+static void enum_all_gids_of_dev_cb(struct ib_device *ib_dev, u32 port, struct net_device *rdma_ndev,void *cookie)
+    for_each_net(net) -> 两层for循环
+        for_each_netdev(net, ndev)
+    当不处于绑定模式时，过滤并添加主网络设备的默认 GID，或者当处于绑定模式时，添加绑定主设备的默认 GID
+    is_ndev_for_default_gid_filter
+        add_default_gids(ib_dev, port, rdma_ndev, ndev) -> ib_cache_gid_set_default_gid
+            mask = GID_ATTR_FIND_MASK_GID_TYPE | -> IB/core：修复了更改 mac 地址时删除默认 GID 的问题，在 [1] 之前，当网络设备的 MAC 地址更改时，默认 GID 应该被删除并添加回来，这会按以下顺序影响节点和/或端口 GUID。 netdevice_event() -> NETDEV_CHANGEADDR default_del_cmd() del_netdev_default_ips() bond_delete_netdev_default_gids() ib_cache_gid_set_default_gid() ib_cache_gid_del() add_cmd() [..] 但是，在非绑定场景中不会调用 ib_cache_gid_del()，因为 event_ndev 和 rdma_ndev 相同。 因此，修复这种情况，当事件 ndev 和 rdma_dev 相同时忽略检查上层设备； 类似于 bond_set_netdev_default_gids()。 此修复 ib_cache_gid_del() 被正确调用； 但是 ib_cache_gid_del() 找不到要删除的默认 GID，因为 find_gid() 被赋予 default_gid = false 并设置了 GID_ATTR_FIND_MASK_DEFAULT。 但后来它被 ib_cache_gid_set_default_gid() 覆盖，作为 add_cmd() 的一部分。 因此，mac 地址更改通常适用于默认 GID。 通过重构系列 [1]，可以检测到这种不正确的行为。 因此，删除默认GID时，请设置default_gid并设置MASK标志。 当删除基于IP的GID时，清除default_gid并设置MASK标志。 [1] https://patchwork.kernel.org/patch/10319151/
+            for (gid_type = 0; gid_type < IB_GID_TYPE_SIZE; ++gid_type) -> 遍历3种GID类型
+                if (1UL << gid_type & ~gid_type_mask)
+            make_default_gid(ndev, &gid)
+                gid->global.subnet_prefix = cpu_to_be64(0xfe80000000000000LL)
+                addrconf_ifid_eui48(&gid->raw[8], dev) -> 函数ipv6_generate_eui64最终调用addrconf_ifid_eui48生成地址。将设备的MAC地址dev_addr的前三个字节拷贝到IPv6地址的后半段（s6_addr+8）开始处；在接下来的第4和第5个字节处添加0xFF和0xFE值；拷贝MAC地址的后三个字节到接下来的IPv6地址的第6个字节开始处
+            __ib_cache_gid_add(ib_dev, port, &gid, &gid_attr, mask, true)
+                rdma_is_zero_gid(gid) -> IB/core：减少使用 zgid 的地方，而不是开放编码 memcmp() 来检查给定的 GID 是否为零，而是使用辅助函数来执行此操作，并用 memset 替换 memcpy(z,&zgid) 的实例
+                find_gid(table, gid, attr, default_gid, mask, &empty) -> find gid from cache
+                add_modify_gid(table, attr)
+                    entry = alloc_gid_entry(attr)
+                    add_roce_gid(entry)
+                        rdma_cap_roce_gid_table
+                        attr->device->ops.add_gid(attr, &entry->context) -> mlx5_ib_add_gid
+                    store_gid_entry(table, entry)
+                        table->data_vec[entry->attr.index] = entry; -> store gid
+                dispatch_gid_change_event(ib_dev, port)
+                    event.event		= IB_EVENT_GID_CHANGE
+                    ib_dispatch_event_clients(&event) -> IB/核心：让 IB 核心分发缓存更新事件 目前，当低级驱动程序通知 Pkey、GID 和端口更改事件时，它们会按照注册的顺序通知给已注册的处理程序。 IB 核心和其他 ULP（例如 IPoIB）对 GID、LID、Pkey 更改事件感兴趣。 由于 ULP 完成的所有 GID 查询均由 IB 核心提供服务，并且 IB 核心将缓存更新推迟到工作队列，因此其他客户端在处理自己的事件时可能会看到过时的缓存数据。 例如，下面的调用树显示了 ipoib 如何在更新 WQ 中的缓存的同时调用 rdma_query_gid()。 mlx5_ib_handle_event() ib_dispatch_event() ib_cache_event()queue_work() -> 缓存更新速度较慢 [..] ipoib_event()queue_work() [..] 工作处理程序 ipoib_ib_dev_flush_light() __ipoib_ib_dev_flush() ipoib_dev_addr_changed_valid() rdma_query_gid() <- 返回旧 GID ，缓存未更新。 将所有事件分派移至工作队列，以便始终在通知任何客户端之前完成缓存更新
+                        list_for_each_entry(handler, &event->device->event_handler_list, list)
+                            handler->handler(handler, event)
+    is_eth_port_of_netdev_filter
+        real_dev = rdma_vlan_dev_real_dev(cookie) -> IB/core：删除从 void 到 net_device 的指针转换，此补丁避免了从 void 到 net_device 的不必要的类型转换 -> IB/核心：为 IBoE 添加 VLAN 支持，为 IBoE 添加 802.1q VLAN 支持。 VLAN 标记按以下方式编码在从链路本地地址派生的 GID 中： 当 GID 包含 VLAN 时，GID[11] GID[12] 包含 VLAN ID。 数据包的 3 位用户优先级字段与 SL 的 3 位相同。 对于 rdma_cm 应用程序，TOS 字段用于通过右移 5 位来生成 SL 字段，从而有效地占用 TOS 字段的 3 MS 位 -> commit: https://github.com/ssbandjl/linux/commit/af7bd463761c6abd8ca8d831f9cc0ac19f3b7d4b
+            is_vlan_dev(dev) ? vlan_dev_real_dev(dev) : NULL
+                net_device *ret = vlan_dev_priv(dev)->real_dev -> while (is_vlan_dev(ret)) -> 递归拿到vlan设备对应的真实设备
+        rdma_is_upper_dev_rcu -> IB/core：将 rdma_is_upper_dev_rcu 移至头文件，为了验证路由，我们需要一种简单的方法来检查网络设备是否属于我们的 RDMA 设备。 将此辅助函数移至头文件以使检查更容易
+            netdev_has_upper_dev_all_rcu -> Check if device is linked to an upper device
+                netdev_walk_all_upper_dev_rcu(dev, ____netdev_has_upper_dev,
+        is_eth_active_slave_of_bonding_rcu -> IB/核心：添加RoCE表绑定(bond)支持，处理绑定和其他设备需要我们所有网络设备的GID，这些网络设备是RoCE端口相关网络设备的上层设备。 活动备份配置带来了更多挑战，因为默认 GID 只能在活动设备上设置（这是必要的，否则相同的 MAC 可以用于多个从设备，因此多个从设备将具有相同的 GID）。 管理这些配置是通过监听来完成的： (a) NETDEV_CHANGEUPPER 事件 (1) 如果链接了相关的网络设备，则删除所有不活动的从设备默认 GID 并添加上层设备 GID。 (2) 如果相关网络设备未链接，则删除所有上层GID，并添加默认GID。 (b) NETDEV_BONDING_FAILOVER: (1) 从非活动从站删除绑定 GID (2) 删除非活动从站的默认 GID (3) 将绑定 GID 添加到活动从站 -> struct bonding
+            netif_is_bond_master(upper)
+            bond_option_active_slave_get_rcu
+                rcu_dereference_rtnl(bond->curr_active_slave)
+                bond_uses_primary(bond)
+    _add_netdev_ips(ib_dev, port, ndev)
+        enum_netdev_ipv4_ips(ib_dev, port, ndev) -> 枚举IPv4设备的IP地址
+            __in_dev_get_rcu
+            list_add_tail(&entry->list, &sin_list)
+            update_gid_ip(GID_ADD, ib_dev, port, ndev, (struct sockaddr *)&sin_iter->ip);
+                rdma_ip2gid(addr, &gid) -> IP地址到GID的转换算法 -> IB/core：verbs/cm 结构中的以太网 L2 属性，此补丁添加了对 verbs/cm/cma 结构中的以太网 L2 属性的支持。 在处理 L2 以太网时，我们应该以与使用 IB L2（和 L4 PKEY）属性类似的方式使用 smac、dmac、vlan ID 和优先级。 因此，这些属性被添加到以下结构中： * ib_ah_attr - 添加了 dmac * ib_qp_attr - 添加了 smac 和 vlan_id，（sl 保留 vlan 优先级） * ib_wc - 添加了 smac、vlan_id * ib_sa_path_rec - 添加了 smac、dmac、vlan_id * cm_av - 添加了 smac 和 vlan_id 对于路径记录结构，在将其打包为有线格式时特别注意避免新字段，因此我们不会破坏 IB CM 和 SA 有线协议。 在主动侧，CM 被填充。 其内部结构来自 ULP 提供的路径。 我们添加了 ETH L2 属性并将它们放入 CM 地址句柄（struct cm_av）中。 在被动侧，CM 从与 REQ 消息关联的 WC 中填充其内部结构。 我们添加了从 WC 获取 ETH L2 属性的内容。 当硬件驱动程序在 WC 中提供所需的 ETH L2 属性时，它们会设置 IB_WC_WITH_SMAC 和 IB_WC_WITH_VLAN 标志。 IB 核心代码检查这些标志是否存在，如果没有，则从 ib_init_ah_from_wc() 辅助函数进行地址解析。 ib_modify_qp_is_ok 也被更新以考虑链路层。 有些参数对于以太网链路层是必需的，而对于IB来说则无关。 修改供应商驱动程序以支持新的函数签名
+                    case AF_INET: -> ipv4
+                        ipv6_addr_set_v4mapped(((struct sockaddr_in *)addr)->sin_addr.s_addr, (struct in6_addr *)gid)
+                            ipv6_addr_set(v4mapped, 0, 0, htonl(0x0000FFFF), addr)
+                                __ipv6_addr_set_half(&addr->s6_addr32[0], w1, w2)
+                                __ipv6_addr_set_half(&addr->s6_addr32[2], w3, w4)
+                    case AF_INET6:
+                        *(struct in6_addr *)&gid->raw =	((struct sockaddr_in6 *)addr)->sin6_addr
+                update_gid(gid_op, ib_dev, port, &gid, &gid_attr)
+                    unsigned long gid_type_mask = roce_gid_type_mask_support(ib_dev, port) -> IB/core：将gid_type添加到gid属性中，为了支持多种GID类型，我们需要存储每个GID的gid_type。 这也与 RoCE v2 附件“RoCEv2 端口 GID 表条目应具有表示 L3 地址类型的“GID 类型”属性”保持一致。 当前支持的 GID 是 IB_GID_TYPE_IB，这也是 RoCE v1 GID 类型。 这意味着 gid_type 应添加到 roce_gid_table 元数据中
+                    ib_cache_gid_add(ib_dev, port, gid, gid_attr) -> .is_supported = &mlx5_rdma_supported,
+                        __ib_cache_gid_add
+                    or ib_cache_gid_del(ib_dev, port, gid, gid_attr) -> _ib_cache_gid_del
+                        find_gid
+                        del_gid(ib_dev, port, table, ix) -> del_gid
+                            mlx5r_del_gid_macsec_operations -> del flow
+                        dispatch_gid_change_event(ib_dev, port)
+        enum_netdev_ipv6_ips(ib_dev, port, ndev)
+            in6_dev = in6_dev_get(ndev)
+            list_add_tail(&entry->list, &sin6_list)
+            rdma_ip2gid((struct sockaddr *)&sin6_iter->sin6, &gid)
+            update_gid(GID_ADD, ib_dev, port, &gid, &gid_attr)
+
+
+
+ucma_copy_iboe_route struct rdma_route -> RDMA/cma：多路径记录支持 netlink 通道，支持通过 RDMA netlink 通道从用户空间服务接收入站和出站 IB 路径记录（以及 GMP PathRecord）。 这3个PR中的LID可以这样使用： 1. GMP PR：用作标准本地/远程LID； 2、出站PR的DLID：用作出站流量的“dlid”字段； 3.入站PR的DLID：用作响应方出站流量的“dlid”字段。 这样做的目的是支持自适应路由。 使用当前的 IB 路由解决方案，当数据包发出时，每个目标都会被分配一个固定的 DLID，这意味着将使用固定的路由器。 入站/出站路径记录中的 LID 可用于识别允许与另一个子网实体进行通信的路由器组。 通过它们，来自子网间连接的数据包可以通过该组中的任何路由器到达目标。 正如 Jason 所确认的，当发送 netlink 请求时，内核使用 LS_RESOLVE_PATH_USE_ALL 以便服务知道内核支持多个 PR
+
+
+
+IB：地址转换以将 IP 映射到 IB 地址 (GID)，添加地址转换服务，使用 IPoIB 将 IP 地址映射到 InfiniBand GID 地址
+/**
+ * struct rdma_dev_addr - Contains resolved RDMA hardware addresses
+ * @src_dev_addr:	Source MAC address.
+ * @dst_dev_addr:	Destination MAC address.
+ * @broadcast:		Broadcast address of the device.
+ * @dev_type:		The interface hardware type of the device.
+ * @bound_dev_if:	An optional device interface index.
+ * @transport:		The transport type used.
+ * @net:		Network namespace containing the bound_dev_if net_dev.
+ * @sgid_attr:		GID attribute to use for identified SGID
+ */
+struct rdma_dev_addr {
+	unsigned char src_dev_addr[MAX_ADDR_LEN]; -> 源MAC(SMAC)
+	unsigned char dst_dev_addr[MAX_ADDR_LEN]; -> 目的MAC(DMAC)
+	unsigned char broadcast[MAX_ADDR_LEN];
+	unsigned short dev_type;
+	int bound_dev_if;
+	enum rdma_transport_type transport;
+	struct net *net;
+	const struct ib_gid_attr *sgid_attr;
+	enum rdma_network_type network;
+	int hoplimit;
+};
+
+
+
+iboe_addr_get_sgid
+
+
+addr_resolve
+    rdma_set_src_addr_rcu
+    ...
+        rdma_translate_ip  -> Translate a local IP address to an RDMA hardware
+            dev = dev_get_by_index(dev_addr->net, dev_addr->bound_dev_if) -> IB/addr：将网络命名空间作为参数传递，为ib_addr模块添加网络命名空间支持。 为此，所有地址解析和匹配都应该使用适当的命名空间而不是 init_net 来完成。 这是通过以下方式实现的： 1. 将显式网络命名空间参数添加到需要命名空间的导出函数。 2. 将命名空间保存在 rdma_addr_client 结构中。 3. 调用网络功能时使用。 为了保留调用模块的行为，&init_net 在其他模块的调用中作为参数传递。 随着在更多级别上添加命名空间支持，此内容已被修改 -> Deprecated for new users, call netdev_get_by_index() instead -> netdev_get_by_index() - 通过 ifindex 查找设备， @net：适用的网络命名空间 @ifindex：设备索引 @tracker：获取引用的跟踪对象 @gfp：跟踪器的分配标志 按索引搜索接口。 如果未找到设备或指向设备的指针，则返回 NULL。 返回的设备已添加了引用，并且指针是安全的，直到用户调用 netdev_put() 表明他们已完成使用它
+                dev_get_by_index_rcu(net, ifindex)
+                    hlist_for_each_entry_rcu(dev, head, index_hlist)
+            rdma_copy_src_l2_addr(dev_addr, dev)
+                memcpy(dev_addr->broadcast, dev->broadcast, MAX_ADDR_LEN)
+            dev = rdma_find_ndev_for_src_ip_rcu(dev_addr->net, addr)
+                switch (src_in->sa_family)
+                case AF_INET:
+                    __ip_dev_find
+                        ifa = inet_lookup_ifaddr_rcu(net, addr)
+                            u32 hash = inet_addr_hash(net, addr)
+                            net_eq(dev_net(ifa->ifa_dev->dev), net)
+                        local = fib_get_table(net, RT_TABLE_LOCAL)
+                        fib_table_lookup
+                            trace_fib_table_lookup
+                case AF_INET6:
+                    ipv6_chk_addr -> ipv6_chk_addr_and_flags -> VRF 设备与 ip 规则相结合，提供了在 Linux 网络堆栈中创建虚拟路由和转发域（又名 VRF，具体为 VRF-lite）的能力。 一种用例是多租户问题，其中每个租户都有自己独特的路由表，并且至少需要不同的默认网关。 通过将套接字绑定到 VRF 设备，进程可以“感知 VRF”。 然后，通过套接字的数据包使用与 VRF 设备关联的路由表。 VRF 设备实现的一个重要特征是它仅影响第 3 层及以上层，因此 L2 工具（例如 LLDP）不受影响（即它们不需要在每个 VRF 中运行）。 该设计还允许使用更高优先级的 IP 规则（基于策略的路由，PBR），以优先于根据需要引导特定流量的 VRF 设备规则。 此外，VRF 设备允许 VRF 嵌套在命名空间内。 例如，网络命名空间提供设备层网络接口的分离，命名空间内接口上的 VLAN 提供 L2 分离，然后 VRF 设备提供 L3 分离。 设计 VRF 设备是通过关联的路由表创建的。 然后网络接口被从属于 VRF 设备：-> net/ipv6：更改地址检查以始终采用设备参数，ipv6_chk_addr_and_flags 确定地址是否是本地地址，以及（可选）是否是特定设备上的地址。 例如，由 ip6_route_info_create 调用它来确定给定的网关地址是否是本地地址。 地址检查当前不考虑 L3 域，因此如果下一跳指向第二个 VRF 中的地址，则不允许在一个 VRF 中添加路由。 例如，$ ip route add 2001:db8:1::/64 vrf r2 via 2001:db8:102::23 错误：网关地址无效。 其中 2001:db8:102::23 是 vrf r1 中接口上的地址。 ipv6_chk_addr_and_flags 需要允许调用者始终传入带有单独参数的设备，以免将地址限制为特定设备。 该设备用于确定感兴趣的 L3 域。 为此，添加一个参数以跳过设备检查并更新调用者以始终在可能的情况下传递设备，并使用新参数来表示域中的任何地址。 使用 NULL dev 参数更新 ipv6_chk_addr 的少数用户。 此补丁处理对这些调用者的更改，而无需添加域检查。 ip6_validate_gw 需要处理 2 种情况 - 一种是设备作为下一跳规范的一部分给出，另一种是设备被解析。 至少有 1 种 VRF 情况，将检查推迟到仅在路由查找解决之后，设备会失败并出现不直观的错误“RTNETLINK 答案：没有到主机的路由”，而不是首选的“错误：网关不能是本地地址” ”。 “没有到主机的路由”错误是由于回退到完整查找而导致的。 检查两次以避免此错误
+                        inet6_addr_hash
+                        l3mdev_master_dev_rcu
+                        ipv6_addr_equal
+
+
+bond type, 
+#define BOND_MODE_ROUNDROBIN	0
+#define BOND_MODE_ACTIVEBACKUP	1
+#define BOND_MODE_XOR		2
+#define BOND_MODE_BROADCAST	3
+#define BOND_MODE_8023AD        4
+#define BOND_MODE_TLB           5
+#define BOND_MODE_ALB		6 /* TLB + RLB (receive load balancing) */
+
+
+IB QP属性
+struct ib_qp_attr {
+	enum ib_qp_state	qp_state;
+	enum ib_qp_state	cur_qp_state;
+	enum ib_mtu		path_mtu;
+	enum ib_mig_state	path_mig_state;
+	u32			qkey;
+	u32			rq_psn;
+	u32			sq_psn;
+	u32			dest_qp_num;
+	int			qp_access_flags;
+	struct ib_qp_cap	cap;
+	struct rdma_ah_attr	ah_attr;
+	struct rdma_ah_attr	alt_ah_attr;
+	u16			pkey_index;
+	u16			alt_pkey_index;
+	u8			en_sqd_async_notify;
+	u8			sq_draining;
+	u8			max_rd_atomic;
+	u8			max_dest_rd_atomic;
+	u8			min_rnr_timer;
+	u32			port_num;
+	u8			timeout;
+	u8			retry_cnt;
+	u8			rnr_retry;
+	u32			alt_port_num;
+	u8			alt_timeout;
+	u32			rate_limit;
+	struct net_device	*xmit_slave;
+};
+
+
+
+位宽和速度:
+enum ib_port_width {
+	IB_WIDTH_1X	= 1,
+	IB_WIDTH_2X	= 16,
+	IB_WIDTH_4X	= 2,
+	IB_WIDTH_8X	= 4,
+	IB_WIDTH_12X	= 8
+};
+
+static inline int ib_width_enum_to_int(enum ib_port_width width)
+{
+	switch (width) {
+	case IB_WIDTH_1X:  return  1;
+	case IB_WIDTH_2X:  return  2;
+	case IB_WIDTH_4X:  return  4;
+	case IB_WIDTH_8X:  return  8;
+	case IB_WIDTH_12X: return 12;
+	default: 	  return -1;
+	}
+}
+
+enum ib_port_speed {
+	IB_SPEED_SDR	= 1,
+	IB_SPEED_DDR	= 2,
+	IB_SPEED_QDR	= 4,
+	IB_SPEED_FDR10	= 8,
+	IB_SPEED_FDR	= 16,
+	IB_SPEED_EDR	= 32,
+	IB_SPEED_HDR	= 64,
+	IB_SPEED_NDR	= 128,
+	IB_SPEED_XDR	= 256,
+};
+
+
+
+Intel E810 RDMA硬件属性 -> RDMA/irdma：实现硬件管理队列操作集合，驱动程序将特权命令发布到硬件管理队列（控制 QP 或 CQP）以请求硬件的管理操作。 实现 CQP 的创建/销毁以及支持函数、数据结构和标头以处理不同的 CQP 命令
+struct irdma_hw_attrs {
+	struct irdma_uk_attrs uk_attrs;
+	u64 max_hw_outbound_msg_size;
+	u64 max_hw_inbound_msg_size;
+	u64 max_mr_size;
+	u64 page_size_cap;
+	u32 min_hw_qp_id;
+	u32 min_hw_aeq_size;
+	u32 max_hw_aeq_size;
+	u32 min_hw_ceq_size;
+	u32 max_hw_ceq_size;
+	u32 max_hw_device_pages;
+	u32 max_hw_vf_fpm_id;
+	u32 first_hw_vf_fpm_id;
+	u32 max_hw_ird;
+	u32 max_hw_ord;
+	u32 max_hw_wqes;
+	u32 max_hw_pds;
+	u32 max_hw_ena_vf_count;
+	u32 max_qp_wr;
+	u32 max_pe_ready_count;
+	u32 max_done_count;
+	u32 max_sleep_count;
+	u32 max_cqp_compl_wait_time_ms;
+	u16 max_stat_inst;
+	u16 max_stat_idx;
+};
+
+
+IB GID类型
+enum ib_gid_type {
+	IB_GID_TYPE_IB = IB_UVERBS_GID_TYPE_IB,
+	IB_GID_TYPE_ROCE = IB_UVERBS_GID_TYPE_ROCE_V1,
+	IB_GID_TYPE_ROCE_UDP_ENCAP = IB_UVERBS_GID_TYPE_ROCE_V2,
+	IB_GID_TYPE_SIZE
+};
+
+
+#define ROCE_V2_UDP_DPORT      4791
+
+
+struct net_device {
+    __cacheline_group_begin(net_device_read_tx)
+    缓存线组织可以在 Documentation/networking/net_cachelines/net_device.rst 中找到文档。 添加新字段时请更新文档
+    const struct net_device_ops *netdev_ops;
+    const struct ethtool_ops *ethtool_ops;
+    unsigned char		broadcast[MAX_ADDR_LEN]
+    struct devlink_port	*devlink_port;
+}
+
+struct net {
+    struct netns_ipvs	*ipvs
+    struct netns_mpls	mpls
+    struct netns_xdp	xdp
+}
+
+
+
+GID table:
+table->data_vec[entry->attr.index] = entry
+|   0   |   1   |...|  31   |
+| entry | entry |...| entry |
+
+
+
+
+VLAN设备结构体
+/**
+ *	struct vlan_dev_priv - VLAN private device data
+ *	@nr_ingress_mappings: number of ingress priority mappings
+ *	@ingress_priority_map: ingress priority mappings
+ *	@nr_egress_mappings: number of egress priority mappings
+ *	@egress_priority_map: hash of egress priority mappings
+ *	@vlan_proto: VLAN encapsulation protocol
+ *	@vlan_id: VLAN identifier
+ *	@flags: device flags
+ *	@real_dev: underlying netdevice
+ *	@dev_tracker: refcount tracker for @real_dev reference
+ *	@real_dev_addr: address of underlying netdevice
+ *	@dent: proc dir entry
+ *	@vlan_pcpu_stats: ptr to percpu rx stats
+ */
+struct vlan_dev_priv {
+	unsigned int				nr_ingress_mappings;
+	u32					ingress_priority_map[8];
+	unsigned int				nr_egress_mappings;
+	struct vlan_priority_tci_mapping	*egress_priority_map[16];
+
+	__be16					vlan_proto;
+	u16					vlan_id;
+	u16					flags;
+
+	struct net_device			*real_dev; -> vlan对应的真实设备
+	netdevice_tracker			dev_tracker;
+
+	unsigned char				real_dev_addr[ETH_ALEN];
+
+	struct proc_dir_entry			*dent;
+	struct vlan_pcpu_stats __percpu		*vlan_pcpu_stats;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	struct netpoll				*netpoll;
+#endif
+};
 
