@@ -43,3 +43,13 @@ add_gid
 mlx5r_add_gid_macsec_operations
 RDMA/mlx5：实现 MACsec gid 添加和删除，处理 MACsec IP 歧义问题，因为当具有相同 IP 地址时，mlx5 硬件无法支持对 MACsec 和物理 gid 进行编程，因为它不知道该引导谁 交通。 因此，在这种情况下，我们从硬件 gid 表中删除物理 gid，这将导致通过它发送的所有流量失败，并且我们只能通过 MACsec gid 发送流量
 
+// drivers/base/driver.c
+int driver_register(struct device_driver *drv)
+{
+    // ...
+
+    // 将事件发送到用户空间
+    kobject_uevent(&drv->p->kobj, KOBJ_ADD);
+
+    return ret;
+}
