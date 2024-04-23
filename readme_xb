@@ -507,8 +507,6 @@ hw_addr 00:00:00:00:00:00 state inactive opstate detached
 
 mlx5 driver:
 drivers/net/ethernet/mellanox/mlx5/core/main.c
-
-.probe
 static int probe_one
     mlx5_devlink_alloc
         ida_alloc -> 其中ida_destory是释放所有和IDA关联的资源。IDA结构体是一个树状结构体，是内核工作的一个机制。　  这里先介绍一下IDR，IDR机制是内核中将一个整数ID号和指针关联在一起的机制。 如果使用数组进行索引，当ID号很大时，数组索引会占据大量的存储空间，如果使用链表，在总线上设备特别多的情况下，链表的查询效率不高。而IDR机制内部采用红黑树，可以很方便的将整数和指针关联起来，并且有很高的搜索效率。  IDA只是用来分配id，并不将某数据结构和id关联起来。 例如sd设备的设备名，如sda，驱动在生成设备文件的时候会向系统申请一个ida，也就是唯一id，然后把id映射成设备文件名。在nvme-core中有使用到ida，所以在最后中需要释放。static DEFINE_IDA(nvme_subsystems_ida);
@@ -1618,7 +1616,8 @@ mlx5e_init -> net/mlx5e：将以太网部分连接到辅助总线，重用辅助
     auxiliary_driver_register(&mlx5e_driver) -> __auxiliary_driver_register
     mlx5e_rep_init -> net/mlx5e：首先取消注册 eth-reps 设备 当我们清理所有接口（即重新扫描或重新加载模块）时，我们需要先清理 eth-reps 设备，然后再清理 eth 设备。 我们将重新使用本机 NIC 端口网络设备实例作为上行链路表示器。 更改 eswitch 模式将跳过销毁 eth 设备，因此网络设备不会被销毁，而只会更改配置文件。 创建上行eth-rep将初始化representor相关资源。 从这个意义上说，当我们销毁所有设备时，我们首先需要销毁 eth-rep 设备，因此上行链路 eth-rep 将清除所有与表示器相关的资源，然后才销毁 eth 设备，这将销毁其余资源和网络设备
         auxiliary_driver_register(&mlx5e_rep_driver)
-mlx5_sf_driver_register -> static struct auxiliary_driver mlx5_sf_driver
+mlx5_sf_driver_register -> static struct auxiliary_driver
+    auxiliary_driver_register(&mlx5_sf_driver)
 pci_register_driver(&mlx5_core_driver)
 
 
@@ -1715,10 +1714,13 @@ mlx5e_probe -> static int _mlx5e_probe
             profile->init_rx(priv)
             profile->enable(priv)
             mlx5e_update_features(priv->netdev)
+                netdev_update_features(netdev) -> 重新计算设备功能
     register_netdev
     mlx5e_dcbnl_init_app
-    mlx5_core_uplink_netdev_set
-    mlx5e_params_print_info
+    mlx5_core_uplink_netdev_set -> net/mlx5e：在上行链路 netdev 更改时传播内部事件，每当设置/清除上行链路 netdev 时，传播新引入的事件以通知通知程序块 netdev 已添加/删除。 将 set() 帮助器从标头移至 core.c，引入clear() 和 netdev_added_event_replay() 帮助器。 最后一个将从 rdma 驱动程序调用，因此将其导出
+        mlx5_blocking_notifier_call_chain MLX5_DRIVER_EVENT_UPLINK_NETDEV -> net/mlx5：通过阻塞事件通知陷阱操作，为了允许 mlx5 核心驱动程序向其使用者触发同步操作，请添加阻塞事件处理程序。 将包装器添加到blocking_notifier_[call_chain/chain_register/chain_unregister]。 为操作集添加陷阱回调并通知此更改。 该集中的以下补丁添加了此事件的侦听器
+            blocking_notifier_call_chain
+    mlx5e_params_print_info -> net/mlx5e：将 params 内核日志打印移至探针函数，Params 信息打印本应在加载时打印。 随着时间的推移，添加了对 mlx5e_init_rq_type_params 和 mlx5e_build_rq_params 的新调用，再次错误地打印了参数。 将打印内容移至其所属位置，在 mlx5e_probe 中
 
 
 static const struct mlx5e_profile mlx5e_nic_profile = {
@@ -1746,48 +1748,8 @@ static const struct mlx5e_profile mlx5e_nic_profile = {
 
 
 
-核心驱动:
-static struct pci_driver mlx5_core_driver = {
-    .name           = KBUILD_MODNAME,
-    .id_table       = mlx5_core_pci_table,
-    .probe          = probe_one,
-    .remove         = remove_one,
-    .suspend        = mlx5_suspend,
-    .resume         = mlx5_resume,
-    .shutdown	= shutdown,
-    .err_handler	= &mlx5_err_handler,
-    .sriov_configure   = mlx5_core_sriov_configure, / 支持sriov功能需要实现的函数 /
-    .sriov_get_vf_total_msix = mlx5_sriov_get_vf_total_msix, //  PF 驱动程序回调以获取可用于分发到VF 的MSI-X 向量的总数
-    .sriov_set_msix_vec_count = mlx5_core_sriov_set_msix_vec_count, // PF 驱动程序回调以更改 VF 上的 MSI-X 向量的数量
-};
-
-static struct auxiliary_driver mlx5_sf_driver = {
-    .name = MLX5_SF_DEV_ID_NAME,
-    .probe = mlx5_sf_dev_probe,
-    .remove = mlx5_sf_dev_remove,
-    .shutdown = mlx5_sf_dev_shutdown,
-    .id_table = mlx5_sf_dev_id_table,
-};
 
 
-
-static int mlx5_sf_dev_probe(struct auxiliary_device *adev, const struct auxiliary_device_id *id)
-    mlx5_devlink_alloc -> devlink：尽早设置设备 所有内核 devlink 实现都会在特定设备的初始化例程期间调用 devlink_alloc()，该设备稍后用作 devlink_register() 的父设备。 这种较晚的设备分配会导致需要我们在设置其他参数之前调用 device_register() 的情况，但该调用向世界打开了 devlink 并可供 netlink 用户访问。 由于访问 devlink->dev 指针，任何将 devlink_register() 移至最后一次调用的尝试都会生成以下错误。
-    mlx5_dev_set_lightweight -> net/mlx5：轻探测本地 SF 如果用户想要配置 SF，例如：仅使用 vdpa 功能，则他需要完全探测 SF，配置他想要的内容，然后重新加载 SF。 为了节省重新加载的时间，本地SF将在没有任何辅助子设备的情况下进行探测，从而可以在其完全探测之前对SF进行配置。 这些 SF 的 enable_* devlink 参数的默认值设置为 false。
-    mlx5_mdev_init -> net/mlx5：为 SF 创建新的配置文件 为 SF 创建新的配置文件以禁用命令缓存。 每个功能命令缓存消耗约 500KB 的内存，当使用大量 SF 时，这种节省在内存受限的系统上非常显着。 使用新的配置文件来提供 SF 和 PF 之间未来的差异。 mr_cache 不用于非 PF 函数，因此它被排除在新配置文件之外。
-    ioremap
-    mlx5_init_one_light
-    or
-    mlx5_init_one
-    mlx5_core_peer_devlink_set
-    devlink_register
-
-
-
-
-
-default config profile:
-static struct mlx5_profile profile[]
 
 
 
@@ -2288,8 +2250,11 @@ ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
                             dev->cqp->process_cqp_sds(dev, &sdinfo) -> irdma_update_sds_noccq
                                 cqp_sds_wqe_fill
                                     irdma_sc_cqp_get_next_send_wqe_idx
+                                    switch (wqe_entries)
+                                    case 3:
+                                    ...
                                 irdma_get_cqp_reg_info
-                                irdma_sc_cqp_post_sq
+                                irdma_sc_cqp_post_sq(cqp)
                                 irdma_cqp_poll_registers
                         list_add(&chunk->list, &pble_rsrc->pinfo.clist)
                     get_lvl1_lvl2_pble
@@ -2342,7 +2307,10 @@ irdma_ib_register_device
         ib_set_device_ops(&iwdev->ibdev, &irdma_dev_ops)
     ib_device_set_netdev
     dma_set_max_seg_size
-    ib_register_device
+    ib_register_device(&iwdev->ibdev, "irdma%d", iwdev->rf->hw.device)
+    irdma_port_ibevent(iwdev)
+        event.event = iwdev->iw_status ? IB_EVENT_PORT_ACTIVE : IB_EVENT_PORT_ERR
+        ib_dispatch_event(&event)
 
 
 
@@ -2502,7 +2470,7 @@ struct ice_vsi
 
 
 
-intel e81, drivers/infiniband/hw/irdma/main.c
+intel e810, drivers/infiniband/hw/irdma/main.c
 irdma_probe
     ib_alloc_device -> #define ib_alloc_device(drv_struct, member) -> struct ib_device *_ib_alloc_device(size_t size)
         device = kzalloc(size, GFP_KERNEL)
@@ -2542,20 +2510,43 @@ irdma_probe
     irdma_ctrl_init_hw -> 初始化硬件的控制部分
         irdma_setup_init_state
             irdma_save_msix_info
-            dma_alloc_coherent
+            rf->obj_mem.size = ALIGN(8192, IRDMA_HW_PAGE_SIZE) -> 以4096为上界对齐, 分配8KB
+            rf->obj_mem.va = dma_alloc_coherent(rf->hw.device, rf->obj_mem.size, &rf->obj_mem.pa, GFP_KERNEL) -> 申请连续的大块内存(8KB)
             irdma_initialize_dev
-                irdma_obj_aligned_mem
-                irdma_sc_dev_init
-        irdma_create_cqp
-            irdma_obj_aligned_mem
-            irdma_sc_cqp_init
+                irdma_obj_aligned_mem -> irdma_obj_aligned_mem - 从设备分配的内存中获取对齐的内存，@rf：RDMA PCI函数@memptr：指向内存地址@size：所需的内存大小@mask：对齐内存的掩码获取请求大小的对齐内存并更新memptr 指向新对齐的内存成功则返回0，否则返回无内存错误 -> rf: RDMA PCI function
+                    rf->obj_next.pa = memptr->pa + size
+                irdma_obj_aligned_mem(rf, &mem, IRDMA_COMMIT_FPM_BUF_SIZE,
+                info.bar0 = rf->hw.hw_addr
+                irdma_sc_dev_init -> Initialize control part of device
+                    dev->hw->hw_addr = info->bar0
+                    irdma_sc_init_hw(dev) -> RDMA/irdma：实施硬件管理队列 OP，驱动程序将特权命令发布到硬件管理队列（控制 QP 或 CQP）以请求硬件的管理操作。 实现 CQP 的创建/销毁以及支持函数、数据结构和标头以处理不同的 CQP 命令
+                        i40iw_init_hw(dev)
+                            dev->hw_regs[i] = (u32 __iomem *)(i40iw_regs[i] + hw_addr)
+                            dev->wqe_alloc_db = dev->hw_regs[IRDMA_WQEALLOC]
+                            dev->hw_attrs.page_size_cap = SZ_4K | SZ_2M -> RDMA/irdma：不要为 x722 通告 1GB 页面大小，x722 不支持 1GB 页面大小，但 irdma 驱动程序错误地将 x722 设备的 1GB 页面大小支持通告给 ib_core，以计算在此 MR 上使用的最佳页面大小。 这可能会导致 MR 上的硬件计算出不正确的起始偏移量
+                            dev->hw_attrs.max_qp_wr = I40IW_MAX_QP_WRS
+                        or icrdma_init_hw(dev)
+                            dev->hw_attrs.page_size_cap = SZ_4K | SZ_2M | SZ_1G;
+                    irdma_wait_pe_ready(dev)
+                        do {
+                            statuscpu0 = readl(dev->hw_regs[IRDMA_GLPE_CPUSTATUS0])
+                            mdelay(1000) -> mdelay是忙等待函数，在延迟过程中无法运行其他任务．这个延迟的时间是准确的．是需要等待多少时间就会真正等待多少时间
+                        }
+                    val = readl(dev->hw_regs[IRDMA_GLPCI_LBARCTRL])
+                    dev->db_addr = dev->hw->hw_addr + (uintptr_t)dev->hw_regs[IRDMA_DB_ADDR_OFFSET]
+        irdma_create_cqp(rf)
+            cqp->sq.va = dma_alloc_coherent(dev->hw->device, cqp->sq.size,
+            irdma_obj_aligned_mem(rf, &mem, sizeof(struct irdma_cqp_ctx),
+            irdma_sc_cqp_init(dev->cqp, &cqp_init_info) -> Initialize buffers for a control Queue Pair
                 irdma_get_encoded_wqe_size IRDMA_QUEUE_TYPE_CQP
                 cqp->rocev2_rto_policy = info->rocev2_rto_policy
                 memcpy(&cqp->dcqcn_params, &info->dcqcn_params, sizeof(cqp->dcqcn_params))
                 IRDMA_RING_INIT(cqp->sq_ring, cqp->sq_size)
                 INIT_LIST_HEAD(&cqp->dev->cqp_cmd_head)
-                writel(0, cqp->dev->hw_regs[IRDMA_CQPTAIL]) -> db, register -> fpga
-            irdma_sc_cqp_create
+                writel(0, cqp->dev->hw_regs[IRDMA_CQPTAIL]) -> db, register -> fpga, xt not call this db
+                writel(0, cqp->dev->hw_regs[IRDMA_CQPDB])
+                writel(0, cqp->dev->hw_regs[IRDMA_CCQPSTATUS])
+            irdma_sc_cqp_create(dev->cqp, &maj_err, &min_err) -> create cqp during bringup
                 cqp->sdbuf.size = ALIGN(IRDMA_UPDATE_SD_BUFF_SIZE * cqp->sq_size, IRDMA_SD_BUF_ALIGNMENT -> 128
                 writel(p1, cqp->dev->hw_regs[IRDMA_CCQPHIGH])
                 writel(p2, cqp->dev->hw_regs[IRDMA_CCQPLOW])
@@ -2565,45 +2556,250 @@ irdma_probe
             INIT_LIST_HEAD(&cqp->cqp_avail_reqs)
             INIT_LIST_HEAD(&cqp->cqp_pending_reqs)
             init_waitqueue_head(&cqp->cqp_requests[i].waitq) <- wake_up(&cqp_request->waitq)
-        irdma_hmc_setup
-            irdma_create_hmc_objs -> 初始化时驱动会按照支持QP数量规格把HMC准备好
-                irdma_cfg_fpm_val
-                    irdma_sc_cfg_iw_fpm
-                        irdma_sc_parse_fpm_commit_buf
-                            irdma_sc_decode_fpm_commit
-                                obj_info[rsrc_idx].cnt = (u32)FIELD_GET(IRDMA_COMMIT_FPM_QPCNT, temp) -> 初始化时获取支持的QP数量规格
-        irdma_initialize_hw_rsrc
-            irdma_set_hw_rsrc
-        irdma_create_ccq
+        irdma_hmc_setup(rf)
+            rf->sd_type = IRDMA_SD_TYPE_DIRECT
+            irdma_cfg_fpm_val(&rf->sc_dev, qpcnt) -> 算法
+                irdma_sc_init_iw_hmc(dev, dev->hmc_fn_id)
+                    irdma_sc_query_fpm_val(dev->cqp, 0, hmc_info->hmc_fn_id, &query_fpm_mem, true, wait_type)
+                        wqe = irdma_sc_cqp_get_next_send_wqe(cqp, scratch)
+                        irdma_sc_cqp_post_sq(cqp)
+                        irdma_cqp_poll_registers(cqp, tail,
+                            irdma_get_cqp_reg_info(cqp, &val, &newtail, &error)
+                            error = readl(cqp->dev->hw_regs[IRDMA_CQPERRCODES])
+                    irdma_sc_parse_fpm_query_buf(dev, query_fpm_mem.va, hmc_info,
+                        irdma_sc_decode_fpm_query(buf, 32, obj_info, IRDMA_HMC_IW_HTE)
+                        obj_info[IRDMA_HMC_IW_APBVT_ENTRY].size = 8192
+                sd_needed = irdma_est_sd(dev, hmc_info) -> 返回 HMC 的 SD 的近似数量
+                    size += round_up(hmc_info->hmc_obj[IRDMA_HMC_IW_PBLE].cnt *
+                qpwanted = min(qp_count, hmc_info->hmc_obj[IRDMA_HMC_IW_QP].max_cnt)
+                while (irdma_q1_cnt(dev, hmc_info, qpwanted) > hmc_info->hmc_obj[IRDMA_HMC_IW_Q1].max_cnt)
+                    roundup_pow_of_two
+                cfg_fpm_value_gen_1
+                or
+                cfg_fpm_value_gen_2
+                irdma_sc_cfg_iw_fpm(dev, dev->hmc_fn_id) -> warp
+                    irdma_sc_parse_fpm_commit_buf
+                        irdma_sc_decode_fpm_commit
+                            obj_info[rsrc_idx].cnt = (u32)FIELD_GET(IRDMA_COMMIT_FPM_QPCNT, temp) -> 初始化时获取支持的QP数量规格
+                hmc_info->sd_table.sd_entry = virt_mem.va
+            irdma_create_hmc_objs(rf, true, rf->rdma_ver) -> 初始化时驱动会按照支持QP数量规格把HMC准备好 -> create all hmc objects for the device
+                for (i = 0; i < IW_HMC_OBJ_TYPE_NUM; i++)
+                    irdma_create_hmc_obj_type(dev, &info) -> irdma_sc_create_hmc_obj
+	                    irdma_find_sd_index_limit(info->hmc_info, info->rsrc_type, info->start_idx, info->count, &sd_idx, &sd_lmt) -> 查找段描述符索引限制，@hmc_info：指向 HMC 配置信息结构的指针 @type：我们正在搜索的 HMC 资源类型 @idx：对象的起始索引 @cnt：我们尝试创建的对象数量 @ sd_idx：返回相关段描述符索引的指针 @sd_limit：返回段描述符最大数量的指针 该函数计算 irdma_hmc_rsrc_type 定义的资源的段描述符索引和索引限制
+                        irdma_find_pd_index_limit(info->hmc_info, info->rsrc_type, info->start_idx, info->count, &pd_idx, &pd_lmt) -> finds page descriptor index limit
+                        for (j = sd_idx; j < sd_lmt; j++)
+                            irdma_add_sd_table_entry(dev->hw, info->hmc_info, j, info->entry_type, IRDMA_HMC_DIRECT_BP_SIZE) -> RDMA/irdma：添加 HMC 后备存储设置功能，HW 使用主机内存作为多个协议上下文对象和队列状态跟踪的后备存储。 主机内存缓存 (HMC) 是负责管理存储在主机内存中的这些对象的组件。 添加函数和数据结构来管理 HMC 为各种对象使用的支持页面的分配 -> Adds a segment descriptor to the table
+                                allocate a 4K pd page or 2M backing page
+                                dma_mem.size = ALIGN(alloc_len, IRDMA_HMC_PD_BP_BUF_ALIGNMENT)
+                                dma_mem.va = dma_alloc_coherent(hw->device, dma_mem.size,
+                                if (type == IRDMA_SD_TYPE_PAGED)
+                                    vmem->size = sizeof(struct irdma_hmc_pd_entry) * 512
+                                    vmem->va = kzalloc(vmem->size, GFP_KERNEL)
+                                    sd_entry->u.pd_table.pd_entry = vmem->va
+                                    memcpy(&sd_entry->u.pd_table.pd_page_addr, &dma_mem, sizeof(sd_entry->u.pd_table.pd_page_addr))
+                                else
+                                    memcpy(&sd_entry->u.bp.addr, &dma_mem, sizeof(sd_entry->u.bp.addr))
+                            irdma_add_pd_table_entry -> Adds page descriptor to the specified table -> 将页面描述符添加到指定的表中，@dev：指向我们的设备结构的指针@hmc_info：指向HMC配置信息结构的指针@pd_index：要操作的页面描述符索引@rsrc_pg：如果不为NULL，则使用预分配的页面而不是分配 新的一个。 该函数： 1. 初始化 pd 条目 2. 在 pd_table 中添加 pd_entry 3. 在 irdma_hmc_pd_entry 结构中标记该条目有效 4. 将 pd_entry 的引用计数初始化为 1 假设： 1. pd 的内存应该固定，物理上连续并且 在 4K 边界上对齐并将内存归零。 2.大小应为4K
+                                page->size = ALIGN(IRDMA_HMC_PAGED_BP_SIZE, IRDMA_HMC_PD_BP_BUF_ALIGNMENT)
+                                page->va = dma_alloc_coherent(dev->hw->device, page->size, &page->pa,GFP_KERNEL)
+                                memcpy(&pd_entry->bp.addr, page, sizeof(pd_entry->bp.addr))
+                                pd_entry->bp.entry_type = IRDMA_SD_TYPE_PAGED
+                                irdma_invalidate_pf_hmc_pd(dev, sd_idx, rel_pd_idx) -> 使 PF 硬件中的 pd 缓存无效
+                                    writel(val, dev->hw_regs[IRDMA_PFHMC_PDINV])
+                        irdma_hmc_finish_add_sd_reg(dev, info) -> irdma_hmc_sd_grp -> 为 cqp 设置 sd 条目组
+                            for (i = sd_index; i < sd_index + sd_cnt; i++)
+                                irdma_set_sd_entry(pa, i, sd_entry->entry_type,
+                                or irdma_clr_sd_entry(i, sd_entry->entry_type,
+                                ret_code = dev->cqp->process_cqp_sds(dev, &sdinfo)
+        irdma_initialize_hw_rsrc -> 初始化硬件资源跟踪数组
+            if (rf->rdma_ver != IRDMA_GEN_1)
+                rf->allocated_ws_nodes = bitmap_zalloc(IRDMA_MAX_WS_NODES,
+                set_bit(0, rf->allocated_ws_nodes)
+            rsrc_size = irdma_calc_mem_rsrc_size(rf) -> 计算内存资源大小
+                rsrc_size = sizeof(struct irdma_arp_entry) * rf->arp_table_size
+                rsrc_size += sizeof(unsigned long) * BITS_TO_LONGS(rf->max_qp)
+                ...
+            rf->mem_rsrc = vzalloc(rsrc_size) -> 分配虚拟连续内存并用零填充
+            rf->arp_table = (struct irdma_arp_entry *)rf->mem_rsrc
+            irdma_set_hw_rsrc(rf) -> 按基址偏移和预留空间设置各物理资源(QP,CQ,MR,PD,AH,MCG,ARP,qp_table, cq_table)基地址
+            rf->mr_stagmask = ~(((1 << mrdrvbits) - 1) << (32 - mrdrvbits))
+        irdma_create_ccq -> 创建用于控制操作的完成队列
+            ccq->shadow_area.size = sizeof(struct irdma_cq_shadow_area)
             ccq->mem_cq.va = dma_alloc_coherent
-            irdma_obj_aligned_mem
-            irdma_sc_ccq_init
-            irdma_sc_ccq_create
-                irdma_sc_ccq_create_done
+            info.num_elem = IW_CCQ_SIZE -> 2048
+            irdma_sc_ccq_init(dev->ccq, &info)
+                cq->cq_type = IRDMA_CQ_TYPE_CQP
+                IRDMA_RING_INIT(cq->cq_uk.cq_ring, info->num_elem)
+                cq->cq_uk.polarity = true -> 极性位/可反转/有效位
+            irdma_sc_ccq_create(dev->ccq, 0, true, true)
+                irdma_sc_cq_create(ccq, scratch, check_overflow, post_sq) -> 创建完成队列
+                     irdma_sc_add_cq_ctx(ceq, cq) -> 为 ceq 添加 cq ctx 跟踪
+                        ceq->reg_cq[ceq->reg_cq_size++] = cq
+                     ...
+                irdma_sc_ccq_create_done -> irdma_sc_poll_for_cqp_op_done(cqp, IRDMA_CQP_OP_CREATE_CQ, NULL) -> 等待 CQP SQ 中最后一次写入完成
+                    while (1)
+                        irdma_sc_ccq_get_cqe_info
+                            polarity = (u8)FIELD_GET(IRDMA_CQ_VALID, temp)
+                            IRDMA_RING_MOVE_HEAD ->  move the head for cq
+                            IRDMA_RING_MOVE_TAIL ->  update cq tail in cq shadow memory also
+                        udelay(cqp->dev->hw_attrs.max_sleep_count)
                 ccq->dev->cqp->process_cqp_sds = irdma_cqp_sds_cmd
-        irdma_setup_ceq_0
-        INIT_WORK(&rf->cqp_cmpl_work, cqp_compl_worker)
+        irdma_setup_ceq_0 -> 创建CEQ 0及其中断资源 -> 为所有设备完成事件队列分配一个列表，创建ceq 0并配置其msix中断向量返回0，如果设置成功，否则返回错误
+            num_ceqs = min(rf->msix_count, rf->sc_dev.hmc_fpm_misc.max_ceqs
+            rf->ceqlist = kcalloc(num_ceqs, sizeof(*rf->ceqlist), GFP_KERNEL)
+            irdma_create_ceq(rf, iwceq, 0, &rf->default_vsi) -> 创建完成事件队列
+                irdma_sc_ceq_init(&iwceq->sc_ceq, &info)
+                irdma_cqp_ceq_cmd(&rf->sc_dev, &iwceq->sc_ceq, IRDMA_OP_CEQ_CREATE)
+                or irdma_sc_cceq_create(&iwceq->sc_ceq, 0)
+            irdma_cfg_ceq_vector(rf, iwceq, 0, msix_vec) -> 为完成事件队列设置中断
+                if (rf->msix_shared && !ceq_id)
+                    tasklet_setup(&rf->dpc_tasklet, irdma_dpc)
+                    request_irq(msix_vec->irq, irdma_irq_handler, 0,
+                else
+                    tasklet_setup(&iwceq->dpc_tasklet, irdma_ceq_dpc)
+                        irdma_process_ceq(rf, iwceq)
+                            do cq = irdma_sc_process_ceq(dev, sc_ceq)
+                                ceq->polarity ^= 1
+                                irdma_sc_cq_ack(cq)
+                            queue_work(rf->cqp_cmpl_wq, &rf->cqp_cmpl_work)
+                            irdma_puda_ce_handler(rf, cq)
+                                do {
+                                    irdma_puda_poll_cmpl(dev, cq, &compl_error)
+                                        if (info.q_type == IRDMA_CQE_QTYPE_RQ)
+                                            irdma_puda_poll_info(cq, &info)
+                                                cqe = IRDMA_GET_CURRENT_CQ_ELEM(&cq->cq_uk)
+                                                    (_cq)->cq_base[IRDMA_RING_CURRENT_HEAD((_cq)->cq_ring)].buf
+                                                get_64bit_val(cqe, 24, &qword3)
+                                                info->qp = (struct irdma_qp_uk *)(unsigned long)comp_ctx
+                                                ...
+                                            dma_sync_single_for_cpu -> 确保DMA缓冲区中的数据与物理内存中的数据同步。如果需要将数据从设备上读取到内存中，则应该使用 dma_sync_single_for_cpu()函数。如果需要将数据从内存中写入到设备上，则应该使用 dma_sync_single_for_device()函数
+                                            irdma_puda_get_tcpip_info -> get tcpip info from puda buffer
+                                                if (buf->vsi->dev->hw_attrs.uk_attrs.hw_rev == IRDMA_GEN_1)
+                                                    irdma_gen1_puda_get_tcpip_info(info, buf)
+                                                        if (ethh->h_proto == htons(0x8100))
+                                                            buf->vlan_id = ntohs(((struct vlan_ethhdr *)ethh)->h_vlan_TCI) & VLAN_VID_MASK
+                                                            ip6h = (struct ipv6hdr *)buf->iph
+                                                buf->ipv4 = info->ipv4
+                                                buf->seqnum = ntohl(tcph->seq)
+                                                ether_addr_copy(buf->smac, info->smac)
+                                            rsrc->receive(rsrc->vsi, buf) -> irdma_ieq_receive
+                                                qp = irdma_ieq_get_qp(vsi->dev, buf)
+                                                irdma_ieq_handle_exception(ieq, qp, buf)
+                                                    irdma_ieq_check_first_buf(buf, fps)
+                                                    irdma_send_ieq_ack(qp)
+                                            irdma_ilq_putback_rcvbuf
+                                            or irdma_puda_replenish_rq
+                                                irdma_puda_get_bufpool
+                                                    irdma_puda_get_listbuf
+                                                irdma_puda_post_recvbuf
+                                        else
+                                            rsrc->xmit_complete(rsrc->vsi, buf -> irdma_ieq_tx_compl
+                                                irdma_puda_ret_bufpool
+                                                    list_add(&buf->list, &rsrc->bufpool)
+                                            irdma_puda_send_buf
+                                                irdma_puda_send
+                                                    wqe = irdma_puda_get_next_send_wqe(&qp->qp_uk, &wqe_idx)
+                                                    irdma_uk_qp_post_wr(&qp->qp_uk)
+                                                        writel(qp->qp_id, qp->wqe_alloc_db)
+                                    irdma_sc_ccq_arm(cq)
+                                        writel(ccq->cq_uk.cq_id, ccq->dev->cq_arm_db)
+                                }
+                        irdma_ena_intr(&rf->sc_dev, iwceq->msix_idx) -> dev->irq_ops->irdma_en_irq(dev, msix_id) -> icrdma_ena_irq -> 启用中断
+                            writel(val, dev->hw_regs[IRDMA_GLINT_DYN_CTL] + idx)
+                    request_irq(msix_vec->irq, irdma_ceq_handler, 0,
+                        tasklet_schedule(&iwceq->dpc_tasklet)
+                cpumask_clear(&msix_vec->mask)
+                cpumask_set_cpu(msix_vec->cpu_affinity, &msix_vec->mask)
+                irq_update_affinity_hint(msix_vec->irq, &msix_vec->mask)
+                rf->sc_dev.irq_ops->irdma_cfg_ceq(&rf->sc_dev, ceq_id, msix_vec->idx, true) -> icrdma_cfg_ceq
+                    writel(reg_val, dev->hw_regs[IRDMA_GLINT_CEQCTL] + ceq_id)
+            irdma_ena_intr(&rf->sc_dev, msix_vec->idx)
+        INIT_WORK(&rf->cqp_cmpl_work, cqp_compl_worker) -> irdma_cqp_ce_handler
+            wake_up(&cqp_request->waitq)
+            or cqp_request->callback_fcn(cqp_request)
         irdma_sc_ccq_arm
     ice_get_qos_params
     irdma_fill_qos_info
+        l2params->vsi_prio_type = qos_info->vport_priority_type
+        l2params->tc_info[i].rel_bw = qos_info->tc_info[i].rel_bw
+        memcpy(l2params->dscp_map, qos_info->dscp_map, sizeof(l2params->dscp_map))
     irdma_rt_init_hw -> 初始化硬件运行时, ILQ, IEQ, CEQs and PBLEs
-        irdma_initialize_ieq
-            irdma_puda_create_rsrc
-                irdma_puda_qp_create
-                    irdma_cqp_qp_create_cmd
-                        cqp_info->cqp_cmd = IRDMA_OP_QP_CREATE
-        ...
-        irdma_setup_ceqs
-        irdma_setup_aeq
-            irdma_create_aeq
-            irdma_cfg_aeq_vector
-            irdma_ena_intr
-        ...
+        irdma_sc_vsi_init
+        irdma_setup_cm_core
+        irdma_vsi_stats_init
+        do {
+            if (!iwdev->roce_mode) -> 非RoCE模式
+            irdma_initialize_ilq -> create iwarp local queue for cm
+            irdma_initialize_ieq
+                irdma_puda_create_rsrc
+                    irdma_puda_qp_create
+                        irdma_cqp_qp_create_cmd
+                            cqp_info->cqp_cmd = IRDMA_OP_QP_CREATE
+            irdma_setup_ceqs -> 管理设备 ceq 及其中断资源，@rf：RDMA PCI 函数 @vsi：此 CEQ 的 VSI 结构 为所有设备完成事件队列分配列表 创建 ceq 并配置其 msix 中断向量 如果 ceq 成功
+                irdma_create_ceq
+                irdma_cfg_ceq_vector
+                irdma_ena_intr
+            irdma_hmc_init_pble -> Initialize pble resources during module load
+                pble_rsrc->fpm_base_addr = hmc_info->hmc_obj[IRDMA_HMC_IW_PBLE].base
+                INIT_LIST_HEAD(&pble_rsrc->pinfo.clist)
+                add_pble_prm(pble_rsrc)
+            irdma_setup_aeq
+                irdma_create_aeq
+                irdma_cfg_aeq_vector
+                irdma_ena_intr
+            irdma_alloc_set_mac -> set up a mac address table entry
+                irdma_alloc_local_mac_entry
+                    cqp_info->cqp_cmd = IRDMA_OP_ALLOC_LOCAL_MAC_ENTRY
+                irdma_add_local_mac_entry
+                    cqp_info->cqp_cmd = IRDMA_OP_ADD_LOCAL_MAC_ENTRY
+            irdma_add_ip -> add ip addresses
+                irdma_add_ipv4_addr
+                    ip_addr = ntohl(ifa->ifa_address)
+                    irdma_manage_arp_cache(iwdev->rf, dev->dev_addr, &ip_addr, true, IRDMA_ARP_ADD) -> manage hw arp cache
+                        arp_index = irdma_arp_table(rf, ip_addr, ipv4, mac_addr, action)
+                        cqp_request = irdma_alloc_and_get_cqp_request(&rf->cqp, false)
+                        cqp_info->cqp_cmd = IRDMA_OP_ADD_ARP_CACHE_ENTRY
+                irdma_add_ipv6_addr -> 将IPv6地址添加到硬件ARP表中
+                    idev = __in6_dev_get(ip_dev)
+                    irdma_copy_ip_ntohl(local_ipaddr6, ifp->addr.in6_u.u6_addr32)
+                        *dst++ = ntohl(*src++);
+                        ...
+            iwdev->cleanup_wq = alloc_workqueue("irdma-cleanup-wq",
+            irdma_get_used_rsrc -> 确定内部使用的资源
+                iwdev->rf->used_pds
+                ...
+            init_waitqueue_head
+        }
+        irdma_rt_deinit_hw(iwdev) -> clean up the irdma device resources -> 根据状态机清理设备资源
+            switch (iwdev->init_state)
     irdma_ib_register_device
-    ice_rdma_update_vsi_filter
+    ice_rdma_update_vsi_filter -> update main VSI filters for RDMA -> get ice eth api
+        vsi = ice_find_vsi(pf, vsi_id)
+        ice_cfg_rdma_fltr(&pf->hw, vsi->idx, enable) -> enable/disable RDMA filtering on VSI
+            cached_ctx = ice_get_vsi_ctx(hw, vsi_handle)
+            ctx->info.valid_sections = cpu_to_le16(ICE_AQ_VSI_PROP_Q_OPT_VALID)
+            ice_update_vsi
+                ice_aq_update_vsi -> Ice：扩展 VSI 句柄的使用第 1/2 部分，VSI 句柄只是驱动程序维护的一个数字，用于唯一标识 VSI。 VSI 句柄由硬件中的 VSI 编号支持。 当与硬件交互时，VSI句柄被转换成VSI编号。 在提交 0f9d5027a749（“ice：重构 VSI 分配、删除和重建流程”）中，引入了 VSI 句柄，但仅在创建和删除 VSI 时使用。 该补丁是两个补丁之一，这两个补丁扩展了 VSI 句柄在驱动程序其余部分的使用。 此外，在此补丁中，必须重构代码的某些部分才能正确使用 VSI 句柄
+                    ice_fill_dflt_direct_cmd_desc
+                    cmd->vsi_num = cpu_to_le16(vsi_ctx->vsi_num | ICE_AQ_VSI_IS_VALID)
+                    status = ice_aq_send_cmd(hw, &desc, &vsi_ctx->info, -> send FW Admin Queue command to FW Admin Queue
+                        ice_sq_send_cmd_retry
+                            ice_sq_send_cmd -> send command to Control Queue (ATQ)
+                                desc_on_ring = ICE_CTL_Q_DESC(cq->sq, cq->sq.next_to_use)
+                                wr32(hw, cq->sq.tail, cq->sq.next_to_use)
+                                ice_flush(hw)
+                                udelay(5)
     auxiliary_set_drvdata
 
 
+
+
+static const struct irdma_irq_ops icrdma_irq_ops = {
+	.irdma_cfg_aeq = irdma_cfg_aeq,
+	.irdma_cfg_ceq = icrdma_cfg_ceq,
+	.irdma_dis_irq = icrdma_disable_irq,
+	.irdma_en_irq = icrdma_ena_irq,
+};
 
 
 static struct class ib_class = {
@@ -2838,28 +3034,6 @@ ibv_create_qp -> IB_USER_VERBS_CMD_CREATE_QP -> static int ib_uverbs_create_qp
     uverbs_response
 
 
-example of e81:
-irdma_create_qp
-    ...
-    iwqp->q2_ctx_mem.va = dma_alloc_coherent
-    irdma_alloc_rsrc
-    rdma_protocol_roce
-    irdma_sc_qp_init
-        irdma_uk_qp_init
-        irdma_get_encoded_wqe_size
-    irdma_cqp_create_qp_cmd
-        irdma_alloc_and_get_cqp_request
-        cqp_info->cqp_cmd = IRDMA_OP_QP_CREATE
-        status = irdma_handle_cqp_op(rf, cqp_request) -> irdma_sc_qp_create
-            irdma_sc_cqp_get_next_send_wqe
-            dma_wmb();
-            set_64bit_val(wqe, 24, hdr)
-            print_hex_dump_debug
-            irdma_sc_cqp_post_sq
-        irdma_put_cqp_request(&rf->cqp, cqp_request)
-    iwqp->sig_all = init_attr->sq_sig_type == IB_SIGNAL_ALL_WR
-    rdma_protocol_roce
-    init_completion(&iwqp->free_qp)
 
 
 
@@ -4671,47 +4845,6 @@ ibv_modify_qp -> IB_USER_VERBS_EX_CMD_MODIFY_QP -> ib_uverbs_ex_modify_qp
         release_qp:
         rdma_lookup_put_uobject
 
-irdma_modify_qp
-irdma_modify_qp_roce
-    irdma_query_pkey
-    rdma_get_udp_sport -> 根据 grh.flow_label 或 lqpn/rqrpn 获取 QP 的源 udp 端口号。 这可以更好地跨 NIC RX 队列传播流量
-    irdma_qp_rem_qos
-    dev->ws_remove
-    rdma_read_gid_l2_fields
-    irdma_roce_get_vlan_prio
-        vlan_dev_get_egress_qos_mask
-    irdma_qp_add_qos
-        list_add(&qp->list, &vsi->qos[qp->user_pri].qplist)
-    ib_modify_qp_is_ok
-        qp_state_table[cur_state][next_state].valid) -> IB：添加 ib_modify_qp_is_ok() 库函数，内核中的 mthca 驱动程序包含一个表，其中的属性对于每个队列对状态转换都有效。 事实证明，正在准备合并的其他两个 IB 驱动程序（ipath 和 ehca）都复制了该表、错误等。 为了防止代码重复，请将此表和用于检查参数的代码移动到中间层库函数 ib_modify_qp_is_ok() 中
-        qp状态表及参数: qp_state_table[IB_QPS_ERR + 1][IB_QPS_ERR + 1]
-    switch (attr->qp_state) -> QP状态机
-    ...
-    irdma_flush_wqes
-        irdma_hw_flush_wqes
-            cqp_request->callback_fcn = irdma_hw_flush_wqes_callback
-            cqp_info->cqp_cmd = IRDMA_OP_QP_FLUSH_WQES
-            irdma_handle_cqp_op -> cqp 控制QP
-                irdma_process_cqp_cmd
-                    irdma_exec_cqp_cmd
-                        switch (pcmdinfo->cqp_cmd) -> 判断控制QP命令类型
-                        case IRDMA_OP_CEQ_CREATE -> 驱动程序将特权命令发布到硬件管理队列（控制 QP 或 CQP），以请求硬件执行管理操作。 实现 CQP 的创建/销毁以及支持函数、数据结构和标头以处理不同的 CQP 命令
-                            irdma_sc_cq_create
-                                irdma_sc_cqp_get_next_send_wqe
-                                set_64bit_val(wqe, 0, cq->cq_uk.cq_size) -> 按位设置其值(每8字节)
-                                dma_wmb()
-                                irdma_sc_cqp_post_sq -> no msleep(300)
-                                    writel(IRDMA_RING_CURRENT_HEAD(cqp->sq_ring), cqp->dev->cqp_db) -> 写寄存器(往内存映射的 I/O 空间上写4字节数据)
-                        ...
-                        case IRDMA_OP_QP_CREATE
-                            irdma_sc_qp_create -> 创建QP判断对应QP HMC是否已准备好
-                        ...
-    irdma_sc_qp_setctx_roce
-void irdma_sc_qp_setctx_roce(struct irdma_sc_qp *qp, __le64 *qp_ctx,
-    set_64bit_val rq_wqe_size
-    ...
-
-
 irdma_uk_rdma_write
 irdma_uk_rdma_read
 irdma_uk_cq_poll_cmpl
@@ -5005,7 +5138,7 @@ ibv_create_qp -> IB_USER_VERBS_CMD_CREATE_QP -> static int ib_uverbs_create_qp
     uverbs_response
 
 
-example of e81:
+example of e810:
 irdma_create_qp
     ...
     iwqp->q2_ctx_mem.va = dma_alloc_coherent
@@ -8246,7 +8379,7 @@ irdma_inetaddr_event
             ib_dispatch_event(&ib_event)
 
 
-
+rf, 
 struct irdma_pci_f {
 
 }
@@ -8704,4 +8837,179 @@ struct mlx5_hca_vport_context {
 	u16			pkey_violation_counter;
 	bool			grh_required;
 };
+
+
+
+
+一个包含指向所有每个进程、命名空间的指针的结构 - fs (mount)、uts、network、sysvipc 等。 pid 命名空间是一个例外 - 它是使用 task_active_pid_ns 访问的。 这里的pid命名空间是孩子们将使用的命名空间。 “count”是持有引用的任务数量。 那么，每个命名空间的计数将是指向它的 nsproxy 数量，而不是任务数量。 nsproxy 由共享所有命名空间的任务共享。 一旦克隆或取消共享单个命名空间，就会复制 nsproxy。 */
+struct nsproxy {
+	refcount_t count;
+	struct uts_namespace *uts_ns;
+	struct ipc_namespace *ipc_ns;
+	struct mnt_namespace *mnt_ns;
+	struct pid_namespace *pid_ns_for_children;
+	struct net 	     *net_ns;
+	struct time_namespace *time_ns;
+	struct time_namespace *time_ns_for_children;
+	struct cgroup_namespace *cgroup_ns;
+};
+
+添加了新的系统调用 setns()。 它将调用线程附加到现有的命名空间。 其原型为 int setns(int fd, int nstype); 参数是： • fd：引用命名空间的文件描述符。 这些是通过打开 /proc/<pid>/ns/ 目录中的链接获得的。 • nstype：可选参数。 当它是新的 CLONE_NEW* 命名空间标志之一时，指定的文件描述符必须引用与指定的 CLONE_NEW* 标志的类型匹配的命名空间。 当未设置 nstype（其值为 0）时，fd 参数可以引用任何类型的命名空间。 如果 nstype 与指定 fd 关联的命名空间类型不对应，则返回 –EINVAL 值。 您可以在 kernel/nsproxy.c 中找到 setns() 系统调用的实现。 • 添加了以下六个新克隆标志以支持命名空间： • CLONE_NEWNS（用于装载命名空间） • CLONE_NEWUTS（用于 UTS 命名空间） • CLONE_NEWIPC（用于 IPC 命名空间） • CLONE_NEWPID（用于 PID 命名空间） • CLONE_NEWNET（用于网络命名空间） • CLONE_NEWUSER（用于用户命名空间） 传统上，使用clone() 系统调用来创建新进程。 它经过调整以支持这些新标志，以便它将创建附加到新命名空间（或多个命名空间）的新进程。 请注意，在本章后面的一些示例中，您将遇到使用 CLONE_NEWNET 标志来创建新的网络命名空间的情况。 • 六个具有名称空间支持的子系统中的每个子系统都实现了自己的唯一名称空间。 例如，挂载命名空间由名为 mnt_namespace 的结构体表示，网络命名空间由名为 net 的结构体表示，这将在本节后面讨论。 我将在本章后面提到其他命名空间。 • 对于名称空间创建，添加了名为create_new_namespaces() 的方法(kernel/nsproxy.c)。 此方法获取 CLONE_NEW* 标志或 CLONE_NEW* 标志的位图作为第一个参数。 它首先通过调用create_nsproxy()方法创建一个nsproxy对象，然后根据指定的flag关联一个命名空间； 由于标志可以是标志的位掩码，因此 create_new_namespaces() 方法可以关联多个名称空间。 我们来看看create_new_namespaces()方法
+
+
+net_device 结构代表网络设备。 它可以是物理设备，如以太网设备，也可以是软件设备，如桥接设备或 VLAN 设备。 与 sk_buff 结构一样，我将列出它的重要成员。 net_device 结构体在 include/linux/netdevice.h 中定义
+
+
+IB速率
+enum ib_rate {
+	IB_RATE_PORT_CURRENT = 0,
+	IB_RATE_2_5_GBPS = 2,
+	IB_RATE_5_GBPS   = 5,
+	IB_RATE_10_GBPS  = 3,
+	IB_RATE_20_GBPS  = 6,
+	IB_RATE_30_GBPS  = 4,
+	IB_RATE_40_GBPS  = 7,
+	IB_RATE_60_GBPS  = 8,
+	IB_RATE_80_GBPS  = 9,
+	IB_RATE_120_GBPS = 10,
+	IB_RATE_14_GBPS  = 11,
+	IB_RATE_56_GBPS  = 12,
+	IB_RATE_112_GBPS = 13,
+	IB_RATE_168_GBPS = 14,
+	IB_RATE_25_GBPS  = 15,
+	IB_RATE_100_GBPS = 16,
+	IB_RATE_200_GBPS = 17,
+	IB_RATE_300_GBPS = 18,
+	IB_RATE_28_GBPS  = 19,
+	IB_RATE_50_GBPS  = 20,
+	IB_RATE_400_GBPS = 21,
+	IB_RATE_600_GBPS = 22,
+	IB_RATE_800_GBPS = 23,
+};
+
+保护域（PD），PD是将QP和SRQ与MR以及AH与QP相关联的RDMA资源。 可以将PD视为一种颜色，例如：红色MR可以与红色QP配合使用，红色AH可以与红色QP配合使用。 使用带有红色 QP 的绿色 AH 将导致错误
+
+
+扩展可靠连接 (XRC)，XRC 是一种 IB 传输扩展，与原始可靠传输相比，它在发送方为可靠连接 QP 提供了更好的可扩展性。 使用 XRC 将减少两个特定核心之间的 QP 数量：当使用 RC QP 时，对于每个核心，在每台机器中，都有一个 QP。 使用XRC时，每台主机中都会有一个XRC QP。 发送消息时，发送方需要指定接收该消息的远端SRQ号
+
+
+地址句柄（AH），AH是一种RDMA资源，描述从本地端口到目的地的远程端口的路径。 它正用于 UD QP
+
+
+
+VFS 所处理的系统调用,表 8.2 列出 VFS 的系统调用，这些系统调用涉及文件系统、常规文件、目录及符号链接。 另外还有少数几个由 VFS 处理的其他系统调用：诸如 ioperm( )、ioctl( )、pipe( )和 mknod( )，涉及设备文件和管道文件，有些内容在下一章进行讨论。由 VFS 处理的最后一组 系统调用，诸如 socket( )、connect( )、bind( )和 protocols( )，属于套接字系统 调用并用于实现网络功能。 表 8.2 VFS 的部分系统调用 系统调用名 功能  mount( )/ umount( ) 安装/卸载文件系统 sysfs( ) 获取文件系统信息 statfs( )/ fstatfs( ) /ustat( ) 获取文件系统统计信息 chroot( ) 更改根目录 chdir( ) /fchdir( ) /getcwd( ) 更改当前目录 mkdir( ) /rmdir( ) 创建/删除目录 getdents( ) /readdir( )/ link( ) unlink( ) /rename( ) 对目录项进行操作 readlink( ) /symlink( ) 对软链接进行操作 chown( ) /fchown( ) /lchown( ) 更改文件所有者 chmod( )/ fchmod( ) /utime( ) 更改文件属性 stat( ) /fstat( ) /lstat( ) access( ) 读取文件状态 open( ) /close( ) /creat( ) /umask( ) 打开/关闭文件 dup( ) /dup2( ) /fcntl( ) 对文件描述符进行操作 select( ) /poll( ) 异步 I/O 通信 truncate( ) /ftruncate( ) 更改文件长度 lseek( ) /_llseek( ) 更改文件指针 read( )/ write( ) /readv( ) /writev( ) sendfile( ) 文件 I/O 操作 pread( )/ pwrite( ) 搜索并访问文件 mmap( ) /munmap( ) 文件内存映射 fdatasync( ) /fsync( ) /sync( )/ msync( ) 同步访问文件数据 flock( ) 处理文件锁
+
+
+
+static void mlx5e_nic_enable(struct mlx5e_priv *priv)
+    mlx5e_fs_init_l2_addr(priv->fs, netdev)
+        ether_addr_copy(fs->l2.broadcast.addr, netdev->broadcast)
+    mlx5e_ipsec_init -> net/mlx5e：支持 IPsec 核心的 devlink 重新加载，更改 IPsec 初始化流程以允许将来创建应在 devlink 重新加载操作期间释放和分配的硬件资源。 作为该更改的一部分，将函数签名更新为无效，因为没有调用者真正对其感兴趣
+        ipsec = kzalloc(sizeof(*ipsec), GFP_KERNEL) -> net/mlx5e：IPSec、Innova IPSec 卸载基础设施、添加 Innova IPSec ESP 加密卸载配置路径。 检测 Innova IPSec 设备并设置 NETIF_F_HW_ESP 标志。 使用先前补丁中引入的 API 配置安全关联。 添加软件解析器硬件描述符布局 软件解析器 (swp) 是 ConnectX 中的一项硬件功能，它允许主机软件指定 TX 路径中的协议标头偏移量，从而覆盖硬件解析器。 这对于 ASIC 可能无法自行解析的协议很有用。 请注意，由于内联元数据，Innova IPSec 不支持 XDP
+        xa_init_flags
+        ipsec->wq = alloc_workqueue("mlx5e_ipsec: %s", WQ_UNBOUND, 0,
+        mlx5e_ipsec_aso_init -> net/mlx5e：为 IPsec 创建高级转向操作对象，设置 IPsec 与软件堆栈交互所需的 ASO（高级转向操作）对象，以处理各种快速变化的事件：重播窗口、生命周期限制等
+        mlx5e_is_uplink_rep -> net/mlx5e：为 switchdev 模式准备 IPsec 数据包卸载，由于仅在 switchdev 模式下创建上行链路表示器，因此为 IPsec 添加本地变量以指示设备处于此模式。 在此模式下，IPsec ROCE 被禁用，并且加密卸载保持原样。 但是，由于在 FDB 中创建了用于数据包卸载的表，因此添加了 ipsec->rx_esw 和 ipsec->tx_esw
+        mlx5e_accel_ipsec_fs_init -> net/mlx5：将 devcom 指针存储在 IPsec RoCE 内，将 mlx5e priv devcom 组件存储在 IPsec RoCE 内，以使 IPsec RoCE 代码能够访问其他设备的私有信息。 这包括检索必要的设备信息和 IPsec 数据库，这有助于确定是否配置了 IPsec
+    mlx5e_macsec_init -> net/mlx5e：为 MACsec 创建高级转向操作 (ASO) 对象，添加对 ASO 工作队列条目 (WQE) 数据的支持，以允许在查询 ASO 工作队列 (WQ) 时读取数据。 在 ASO WQ 初始化时注册用户模式内存注册 (UMR)，在 ASO WQ 清理时取消注册 UMR。 MACsec 使用 UMR 来确定硬件触发事件的原因，因为不同的场景可能会触发相同的事件。 设置 MACsec ASO 对象以将硬件与软件同步，了解各种 macsec 流状态功能，例如：重播窗口、生命周期限制等
+    mlx5e_modify_admin_state(mdev, MLX5_PORT_DOWN)
+    mlx5e_set_netdev_mtu_boundaries
+    mlx5e_set_dev_port_mtu
+    mlx5_lag_add_netdev
+    mlx5e_enable_async_events
+    mlx5e_enable_blocking_events
+    mlx5e_monitor_counter_init
+    mlx5e_hv_vhca_stats_create
+    mlx5e_dcbnl_init_app
+    mlx5e_nic_set_rx_mode
+        mlx5_hv_vhca_agent_create
+        INIT_DELAYED_WORK(&priv->stats_agent.work, mlx5e_hv_vhca_stats_work) -> net/mlx5e：添加 mlx5e HV VHCA 统计代理，HV VHCA 统计代理负责运行 preiodic rx/tx 数据包/字节统计更新。 目前支持的格式是版本 MLX5_HV_VHCA_STATS_VERSION。 块 ID 1 专用于从 VF 到 PF 的统计数据传输。 报告器从所有打开的通道中获取统计数据，将其填充到缓冲区中并将其发送到mlx5_hv_vhca_write_agent。 由于统计层应包含每个块的一些元数据（序列和偏移量），因此 HV VHCA 层应在通过块 1 实际发送缓冲区之前修改缓冲区
+    mlx5e_open
+    udp_tunnel_nic_reset_ntf -> udp_tunnel_nic_reset_ntf() - 设备发起的重置通知，@dev：网络接口设备结构 * 由驱动程序调用，通知核心整个 UDP 隧道端口状态已丢失，通常是由于设备重置。 核心将假定设备忘记了所有端口，并根据需要发出 .set_port 和 .sync_table 回调。 * 该函数必须在持有 rtnl 锁的情况下调用，并且会在返回之前发出所有回调
+    netif_device_attach
+
+
+
+常用常量, 
+#define SZ_1				0x00000001
+#define SZ_2				0x00000002
+#define SZ_4				0x00000004
+#define SZ_8				0x00000008
+#define SZ_16				0x00000010
+#define SZ_32				0x00000020
+#define SZ_64				0x00000040
+#define SZ_128				0x00000080
+#define SZ_256				0x00000100
+#define SZ_512				0x00000200
+
+#define SZ_1K				0x00000400
+#define SZ_2K				0x00000800
+#define SZ_4K				0x00001000
+#define SZ_8K				0x00002000
+#define SZ_16K				0x00004000
+#define SZ_32K				0x00008000
+#define SZ_64K				0x00010000
+#define SZ_128K				0x00020000
+#define SZ_256K				0x00040000
+#define SZ_512K				0x00080000
+
+#define SZ_1M				0x00100000
+#define SZ_2M				0x00200000
+#define SZ_4M				0x00400000
+#define SZ_8M				0x00800000
+#define SZ_16M				0x01000000
+#define SZ_32M				0x02000000
+#define SZ_64M				0x04000000
+#define SZ_128M				0x08000000
+#define SZ_256M				0x10000000
+#define SZ_512M				0x20000000
+
+#define SZ_1G				0x40000000
+#define SZ_2G				0x80000000
+
+#define SZ_4G				_AC(0x100000000, ULL)
+
+
+
+
+register addr,
+static int irdma_probe(
+    struct ice_pf *pf = iidc_adev->pf
+    irdma_fill_device_info(iwdev, pf, vsi)
+        rf->hw.hw_addr = pf->hw.hw_addr; <- info.bar0 = rf->hw.hw_addr;
+    irdma_ctrl_init_hw
+        irdma_setup_init_state
+            static int irdma_initialize_dev
+                info.bar0 = rf->hw.hw_addr;
+                irdma_sc_dev_init
+                    dev->hw->hw_addr = info->bar0
+                    irdma_sc_init_hw                    
+                        icrdma_init_hw
+                            dev->hw_regs[i] = (u32 __iomem *)(hw_addr + icrdma_regs[i])
+
+irdma_sc_cqp_get_next_send_wqe_idx
+    IRDMA_ATOMIC_RING_MOVE_HEAD(cqp->sq_ring, *wqe_idx, ret_code)
+    wqe = cqp->sq_base[*wqe_idx].elem -> 从DMA的VA基址依次往后填充
+    IRDMA_CQP_INIT_WQE(wqe) -> #define IRDMA_CQP_INIT_WQE(wqe) memset(wqe, 0, 64) -> WQE大小为64字节
+
+
+
+ring, 环形链表, 从头部取出一个元数后, 将头指针向后移动一位
+#define IRDMA_RING_MOVE_HEAD(_ring, _retcode) \
+	{ \
+		register u32 size; \
+		size = (_ring).size;  \
+		if (!IRDMA_RING_FULL_ERR(_ring)) { \
+			(_ring).head = ((_ring).head + 1) % size; \
+			(_retcode) = 0; \
+		} else { \
+			(_retcode) = -ENOMEM; \
+		} \
+	}
+
+分配一段设备和软件共享的DMA内存, 作为发送队列的内存, 起始VA作为发送队列的基址
+cqp->sq.va = dma_alloc_coherent(dev->hw->device, cqp->sq.size, &cqp->sq.pa, GFP_KERNEL);
+
+
+puda: privileged UDA
 
