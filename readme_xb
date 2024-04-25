@@ -2891,78 +2891,6 @@ xvip_graph_dma_init_one
         dma->dma = dma_request_chan(dma->xdev->dev, name);
 
 
-https://github.com/Xilinx/linux-xlnx/tree/xilinx-v14.4
-
-
-
-drivers/infiniband/core/ucma.c
-static ssize_t (*ucma_cmd_table[])(struct ucma_file *file,
-                   const char __user *inbuf,
-                   int in_len, int out_len) = {
-    [RDMA_USER_CM_CMD_CREATE_ID] 	 = ucma_create_id,
-    [RDMA_USER_CM_CMD_DESTROY_ID]	 = ucma_destroy_id,
-    [RDMA_USER_CM_CMD_BIND_IP]	 = ucma_bind_ip,
-    [RDMA_USER_CM_CMD_RESOLVE_IP]	 = ucma_resolve_ip,
-    [RDMA_USER_CM_CMD_RESOLVE_ROUTE] = ucma_resolve_route,
-    [RDMA_USER_CM_CMD_QUERY_ROUTE]	 = ucma_query_route,
-    [RDMA_USER_CM_CMD_CONNECT]	 = ucma_connect,
-    [RDMA_USER_CM_CMD_LISTEN]	 = ucma_listen,
-    [RDMA_USER_CM_CMD_ACCEPT]	 = ucma_accept,
-    [RDMA_USER_CM_CMD_REJECT]	 = ucma_reject,
-    [RDMA_USER_CM_CMD_DISCONNECT]	 = ucma_disconnect,
-    [RDMA_USER_CM_CMD_INIT_QP_ATTR]	 = ucma_init_qp_attr,
-    [RDMA_USER_CM_CMD_GET_EVENT]	 = ucma_get_event,
-    [RDMA_USER_CM_CMD_GET_OPTION]	 = NULL,
-    [RDMA_USER_CM_CMD_SET_OPTION]	 = ucma_set_option,
-    [RDMA_USER_CM_CMD_NOTIFY]	 = ucma_notify,
-    [RDMA_USER_CM_CMD_JOIN_IP_MCAST] = ucma_join_ip_multicast,
-    [RDMA_USER_CM_CMD_LEAVE_MCAST]	 = ucma_leave_multicast,
-    [RDMA_USER_CM_CMD_MIGRATE_ID]	 = ucma_migrate_id,
-    [RDMA_USER_CM_CMD_QUERY]	 = ucma_query,
-    [RDMA_USER_CM_CMD_BIND]		 = ucma_bind,
-    [RDMA_USER_CM_CMD_RESOLVE_ADDR]	 = ucma_resolve_addr,
-    [RDMA_USER_CM_CMD_JOIN_MCAST]	 = ucma_join_multicast
-};
-
-UCMA_CMD_CONNECT -> static ssize_t (*ucma_cmd_table[]) -> static ssize_t ucma_connect
-    copy_from_user
-    ucma_get_ctx_dev
-    ucma_copy_conn_param -> RDMA/cma：为AF_IB设置qkey，允许用户在使用AF_IB时指定qkey。 qkey 被添加到 struct rdma_ucm_conn_param 中代替保留字段，但为了向后兼容，仅当关联的 rdma_cm_id 使用 AF_IB 时才可访问
-        ...
-        dst->qkey = (id->route.addr.src_addr.ss_family == AF_IB) ? src->qkey : 0;
-    rdma_connect_ece -> RDMA/ucma：扩展ucma_connect以接收ECE参数，CMID的主动方通过librdmacm的rdma_connect()和内核的ucma_connect()发起连接。 扩展 UCMA 接口来处理这些新参数
-        rdma_connect(id, conn_param) -> rdma_connect_locked
-            cma_comp_exch(id_priv, RDMA_CM_ROUTE_RESOLVED, RDMA_CM_CONNECT)
-            rdma_cap_ib_cm(id->device, id->port_num) -> rdma_cap_ib_cm - 检查设备端口是否具有 Infiniband Communication Manager 功能。 @device：要检查的设备 @port_num：要检查的端口号 InfiniBand 通信管理器是通过通用服务接口 (GSI) 访问的许多预定义通用服务代理 (GSA) 之一。 它的作用是促进节点之间连接的建立以及已建立的连接的其他管理相关任务。 返回：如果端口支持 IB CM，则返回 true（但这并不能保证 CM 实际正在运行）
-                RDMA_CORE_CAP_IB_CM
-            if (id->qp_type == IB_QPT_UD) -> cma_resolve_ib_udp -> RDMA/cma：添加对 RDMA_PS_UDP 的支持，允许通过 rdma_cm 使用 UD QP，以便为使用 SIDR 解析数据报消息的 IB 地址提供地址转换服务
-            or cma_connect_ib
-                check_add_overflow
-                ib_create_cm_id(id_priv->id.device, cma_ib_handler, id_priv)
-                    cm_alloc_id_priv -> RDMA/cm：简化建立监听cm_id
-                        RB_CLEAR_NODE(&cm_id_priv->service_node) -> rb_tree
-                        init_completion(&cm_id_priv->comp)
-                        xa_alloc_cyclic -> 在 XArray 中找到存储此条目的位置
-                trace_cm_send_req
-                ib_send_cm_req
-                    msg->context[1] = (void *)(unsigned long)IB_CM_REQ_SENT
-                    ib_post_send_mad -> [IB] 修复 MAD 层 DMA 映射，以避免在映射后触及数据缓冲区。MAD 层在 DMA 映射完成后触及用于发送的数据缓冲区，从而违反了 DMA API。 这会导致非缓存一致性架构出现问题，因为执行 DMA 的设备不会看到仅存在于 CPU 缓存中的有效负载缓冲区的更新。 通过让所有 MAD 使用者使用 ib_create_send_mad() 分配其发送缓冲区，并将 DMA 映射移动到 MAD 层，以便可以在调用 send 之前（以及 MAD 层对发送缓冲区进行任何修改之后）完成此操作，可以解决此问题。 在非缓存一致性 PowerPC 440SPe 系统上进行测试
-                        ib_mad_enforce_security -> IB/核心：在管理数据报上强制执行安全性，在创建和销毁 MAD 代理时分配和释放安全上下文。 该上下文用于控制对 PKey 的访问以及发送和接收 SMP。 发送或接收 MAD 时，检查代理是否有权访问端口子网前缀的 PKey。 在 SMI QP 的 MAD 和监听代理注册期间，检查调用进程是否有权访问管理子网并向 LSM 注册回调以获取策略更改通知。 当发生策略更改通知时，重新检查权限并设置一个标志，指示允许发送和接收 SMP。 发送和接收 MAD 时，如果代理位于 SMI QP 上，请检查代理是否有权访问 SMI。 由于安全策略可以更改，因此在创建代理时可能允许许可，但不再允许
-                            rdma_protocol_ib
-                            ib_security_pkey_access
-                        ib_is_mad_class_rmpp
-                        handle_outgoing_dr_smp
-                        ib_mad_kernel_rmpp_agent
-                        ib_send_rmpp_mad
-                        ib_send_mad
-                            ib_dma_map_single
-                                ib_uses_virt_dma
-                                dma_map_single
-                            ib_post_send
-                                .post_send = mlx5_ib_post_send_nodrain,
-            or cma_connect_iw
-    ucma_put_ctx
-
 
 
 mlx5_ib_post_send_nodrain -> mlx5_ib_post_send
@@ -2987,16 +2915,6 @@ enum rdma_cm_state {
 };
 
 
-cma_ib_handler
-switch (ib_event->event)
-case IB_CM_REP_RECEIVED
-    ib_send_cm_mra(cm_id, CMA_CM_MRA_SETTING, NULL, 0) -> IB/cma：为回复消息发送MRA，RDMA_CM的当前实现仅针对请求消息发送MRA（消息接收确认），而不针对响应消息发送MRA。 因此，连接的缓慢主动方可能会在延迟太长的情况下向被动方发送就绪消息，而被动方无法等待。 该补丁在收到响应消息时添加了对 ib_send_cm_mra() 的调用，从而告诉对方将服务超时修改为更大的值，是之前的 16 倍。 与请求情况一样，仅当重复响应到达时才会发送用于回复的 MRA
-        ...
-
-
-大页:
-配置内核大页:
-echo 16 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
 
 
 
@@ -3017,32 +2935,6 @@ const struct file_operations hugetlbfs_file_operations = {
 
 
 
-ibv_create_qp -> IB_USER_VERBS_CMD_CREATE_QP -> static int ib_uverbs_create_qp
-    ...
-    uobj_get_obj_read
-    attr.event_handler = ib_uverbs_qp_event_handler
-    ib_create_qp_user
-        create_qp
-            rdma_zalloc_drv_obj_numa
-            rdma_restrack_new(&qp->res, RDMA_RESTRACK_QP)
-             dev->ops.create_qp(qp, attr, udata) -> .create_qp = irdma_create_qp,
-                ...
-             ib_create_qp_security
-             rdma_restrack_add(&qp->res)
-        create_xrc_qp_user
-    ib_qp_usecnt_inc
-    uverbs_response
-
-
-
-
-
-l2b:
-include/linux/byteorder/generic.h
-cpu_to_be64 -> #define cpu_to_be64 __cpu_to_be64
-
-
-
 
 samples/trace_events
 samples/trace_events/trace-events-sample.c
@@ -3050,98 +2942,6 @@ samples/trace_events/trace-events-sample.c
 
 
 
-rdma version: 5.4.18
-
-
-
-
-
-struct bundle_priv
-IB/uverbs：为 uverbs_attr_bundle 提供实现私有内存，这已经作为匿名“ctx”结构存在，但这并不是真正有用的形式。 将此结构提升到bundle_priv并重新设计内部内容以使用它。 将一堆处理内部状态移入 priv 并减少函数参数的过度使用
-
-
-
-强制实现的函数:
-static void ib_device_check_mandatory(struct ib_device *device)
-{
-#define IB_MANDATORY_FUNC(x) { offsetof(struct ib_device_ops, x), #x }
-	static const struct {
-		size_t offset;
-		char  *name;
-	} mandatory_table[] = {
-		IB_MANDATORY_FUNC(query_device),
-		IB_MANDATORY_FUNC(query_port),
-		IB_MANDATORY_FUNC(alloc_pd),
-		IB_MANDATORY_FUNC(dealloc_pd),
-		IB_MANDATORY_FUNC(create_qp),
-		IB_MANDATORY_FUNC(modify_qp),
-		IB_MANDATORY_FUNC(destroy_qp),
-		IB_MANDATORY_FUNC(post_send),
-		IB_MANDATORY_FUNC(post_recv),
-		IB_MANDATORY_FUNC(create_cq),
-		IB_MANDATORY_FUNC(destroy_cq),
-		IB_MANDATORY_FUNC(poll_cq),
-		IB_MANDATORY_FUNC(req_notify_cq),
-		IB_MANDATORY_FUNC(get_dma_mr),
-		IB_MANDATORY_FUNC(reg_user_mr),
-		IB_MANDATORY_FUNC(dereg_mr),
-		IB_MANDATORY_FUNC(get_port_immutable)
-	};
-
-
-
-
-为该端口需要由内核支持的各种功能定义位
-/* Define bits for the various functionality this port needs to be supported by
- * the core.
- */
-/* Management                           0x00000FFF */
-#define RDMA_CORE_CAP_IB_MAD            0x00000001
-#define RDMA_CORE_CAP_IB_SMI            0x00000002
-#define RDMA_CORE_CAP_IB_CM             0x00000004
-#define RDMA_CORE_CAP_IW_CM             0x00000008
-#define RDMA_CORE_CAP_IB_SA             0x00000010
-#define RDMA_CORE_CAP_OPA_MAD           0x00000020
-
-/* Address format                       0x000FF000 */
-#define RDMA_CORE_CAP_AF_IB             0x00001000
-#define RDMA_CORE_CAP_ETH_AH            0x00002000
-#define RDMA_CORE_CAP_OPA_AH            0x00004000
-#define RDMA_CORE_CAP_IB_GRH_REQUIRED   0x00008000
-
-/* Protocol                             0xFFF00000 */
-#define RDMA_CORE_CAP_PROT_IB           0x00100000
-#define RDMA_CORE_CAP_PROT_ROCE         0x00200000
-#define RDMA_CORE_CAP_PROT_IWARP        0x00400000
-#define RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP 0x00800000
-#define RDMA_CORE_CAP_PROT_RAW_PACKET   0x01000000
-#define RDMA_CORE_CAP_PROT_USNIC        0x02000000
-
-
-iw40
-
-
-static int irdma_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
-
-
-
-
-
-.mmap = mlx5_ib_mmap,
-
-
-mmap
-SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
-    ksys_mmap_pgoff
-        vm_mmap_pgoff
-            do_mmap
-                addr = get_unmapped_area(file, addr, len, pgoff, flags)
-                switch (flags & MAP_TYPE)
-                mmap_region
-                    count_vma_pages_range
-                    call_mmap
-                        file->f_op->mmap(file, vma) -> or filemap_fault -> or xtrdma_mmap by cmd_fd fs
-                    khugepaged_enter_vma
 
 
 
@@ -5075,21 +4875,6 @@ mlx5_ib_post_send_nodrain -> mlx5_ib_post_send
 
 
 
-cm状态机:
-enum rdma_cm_state {
-    RDMA_CM_IDLE,
-    RDMA_CM_ADDR_QUERY,
-    RDMA_CM_ADDR_RESOLVED,
-    RDMA_CM_ROUTE_QUERY,
-    RDMA_CM_ROUTE_RESOLVED,
-    RDMA_CM_CONNECT,
-    RDMA_CM_DISCONNECT,
-    RDMA_CM_ADDR_BOUND,
-    RDMA_CM_LISTEN,
-    RDMA_CM_DEVICE_REMOVAL,
-    RDMA_CM_DESTROYING
-};
-
 
 cma_ib_handler
 switch (ib_event->event)
@@ -5102,21 +4887,6 @@ case IB_CM_REP_RECEIVED
 配置内核大页:
 echo 16 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
 
-
-
-mm/hugetlb.c
-free_hugepages
-
-
-
-const struct file_operations hugetlbfs_file_operations = {
-    .read_iter		= hugetlbfs_read_iter,
-    .mmap			= hugetlbfs_file_mmap,
-    .fsync			= noop_fsync,
-    .get_unmapped_area	= hugetlb_get_unmapped_area,
-    .llseek			= default_llseek,
-    .fallocate		= hugetlbfs_fallocate,
-};
 
 
 
@@ -5303,7 +5073,6 @@ static int irdma_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 
 
 
-.mmap = mlx5_ib_mmap,
 
 
 mmap
@@ -5995,7 +5764,7 @@ ibv_get_device_list
         load_drivers()
         try_all_drivers
         return num_devices
-    ibverbs_device_hold(l[i]) -> verbs: 避免 ibv_device 内存泄漏，现在，每次调用 ibv_get_device_list 时都会刷新 ibv_device 列表，因此我们需要从之前的扫描中释放不再绑定的设备，否则可能会导致 ibv_device 结构的内存泄漏。 仅当用户不再使用 ibv_device 的内存时，我们才能释放它。 我们如何识别设备是否仍在使用​============================================ 我们 将引用计数添加到动词设备结构中。 在以下情况下，该引用计数会增加： 设置为 1 以使该设备位于列表中，直到应将其删除为止。 b. 用户调用 ibv_get_device_list。 C。 用户调用 ibv_open_device。 在以下情况下，引用计数会减少： 用户调用 ibv_free_device_list。 b. 用户调用 ibv_close_device。 C。 设备不再存在于 sysfs 中。 当引用计数减少到零时，设备将被释放。 为了释放 ibv_device 结构，我们将 uninit_device 回调函数添加到 verbs_device_ops
+    ibverbs_device_hold(l[i]) -> verbs: 避免 ibv_device 内存泄漏，现在，每次调用 ibv_get_device_list 时都会刷新 ibv_device 列表，因此我们需要从之前的扫描中释放不再绑定的设备，否则可能会导致 ibv_device 结构的内存泄漏。 仅当用户不再使用 ibv_device 的内存时，我们才能释放它。 我们如何识别设备是否仍在使用​, 我们将引用计数添加到动词设备结构中。 在以下情况下，该引用计数会增加： 设置为 1 以使该设备位于列表中，直到应将其删除为止。 b. 用户调用 ibv_get_device_list。 C。 用户调用 ibv_open_device。 在以下情况下，引用计数会减少： 用户调用 ibv_free_device_list。 b. 用户调用 ibv_close_device。 C。 设备不再存在于 sysfs 中。 当引用计数减少到零时，设备将被释放。 为了释放 ibv_device 结构，我们将 uninit_device 回调函数添加到 verbs_device_ops
         verbs_get_device
             container_of(dev, struct verbs_device, device)
         atomic_fetch_add(&verbs_device->refcount, 1) -> 加引用
@@ -9012,4 +8781,376 @@ cqp->sq.va = dma_alloc_coherent(dev->hw->device, cqp->sq.size, &cqp->sq.pa, GFP_
 
 
 puda: privileged UDA
+
+
+
+count line:
+find . -name "*.c" |wc -l
+find . -name "*.c" |xargs cat|wc -l
+or wc -l `find ./ -name "*.c"`|tail -n1
+代码行数，过滤了空行：
+find . -name "*.c" |xargs cat|grep -v ^$|wc -l
+xb@bin1:~/project/linux/master/linux/drivers/infiniband/core$ find . -name "*.h" |xargs cat|grep -v ^$|wc -l
+2405
+xb@bin1:~/project/linux/master/linux/drivers/infiniband/core$ find . -name "*.c" |xargs cat|grep -v ^$|wc -l
+47169
+xb@bin1:~/project/linux/master/linux/drivers/infiniband/core$ find . -name "*.h" |wc -l
+16
+xb@bin1:~/project/linux/master/linux/drivers/infiniband/core$ find . -name "*.c" |wc -l
+56
+
+
+Firmware Management Protocol (FMP), fpm
+
+
+
+
+vfio, Documentation/driver-api/vfio.rst
+
+
+pci, Documentation/PCI/pci.rst
+How To Write Linux PCI Drivers
+
+
+intel eth, ice, 
+Documentation/networking/device_drivers/ethernet/intel/ice.rst
+
+
+linux import file, 
+include/linux/types.h
+_Bool则是C99引入的标准，typedef为bool更符合多数编程者的习惯
+ssize_t：用于表示有符号整数的数据类型。ssize_t 通常用作文件读写函数（如 read() 和 write()）的返回类型，表示成功读取或写入的字节数，或者在出现错误时返回负值
+
+struct callback_head， 也被重定义为了rcu_head，是Linux中著名的RCU（Read-Copy Update）机制的结构体。该结构体可以在读取时共享数据且不需要加锁，因此可以在一定程度上提高并发性能。可以理解为一种不需要加锁的读-写锁。但是这里并不是RCU锁的实际使用方法（如list_add_rcu()），它们只是类型定义，用于声明函数指针，这些函数指针可以作为参数传递给与 RCU 相关的函数或其他功能
+
+__attribute__((aligned(n))) 是 GNU 编译器的一个特性，用于指定数据或结构体的对齐方式。所以aligned(sizeof(void *)) 指定了对齐方式为指针大小，确保结构体的对齐方式是指针大小的整数倍，这样可以使得结构体在内存中对齐到指针大小的边界上。以便于提高访问速度，特别是在涉及到缓存行对齐的情况下可以提高性能
+
+vdso文件夹（Virtual Dynamic Shared Object）是 Linux 内核源代码中的一个特殊文件夹
+
+
+
+rdma_resolve_route
+    cma_resolve_iboe_route
+        cma_iboe_set_path_rec_l2_fields
+
+
+
+rdma/rdma_cma.h
+
+
+
+rdma_cm
+static struct miscdevice ucma_misc = {
+	.minor		= MISC_DYNAMIC_MINOR,
+	.name		= "rdma_cm",
+	.nodename	= "infiniband/rdma_cm",
+	.mode		= 0666,
+	.fops		= &ucma_fops,
+};
+
+static const struct file_operations ucma_fops = {
+	.owner 	 = THIS_MODULE,
+	.open 	 = ucma_open,
+	.release = ucma_close,
+	.write	 = ucma_write,
+	.poll    = ucma_poll,
+	.llseek	 = no_llseek,
+};
+
+rdma_create_event_channel -> ucma_open
+    init_waitqueue_head(&file->poll_wait)
+    return stream_open(inode, filp) -> 2. 将stream_open()添加到内核以打开类似流的不可查找文件、描述符。 对此类文件描述符的读写永远不会使用或更改 ppos。 并且通过类似流的文件的该属性，读取和写入将在不获取 f_pos 锁定的情况下运行 - 即读取和写入可以同时运行。 3. 使用语义补丁搜索并将所有内核中的 nonseekable_open 用户转换为stream_open，这些用户的读写实际上不依赖于 ppos，并且 file_operations 中没有其他方法假定@offset 访问。 4. 将 FOPEN_STREAM 添加到 fs/fuse/ 并通过 steam_open 打开内核文件描述符（如果该位存在于文件系统打开回复中）。 更改 fs/fuse/ open 处理程序以在 FOPEN_NONSEEKABLE 标志上使用 stream_open 而不是 nonseekable_open 是很诱人的，但是通过 Debian codesearch 进行 grep 会显示 FOPEN_NONSEEKABLE 的用户，特别是 GVFS，它实际上在其读写处理程序中使用偏移量
+
+
+module_init(ucma_init) -> static int __init ucma_init(void)
+    misc_register(&ucma_misc)
+    device_create_file(ucma_misc.this_device, &dev_attr_abi_version)
+    ucma_ctl_table_hdr = register_net_sysctl(&init_net, "net/rdma_ucm", ucma_ctl_table)
+    ret = ib_register_client(&rdma_cma_client)
+
+rdma_create_id
+static ssize_t ucma_write
+    ret = ucma_cmd_table[hdr.cmd](file, buf + sizeof(hdr), hdr.in, hdr.out) -> ucma_create_id
+        ctx = ucma_alloc_ctx(file)
+        cm_id = rdma_create_user_id(ucma_event_handler, ctx, cmd.ps, qp_type)
+            __rdma_create_id
+                id_priv->state = RDMA_CM_IDLE
+                id_priv->id.event_handler = event_handler <- cma_listen_handler
+                id_priv->gid_type = IB_GID_TYPE_IB
+                id_priv->seq_num &= 0x00ffffff
+                rdma_restrack_new(&id_priv->res, RDMA_RESTRACK_CM_ID)
+                if (parent)
+                    rdma_restrack_parent_name
+                        rdma_restrack_attach_task
+            rdma_restrack_set_name
+                rdma_restrack_attach_task
+        ucma_set_ctx_cm_id(ctx, cm_id)
+        ucma_finish_ctx(ctx)
+            list_add_tail(&ctx->list, &ctx->file->ctx_list)
+            xa_store(&ctx_table, ctx->id, ctx, GFP_KERNEL)
+
+
+
+
+
+
+ucma_event_handler
+    if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST)
+        ucma_connect_event_handler
+    ucma_create_uevent
+    wake_up_interruptible(&ctx->file->poll_wait) -> wait_queue_head_t	poll_wait
+
+
+rdma_listen -> ucma_listen
+    atomic_set(&ctx->backlog, cmd.backlog)
+    rdma_listen
+        if (!cma_comp_exch(id_priv, RDMA_CM_ADDR_BOUND, RDMA_CM_LISTEN))
+            rdma_bind_addr
+                rdma_bind_addr_dst cma_dst_addr
+                
+        cma_check_port
+        rdma_cap_ib_cm
+        cma_ib_listen
+            ib_cm_insert_listen(id_priv->id.device, cma_ib_req_handler, svc_id)
+                
+        cma_listen_on_all
+
+
+static ssize_t ucma_bind
+    ucma_get_ctx
+    rdma_bind_addr
+
+
+rdma_get_request -> ucma_get_event
+    while (list_empty(&file->event_list))
+        if (wait_event_interruptible(file->poll_wait, -> wait event
+    uevent = list_first_entry(&file->event_list, struct ucma_event, list)
+
+
+tee<<EOF>ucma_event_handler.bt
+#include <rdma/ib_cm.h>
+kprobe:ucma_event_handler
+{
+	//printf("event:%d\n",(int)(struct ib_cm_event *)arg1->event));
+}
+EOF
+bpftrace ucma_event_handler.bt
+
+root@u20:~/project/rdma/rdma-core/build# bpftrace -e 'kprobe:ucma_event_handler{ printf("bt:%s, %lu\n", kstack, arg1); }'
+Attaching 1 probe...
+bt:
+        ucma_event_handler+1
+        addr_handler+269
+        process_one_req+75
+        process_one_work+555
+        worker_thread+77
+        kthread+298
+        ret_from_fork+34
+bt:
+        ucma_event_handler+1
+        cma_work_handler+104
+        process_one_work+555
+        worker_thread+77
+        kthread+298
+        ret_from_fork+34
+bt:
+        ucma_event_handler+1
+        cma_cm_event_handler+39
+        cma_ib_req_handler+1133
+        cm_process_work+40
+        cm_queue_work_unlock+156  <- IB_CM_DREQ_RECEIVED
+        cm_req_handler+1943
+        cm_work_handler+988
+        process_one_work+555
+        worker_thread+77
+        kthread+298
+        ret_from_fork+34
+
+
+cm, drivers/infiniband/core/cma.c
+module_init(cma_init) -> static int __init cma_init(void)
+    cma_wq = alloc_ordered_workqueue("rdma_cm", WQ_MEM_RECLAIM)
+    register_pernet_subsys(&cma_pernet_operations)
+    ib_sa_register_client(&sa_client)
+    register_netdevice_notifier(&cma_nb)
+    register_netevent_notifier(&cma_netevent_cb)
+    ib_register_client(&cma_client)
+    cma_configfs_init
+        config_group_init(&cma_subsys.su_group) -> IB/cma：为rdma_cm添加configfs，用户希望控制rdma_cm的行为。 例如，未设置所需 RoCE gid 类型的旧应用程序可以在 RoCE V2 网络类型上执行。 为了支持此配置，我们为 rdma_cm 实现了一个 configfs。 为了使用 configfs，需要将其挂载并 mkdir <IB device name> 到 rdma_cm 目录中。 该补丁添加了对单个配置文件 default_roce_mode 的支持。 模式可以是“IB/RoCE v1”或“RoCE v2”
+        configfs_register_subsystem(&cma_subsys)
+
+
+static struct pernet_operations cma_pernet_operations = {
+	.init = cma_init_net,
+	.exit = cma_exit_net,
+	.id = &cma_pernet_id,
+	.size = sizeof(struct cma_pernet),
+};
+
+
+cma_listen_handler+1
+cma_ib_req_handler+1133
+cm_process_work+40
+cm_queue_work_unlock+156
+cm_req_handler+1943
+cm_work_handler+988
+process_one_work+555
+worker_thread+77
+kthread+298
+ret_from_fork+34
+
+
+
+
+mount_linux(){
+    mount -t 9p -o trans=virtio host0 /root/project/linux/v5.15/jammy
+    cd /root/project/linux/v5.15/jammy
+}
+
+
+
+
+rdma_create_id
+static ssize_t ucma_write
+    ret = ucma_cmd_table[hdr.cmd](file, buf + sizeof(hdr), hdr.in, hdr.out) -> ucma_create_id
+        ctx = ucma_alloc_ctx(file)
+        cm_id = rdma_create_user_id(ucma_event_handler, ctx, cmd.ps, qp_type)
+            __rdma_create_id
+                id_priv->state = RDMA_CM_IDLE
+                id_priv->id.event_handler = event_handler <- cma_listen_handler
+                id_priv->gid_type = IB_GID_TYPE_IB
+                id_priv->seq_num &= 0x00ffffff
+                rdma_restrack_new(&id_priv->res, RDMA_RESTRACK_CM_ID)
+                if (parent)
+                    rdma_restrack_parent_name
+                        rdma_restrack_attach_task
+            rdma_restrack_set_name
+                rdma_restrack_attach_task
+        ucma_set_ctx_cm_id(ctx, cm_id)
+        ucma_finish_ctx(ctx)
+            list_add_tail(&ctx->list, &ctx->file->ctx_list)
+            xa_store(&ctx_table, ctx->id, ctx, GFP_KERNEL)
+
+
+ucma_bind
+    ucma_get_ctx
+    rdma_bind_addr
+        state = RDMA_CM_ADDR_BOUND,
+        cma_check_linklocal
+        memcpy(cma_src_addr(id_priv), addr, rdma_addr_size(addr))
+        id_priv->afonly = 1
+        daddr = cma_dst_addr(id_priv) -> return (struct sockaddr *) &id_priv->id.route.addr.dst_addr
+        ret = cma_get_port(id_priv)
+            cma_select_ib_ps
+            cma_use_port
+                bind_list = cma_ps_find(id_priv->id.route.addr.dev_addr.net, ps, snum)
+                cma_alloc_port
+                or cma_check_port
+                cma_bind_port
+
+
+
+
+#0  cma_listen_on_dev (id_priv=0xffff888108b66800, cma_dev=0xffff88810980e480, to_destroy=0xffffc9000382fd08) at drivers/infiniband/core/cma.c:2540
+#1  0xffffffffc05427a8 in cma_listen_on_all (id_priv=0xffff888108b66800) at drivers/infiniband/core/cma.c:2592
+#2  rdma_listen (id=0xffff888108b66800, backlog=1024) at drivers/infiniband/core/cma.c:3867
+#3  0xffffffffc0483d70 in ucma_listen (file=<optimized out>, inbuf=<optimized out>, in_len=<optimized out>, out_len=<optimized out>) at drivers/infiniband/core/ucma.c:1105
+
+cma_listen_on_dev
+    __rdma_create_id(net, cma_listen_handler, id_priv,
+    dev_id_priv->state = RDMA_CM_ADDR_BOUND
+    _cma_attach_to_dev
+    rdma_restrack_add
+    cma_id_get
+    rdma_listen
+        if (!cma_comp_exch(id_priv, RDMA_CM_ADDR_BOUND, RDMA_CM_LISTEN))
+        cma_ib_listen
+            addr = cma_src_addr(id_priv)
+            svc_id = rdma_get_service_id(&id_priv->id, addr)
+            id = ib_cm_insert_listen(id_priv->id.device, cma_ib_req_handler, svc_id)
+                cm_id_priv = cm_alloc_id_priv
+                cm_init_listen
+                listen_id_priv = cm_insert_listen(cm_id_priv, cm_handler)
+                    cur_cm_id_priv = rb_entry(parent, struct cm_id_private,
+                    rb_link_node(&cm_id_priv->service_node, parent, link)
+                    rb_insert_color(&cm_id_priv->service_node, &cm.listen_service_table) -> 该函数是红黑树相对于普通二叉排序树最大的差别。这个函数中平衡二叉树的方式主要有3种：a)改变颜色，0表示red，1表示black。对于对齐的节点，低4位总是0，所以默认的情况下是红色的节点。那么对于父节点是black的情况，直接插入即可，无需改变颜色。如果父节点是红色则需要改变颜色。b)左旋转，将一个节点的右孩子变为父节点，节点本身变为左孩子。c)右旋转，将一个节点的做孩子变为父节点，节点本身变为右孩子
+                cm_id_priv->id.state = IB_CM_LISTEN
+    list_add_tail(&dev_id_priv->listen_list, &id_priv->listen_list)
+
+
+
+
+ucma_resolve_addr
+    ucma_get_ctx
+    rdma_resolve_addr
+        resolve_prepare_src
+            cma_bind_addr -> rdma_bind_addr
+
+
+cma_ib_req_handler
+    cma_ib_id_from_event
+        cma_save_req_info
+        cma_get_net_dev
+        
+
+
+
+ucma_init_qp_attr
+    rdma_init_qp_attr(ctx->cm_id, &qp_attr, &resp.qp_attr_mask)
+        cma_ib_init_qp_attr
+            ib_addr_get_pkey
+            ib_find_cached_pkey
+        or ib_cm_init_qp_attr > 每一个QP状态所设置的QP属性不一样
+            cm_init_qp_init_attr
+                qp_attr->qp_access_flags = IB_ACCESS_REMOTE_WRITE
+                qp_attr->pkey_index = cm_id_priv->av.pkey_index
+                qp_attr->port_num = cm_id_priv->av.port->port_num
+            cm_init_qp_rtr_attr
+                qp_attr->ah_attr = cm_id_priv->av.ah_attr
+                qp_attr->ah_attr.ib.dlid = cm_id_priv->av.dlid_datapath
+                qp_attr->path_mtu = cm_id_priv->path_mtu
+                qp_attr->dest_qp_num = be32_to_cpu(cm_id_priv->remote_qpn)
+                qp_attr->rq_psn = be32_to_cpu(cm_id_priv->rq_psn)
+                qp_attr->max_dest_rd_atomic
+                qp_attr->min_rnr_timer = 0
+                rdma_ah_get_dlid(&cm_id_priv->alt_av.ah_attr)
+                qp_attr->alt_port_num = cm_id_priv->alt_av.port->port_num
+                ...
+            cm_init_qp_rts_attr
+                qp_attr->sq_psn = be32_to_cpu(cm_id_priv->sq_psn)
+                qp_attr->retry_cnt = cm_id_priv->retry_count
+                qp_attr->rnr_retry = cm_id_priv->rnr_retry_count
+                qp_attr->max_rd_atomic = cm_id_priv->initiator_depth
+                qp_attr->timeout = cm_id_priv->av.timeout
+                qp_attr->path_mig_state = IB_MIG_REARM
+                ...
+        or iw_cm_init_qp_attr
+            iwcm_init_qp_init_attr
+            iwcm_init_qp_rts_attr
+        qp_attr->timeout = id_priv->timeout
+        qp_attr->min_rnr_timer = id_priv->min_rnr_timer
+
+
+    
+static ssize_t ucma_accept
+    else ret = rdma_accept_ece(ctx->cm_id, NULL, &ece)
+        rdma_accept -> rdma_accept - 调用以接受连接请求或响应。@id：与请求关联的连接标识符。 @conn_param：建立连接所需的信息。 如果接受连接请求，则必须提供此信息。 如果接受连接响应，则该参数必须为 NULL。 通常，此例程仅由侦听器调用以接受连接请求。 如果用户正在执行自己的 QP 转换，则还必须在连接的活动端调用它。 如果出现错误，则会向远程端发送拒绝消息，并将与 id 关联的 qp 的状态修改为错误，以便刷新任何先前发布的接收缓冲区。 该函数供内核 ULP 使用，并且必须从处理程序回调下调用
+            lockdep_assert_held(&id_priv->handler_mutex)
+            ret = cma_rep_recv(id_priv)
+                cma_modify_qp_rtr -> RDMA/cma：使用用户值覆盖默认的 responder_resources，默认情况下，responder_resources 参数设置为连接请求中收到的参数。 被动方在接受连接时可以覆盖该值。 将 QP 转换为 RTR 状态时使用被动方提供的值，而不是连接请求中给出的值。 如果没有此更改，如果被动方支持的responder_resources 少于请求中的资源，RTR 转换可能会失败。 为了代码一致性并防止 QP 破坏，请重构覆盖 initiator_depth 以匹配 responder_resources 的设置方式
+                    qp_attr.qp_state = IB_QPS_INIT
+                    rdma_init_qp_attr
+                    ib_modify_qp
+                    qp_attr.qp_state = IB_QPS_RTR
+                    ib_modify_qp
+                cma_modify_qp_rts
+                trace_cm_send_rtu
+                ib_send_cm_rtu -> IB：基于IP地址的RDMA连接管理器，基于InfiniBand的基于IP地址连接的内核连接管理代理。 该代理定义了通用 RDMA 连接抽象，以支持想要通过不同 RDMA 设备进行连接的客户端。 该代理还代表客户端处理 RDMA 设备热插拔事件
+                    data = cm_copy_private_data(private_data, private_data_len)
+                    msg = cm_alloc_msg(cm_id_priv)
+                    cm_format_rtu
+                    ib_post_send_mad(msg, NULL)
+                    cm_id->state = IB_CM_ESTABLISHED
+                    cm_set_private_data(cm_id_priv, data, private_data_len)
+
 
