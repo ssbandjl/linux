@@ -6,6 +6,7 @@ BEGIN
 	printf("Tracing nanosecond time in off-CPU stacks. Ctrl-C to end.\n");
 }
 
+// kernel/sched/core.c -> static struct rq *finish_task_switch(struct task_struct *prev)
 kprobe:finish_task_switch
 {
 	// record previous thread sleep time
@@ -26,3 +27,4 @@ END
 {
 	clear(@start);
 }
+

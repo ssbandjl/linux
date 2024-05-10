@@ -273,7 +273,7 @@ commit: https://lore.kernel.org/all/20210520143809.819-7-shiraz.saleem@intel.com
 intel e810, drivers/net/ethernet/intel/ice/ice_main.c
 module_init(ice_module_init) -> entry, 
     pr_info("%s\n", ice_driver_string); -> Intel(R) Ethernet Connection E800 Series Linux Driver -> Copyright (c) 2018, Intel Corporation
-    ice_adv_lnk_speed_maps_init -> ice：重构查找建议的链路速度，重构ice_get_link_ksettings以使用强制速度到链接模式映射
+    ice_adv_lnk_speed_maps_init -> ice：重构查找建议的链路速度，重构ice_get_link_ksettings以使用强制速度到链接模式映射 -> static struct ethtool_forced_speed_map qede_forced_speed_maps[] -> 标记内核的一部分为只读内容
         ethtool_forced_speed_maps_init(ice_adv_lnk_speed_maps,
             linkmode_set_bit_array -> static inline void linkmode_set_bit_array
     ice_wq = alloc_workqueue("%s", 0, 0, KBUILD_MODNAME) -> ice：初始化PF并设置杂项中断，该补丁继续初始化流程如下：1）在ice_pf实例中分配并初始化必要的字段（如vsi，num_alloc_vsi，irq_tracker等）。 2) 设置杂项中断处理程序。 这也称为“其他中断原因”(OIC) 处理程序，用于处理非热路径中断（如控制队列事件、链接事件、异常等）。 3) 实现后台任务来处理管理队列接收 (ARQ) 事件
@@ -551,15 +551,15 @@ hw_addr 00:00:00:00:00:00 state inactive opstate detached
 
 
 
-
-mlx5 driver:
-drivers/net/ethernet/mellanox/mlx5/core/main.c
-static int probe_one
-    mlx5_devlink_alloc
+static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
+    devlink = mlx5_devlink_alloc(&pdev->dev)
         ida_alloc -> 其中ida_destory是释放所有和IDA关联的资源。IDA结构体是一个树状结构体，是内核工作的一个机制。　  这里先介绍一下IDR，IDR机制是内核中将一个整数ID号和指针关联在一起的机制。 如果使用数组进行索引，当ID号很大时，数组索引会占据大量的存储空间，如果使用链表，在总线上设备特别多的情况下，链表的查询效率不高。而IDR机制内部采用红黑树，可以很方便的将整数和指针关联起来，并且有很高的搜索效率。  IDA只是用来分配id，并不将某数据结构和id关联起来。 例如sd设备的设备名，如sda，驱动在生成设备文件的时候会向系统申请一个ida，也就是唯一id，然后把id映射成设备文件名。在nvme-core中有使用到ida，所以在最后中需要释放。static DEFINE_IDA(nvme_subsystems_ida);
+    dev->priv.adev_idx = mlx5_adev_idx_alloc()
+        ida_alloc(&mlx5_adev_ida, GFP_KERNEL)
     mlx5_mdev_init
-        mutex_init
-        INIT_LIST_HEAD
+        lockdep_register_key(&dev->lock_key) -> 当前lockdep实现的一个缺点是它需要静态分配锁密钥。 这会强制给定数据结构中出现的锁对象的所有实例共享一个锁密钥。 由于锁依赖分析将每个密钥的锁对象分组，共享锁密钥可能会导致误报 lockdep 报告。 通过允许动态分配锁密钥，可以避免此类误报。 要求在使用之前通过调用 lockdep_register_key() 注册动态分配的锁密钥。 抱怨尝试两次注册相同的锁密钥指针，而没有在连续的注册调用之间调用 lockdep_unregister_key() 。 跟踪所有动态密钥的新 lock_keys_hash[] 数据结构的目的有两个： - 验证 lockdep_register_key() 和 lockdep_unregister_key() 函数是否正确使用。 - 避免 lockdep_init_map() 在遇到动态分配的密钥时抱怨
+        mutex_init(&priv->bfregs.reg_head.lock)
+        INIT_LIST_HEAD(&priv->bfregs.reg_head.list)
         mlx5_cmd_init
             cmd->wq = create_singlethread_workqueue(cmd->wq_name)
                 alloc_workqueue
@@ -1651,7 +1651,7 @@ mlx5_core_verify_params -> net/mlx5：验证模块参数 验证 mlx5_core 模块
     index为3的配置文件是, net/mlx5：为 SF 创建新的配置文件，为 SF 创建新的配置文件以禁用命令缓存。 每个功能命令缓存消耗约 500KB 的内存，当使用大量 SF 时，这种节省在内存受限的系统上非常显着。 使用新的配置文件来提供 SF 和 PF 之间未来的差异。 mr_cache 不用于非 PF 函数，因此从新配置文件中排除
 mlx5_register_debugfs
     mlx5_debugfs_root = debugfs_create_dir("mlx5", NULL) -> 第一个参数是目录的名称，第二个参数用来指定这个目录的上级目录，如果是NULL，则表示是放在debugfs的根目录里,  /sys/kernel/debug/
-mlx5e_init -> net/mlx5e：将以太网部分连接到辅助总线，重用辅助总线对mlx5驱动程序的以太网部分进行设备管理 -> 目前，删除和重新加载流程可以与模块清理并行运行。 这种设计很容易出错。 例如：从具有不同锁定的清理和删除流中调用 aux_drivers 回调，这可能会导致死锁[1]。 因此，通过重新加载和删除来序列化模块清理
+mlx5e_init -> mlx5_eth -> net/mlx5e：将以太网部分连接到辅助总线，重用辅助总线对mlx5驱动程序的以太网部分进行设备管理 -> 目前，删除和重新加载流程可以与模块清理并行运行。 这种设计很容易出错。 例如：从具有不同锁定的清理和删除流中调用 aux_drivers 回调，这可能会导致死锁[1]。 因此，通过重新加载和删除来序列化模块清理
     mlx5e_build_ptys2ethtool_map -> net/mlx5e：使用新的 ethtool 获取/设置链接 ksettings API，使用新的获取/设置链接 ksettings 并删除获取/设置设置旧回调。 这允许我们为支持和通告的链接模式使用超过 32 位的位掩码，并使用以前不支持的模式
         __ETHTOOL_DECLARE_LINK_MODE_MASK
             DECLARE_BITMAP(name, __ETHTOOL_LINK_MODE_MASK_NBITS) -> 定义一个位图变量，本质就是一个unsigned long类型的数组, 宏的参数：name是变量名，bits是位图有多少个位
@@ -1677,6 +1677,21 @@ mlx5e_rep_probe
     mlx5_eswitch_register_vport_reps(esw, &rep_ops, REP_ETH) -> net/mlx5：E-Switch，将代表 reg/unreg 集中到 eswitch 驱动程序，Eswitch 有两个用户：IB 和 ETH。 它们都在添加 mlx5 接口时注册代表器，并在删除 mlx5 接口时取消注册代表器。 理想情况下，每个驱动程序应该只处理其独有的实体。 但是，当前的 IB 和 ETH 驱动程序必须执行以下 eswitch 操作： 1. 注册时，指定要注册的 vport 数量。 对于两个驱动程序来说，这个数字是相同的，即可用 vport 总数。 2. 取消注册时，指定要取消注册的已注册 vport 的数量。 另外，卸载已经加载的代表器。 eswitch 驱动程序没有必要将上述操作的控制权交给各个驱动程序用户，因为它们对于每个驱动程序来说并不是唯一的。 相反，此类操作应集中到 eswitch 驱动程序。 这整合了 eswitch 控制流程，并简化了 IB 和 ETH 驱动程序
         mlx5_esw_for_each_rep
             atomic_set(&rep_data->state, REP_REGISTERED
+
+enum {
+	REP_UNREGISTERED,
+	REP_REGISTERED,
+	REP_LOADED,
+};
+net/mlx5：E-Switch，向 eswitch vport 代表添加状态，当前 eswitch vport 代表有一个有效的指示符，该指示符在注册时设置，在取消注册时取消设置。 但是，在取消注册时可以加载或不加载代表，当前驱动程序会检查该代表的 vport 是否已启用作为表示该代表已加载的标志。 但是，对于 ECPF，这无效，因为主机 PF 将为其 VF 启用 vport。 添加三种状态：{未注册、已注册、已加载}，不同操作之间的状态变化如下：
+create: (none)       -> unregistered
+reg:    unregistered -> registered
+load:   registered   -> loaded
+unload: loaded       -> registered
+unreg:  registered   -> unregistered
+请注意，状态只能在 eswitch 驱动程序内部更新，而不是单独的驱动程序（例如 ETH 或 IB）
+
+
 
 辅助设备驱动
 static struct auxiliary_driver mlx5e_driver = {
@@ -1793,11 +1808,6 @@ static const struct mlx5e_profile mlx5e_nic_profile = {
 
 
 
-
-
-
-
-
 git remote add origin git@gitlab.nsv6.b122.top:bin/linux_kernel.git
 
 
@@ -1806,400 +1816,6 @@ register_chrdev
 pci_enable_device
 
 filter: ./drivers/net/ethernet/intel/
-
-
-get info:
-System with RoCE SR-IOV card with 4 VFs:
-[leonro@vm ~]$ lspci |grep nox
-01:00.0 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6]
-01:00.1 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
-01:00.2 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
-01:00.3 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
-01:00.4 Ethernet controller: Mellanox Technologies MT28908 Family [ConnectX-6 Virtual Function]
-[leonro@vm ~]$ ls -l /sys/bus/auxiliary/devices/
-mlx5_core.eth.0 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.0/mlx5_core.eth.0
-mlx5_core.eth.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.eth.1
-mlx5_core.eth.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.eth.2
-mlx5_core.eth.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.eth.3
-mlx5_core.eth.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.eth.4
-mlx5_core.rdma.0 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.0/mlx5_core.rdma.0
-mlx5_core.rdma.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.rdma.1
-mlx5_core.rdma.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.rdma.2
-mlx5_core.rdma.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.rdma.3
-mlx5_core.rdma.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.rdma.4
-mlx5_core.vdpa.1 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.1/mlx5_core.vdpa.1
-mlx5_core.vdpa.2 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.2/mlx5_core.vdpa.2
-mlx5_core.vdpa.3 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.3/mlx5_core.vdpa.3
-mlx5_core.vdpa.4 -> ../../../devices/pci0000:00/0000:00:09.0/0000:01:00.4/mlx5_core.vdpa.4
-[leonro@vm ~]$ rdma dev
-0: rocep1s0f0: node_type ca fw 4.6.9999 node_guid 5254:00c0:fe12:3455 sys_image_guid 5254:00c0:fe12:3455
-1: rocep1s0f0v0: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3456
-2: rocep1s0f0v1: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3457
-3: rocep1s0f0v2: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3458
-4: rocep1s0f0v3: node_type ca fw 4.6.9999 node_guid 0000:0000:0000:0000 sys_image_guid 5254:00c0:fe12:3459
-
-
-
-static const struct mlx5_adev_device {
-    const char *suffix;
-    bool (*is_supported)(struct mlx5_core_dev *dev);
-    bool (*is_enabled)(struct mlx5_core_dev *dev);
-} mlx5_adev_devices[] = {
-    [MLX5_INTERFACE_PROTOCOL_VNET] = { .suffix = "vnet",
-                       .is_supported = &mlx5_vnet_supported,
-                       .is_enabled = &is_vnet_enabled },
-    [MLX5_INTERFACE_PROTOCOL_IB] = { .suffix = "rdma",
-                     .is_supported = &mlx5_rdma_supported,
-                     .is_enabled = &is_ib_enabled },
-    [MLX5_INTERFACE_PROTOCOL_ETH] = { .suffix = "eth",
-                      .is_supported = &mlx5_eth_supported,
-                      .is_enabled = &mlx5_core_is_eth_enabled },
-    [MLX5_INTERFACE_PROTOCOL_ETH_REP] = { .suffix = "eth-rep",
-                       .is_supported = &is_eth_rep_supported },
-    [MLX5_INTERFACE_PROTOCOL_IB_REP] = { .suffix = "rdma-rep",
-                       .is_supported = &is_ib_rep_supported },
-    [MLX5_INTERFACE_PROTOCOL_MPIB] = { .suffix = "multiport",
-                       .is_supported = &is_mp_supported },
-    [MLX5_INTERFACE_PROTOCOL_DPLL] = { .suffix = "dpll",
-                       .is_supported = &is_dpll_supported },
-};
-
-
-capability types:
-static const int types[] = {
-    MLX5_CAP_GENERAL,
-    MLX5_CAP_GENERAL_2,
-    MLX5_CAP_ETHERNET_OFFLOADS,
-    MLX5_CAP_IPOIB_ENHANCED_OFFLOADS,
-    MLX5_CAP_ODP,
-    MLX5_CAP_ATOMIC,
-    MLX5_CAP_ROCE,
-    MLX5_CAP_IPOIB_OFFLOADS,
-    MLX5_CAP_FLOW_TABLE,
-    MLX5_CAP_ESWITCH_FLOW_TABLE,
-    MLX5_CAP_ESWITCH,
-    MLX5_CAP_QOS,
-    MLX5_CAP_DEBUG,
-    MLX5_CAP_DEV_MEM,
-    MLX5_CAP_DEV_EVENT,
-    MLX5_CAP_TLS,
-    MLX5_CAP_VDPA_EMULATION,
-    MLX5_CAP_IPSEC,
-    MLX5_CAP_PORT_SELECTION,
-    MLX5_CAP_MACSEC,
-    MLX5_CAP_ADV_VIRTUALIZATION,
-    MLX5_CAP_CRYPTO,
-};
-
-
-
-module_init(mlx5_dpll_init); -> mlx5：使用 DPLL 基础设施实现 SyncE 支持 使用新引入的 DPLL 支持实现 SyncE 支持。 确保使用适当功能探测的每个 PF/VF/SF 将生成 dpll 辅助设备并注册适当的 dpll 设备和引脚实例
-
-
-
-该产品组合包括符合 ITU-T/IEEE 标准的数字锁相环 (DPLL)，用于网络同步，其性能满足 SyncE 和 IEEE 1588 严格的 10G/40G/100G 接口要求。
-
-
-mlx5_tout_init
-
-
-The defaults of the enable_* devlink params of these SFs are set to
-false.
-
-Usage example:
-Create SF:
-$ devlink port add pci/0000:08:00.0 flavour pcisf pfnum 0 sfnum 11
-$ devlink port function set pci/0000:08:00.0/32768 \
-hw_addr 00:00:00:00:00:11 state active
-
-Enable ETH auxiliary device:
-$ devlink dev param set auxiliary/mlx5_core.sf.1 \
-name enable_eth value true cmode driverinit
-
-Now, in order to fully probe the SF, use devlink reload:
-$ devlink dev reload auxiliary/mlx5_core.sf.1
-此时，用户拥有仅用于以太网功能的带有辅助设备的 SF devlink 实例
-
-
-命令操作:
-const char *mlx5_command_str(int command)
-{
-#define MLX5_COMMAND_STR_CASE(__cmd) case MLX5_CMD_OP_ ## __cmd: return #__cmd
-
-    switch (command) {
-    MLX5_COMMAND_STR_CASE(QUERY_HCA_CAP);
-    MLX5_COMMAND_STR_CASE(QUERY_ADAPTER);
-    MLX5_COMMAND_STR_CASE(INIT_HCA);
-    MLX5_COMMAND_STR_CASE(TEARDOWN_HCA);
-    MLX5_COMMAND_STR_CASE(ENABLE_HCA);
-    MLX5_COMMAND_STR_CASE(DISABLE_HCA);
-    MLX5_COMMAND_STR_CASE(QUERY_PAGES);
-    MLX5_COMMAND_STR_CASE(MANAGE_PAGES);
-    MLX5_COMMAND_STR_CASE(SET_HCA_CAP);
-    MLX5_COMMAND_STR_CASE(QUERY_ISSI);
-    MLX5_COMMAND_STR_CASE(SET_ISSI);
-    MLX5_COMMAND_STR_CASE(SET_DRIVER_VERSION);
-    MLX5_COMMAND_STR_CASE(CREATE_MKEY);
-    MLX5_COMMAND_STR_CASE(QUERY_MKEY);
-    MLX5_COMMAND_STR_CASE(DESTROY_MKEY);
-    MLX5_COMMAND_STR_CASE(QUERY_SPECIAL_CONTEXTS);
-    MLX5_COMMAND_STR_CASE(PAGE_FAULT_RESUME);
-    MLX5_COMMAND_STR_CASE(CREATE_EQ);
-    MLX5_COMMAND_STR_CASE(DESTROY_EQ);
-    MLX5_COMMAND_STR_CASE(QUERY_EQ);
-    MLX5_COMMAND_STR_CASE(GEN_EQE);
-    MLX5_COMMAND_STR_CASE(CREATE_CQ);
-    MLX5_COMMAND_STR_CASE(DESTROY_CQ);
-    MLX5_COMMAND_STR_CASE(QUERY_CQ);
-    MLX5_COMMAND_STR_CASE(MODIFY_CQ);
-    MLX5_COMMAND_STR_CASE(CREATE_QP);
-    MLX5_COMMAND_STR_CASE(DESTROY_QP);
-    MLX5_COMMAND_STR_CASE(RST2INIT_QP);
-    MLX5_COMMAND_STR_CASE(INIT2RTR_QP);
-    MLX5_COMMAND_STR_CASE(RTR2RTS_QP);
-    MLX5_COMMAND_STR_CASE(RTS2RTS_QP);
-    MLX5_COMMAND_STR_CASE(SQERR2RTS_QP);
-    MLX5_COMMAND_STR_CASE(2ERR_QP);
-    MLX5_COMMAND_STR_CASE(2RST_QP);
-    MLX5_COMMAND_STR_CASE(QUERY_QP);
-    MLX5_COMMAND_STR_CASE(SQD_RTS_QP);
-    MLX5_COMMAND_STR_CASE(INIT2INIT_QP);
-    MLX5_COMMAND_STR_CASE(CREATE_PSV);
-    MLX5_COMMAND_STR_CASE(DESTROY_PSV);
-    MLX5_COMMAND_STR_CASE(CREATE_SRQ);
-    MLX5_COMMAND_STR_CASE(DESTROY_SRQ);
-    MLX5_COMMAND_STR_CASE(QUERY_SRQ);
-    MLX5_COMMAND_STR_CASE(ARM_RQ);
-    MLX5_COMMAND_STR_CASE(CREATE_XRC_SRQ);
-    MLX5_COMMAND_STR_CASE(DESTROY_XRC_SRQ);
-    MLX5_COMMAND_STR_CASE(QUERY_XRC_SRQ);
-    MLX5_COMMAND_STR_CASE(ARM_XRC_SRQ);
-    MLX5_COMMAND_STR_CASE(CREATE_DCT);
-    MLX5_COMMAND_STR_CASE(DESTROY_DCT);
-    MLX5_COMMAND_STR_CASE(DRAIN_DCT);
-    MLX5_COMMAND_STR_CASE(QUERY_DCT);
-    MLX5_COMMAND_STR_CASE(ARM_DCT_FOR_KEY_VIOLATION);
-    MLX5_COMMAND_STR_CASE(QUERY_VPORT_STATE);
-    MLX5_COMMAND_STR_CASE(MODIFY_VPORT_STATE);
-    MLX5_COMMAND_STR_CASE(QUERY_ESW_VPORT_CONTEXT);
-    MLX5_COMMAND_STR_CASE(MODIFY_ESW_VPORT_CONTEXT);
-    MLX5_COMMAND_STR_CASE(QUERY_NIC_VPORT_CONTEXT);
-    MLX5_COMMAND_STR_CASE(MODIFY_NIC_VPORT_CONTEXT);
-    MLX5_COMMAND_STR_CASE(QUERY_ROCE_ADDRESS);
-    MLX5_COMMAND_STR_CASE(SET_ROCE_ADDRESS);
-    MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_CONTEXT);
-    MLX5_COMMAND_STR_CASE(MODIFY_HCA_VPORT_CONTEXT);
-    MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_GID);
-    MLX5_COMMAND_STR_CASE(QUERY_HCA_VPORT_PKEY);
-    MLX5_COMMAND_STR_CASE(QUERY_VNIC_ENV);
-    MLX5_COMMAND_STR_CASE(QUERY_VPORT_COUNTER);
-    MLX5_COMMAND_STR_CASE(ALLOC_Q_COUNTER);
-    MLX5_COMMAND_STR_CASE(DEALLOC_Q_COUNTER);
-    MLX5_COMMAND_STR_CASE(QUERY_Q_COUNTER);
-    MLX5_COMMAND_STR_CASE(SET_MONITOR_COUNTER);
-    MLX5_COMMAND_STR_CASE(ARM_MONITOR_COUNTER);
-    MLX5_COMMAND_STR_CASE(SET_PP_RATE_LIMIT);
-    MLX5_COMMAND_STR_CASE(QUERY_RATE_LIMIT);
-    MLX5_COMMAND_STR_CASE(CREATE_SCHEDULING_ELEMENT);
-    MLX5_COMMAND_STR_CASE(DESTROY_SCHEDULING_ELEMENT);
-    MLX5_COMMAND_STR_CASE(QUERY_SCHEDULING_ELEMENT);
-    MLX5_COMMAND_STR_CASE(MODIFY_SCHEDULING_ELEMENT);
-    MLX5_COMMAND_STR_CASE(CREATE_QOS_PARA_VPORT);
-    MLX5_COMMAND_STR_CASE(DESTROY_QOS_PARA_VPORT);
-    MLX5_COMMAND_STR_CASE(ALLOC_PD);
-    MLX5_COMMAND_STR_CASE(DEALLOC_PD);
-    MLX5_COMMAND_STR_CASE(ALLOC_UAR);
-    MLX5_COMMAND_STR_CASE(DEALLOC_UAR);
-    MLX5_COMMAND_STR_CASE(CONFIG_INT_MODERATION);
-    MLX5_COMMAND_STR_CASE(ACCESS_REG);
-    MLX5_COMMAND_STR_CASE(ATTACH_TO_MCG);
-    MLX5_COMMAND_STR_CASE(DETACH_FROM_MCG);
-    MLX5_COMMAND_STR_CASE(GET_DROPPED_PACKET_LOG);
-    MLX5_COMMAND_STR_CASE(MAD_IFC);
-    MLX5_COMMAND_STR_CASE(QUERY_MAD_DEMUX);
-    MLX5_COMMAND_STR_CASE(SET_MAD_DEMUX);
-    MLX5_COMMAND_STR_CASE(NOP);
-    MLX5_COMMAND_STR_CASE(ALLOC_XRCD);
-    MLX5_COMMAND_STR_CASE(DEALLOC_XRCD);
-    MLX5_COMMAND_STR_CASE(ALLOC_TRANSPORT_DOMAIN);
-    MLX5_COMMAND_STR_CASE(DEALLOC_TRANSPORT_DOMAIN);
-    MLX5_COMMAND_STR_CASE(QUERY_CONG_STATUS);
-    MLX5_COMMAND_STR_CASE(MODIFY_CONG_STATUS);
-    MLX5_COMMAND_STR_CASE(QUERY_CONG_PARAMS);
-    MLX5_COMMAND_STR_CASE(MODIFY_CONG_PARAMS);
-    MLX5_COMMAND_STR_CASE(QUERY_CONG_STATISTICS);
-    MLX5_COMMAND_STR_CASE(ADD_VXLAN_UDP_DPORT);
-    MLX5_COMMAND_STR_CASE(DELETE_VXLAN_UDP_DPORT);
-    MLX5_COMMAND_STR_CASE(SET_L2_TABLE_ENTRY);
-    MLX5_COMMAND_STR_CASE(QUERY_L2_TABLE_ENTRY);
-    MLX5_COMMAND_STR_CASE(DELETE_L2_TABLE_ENTRY);
-    MLX5_COMMAND_STR_CASE(SET_WOL_ROL);
-    MLX5_COMMAND_STR_CASE(QUERY_WOL_ROL);
-    MLX5_COMMAND_STR_CASE(CREATE_LAG);
-    MLX5_COMMAND_STR_CASE(MODIFY_LAG);
-    MLX5_COMMAND_STR_CASE(QUERY_LAG);
-    MLX5_COMMAND_STR_CASE(DESTROY_LAG);
-    MLX5_COMMAND_STR_CASE(CREATE_VPORT_LAG);
-    MLX5_COMMAND_STR_CASE(DESTROY_VPORT_LAG);
-    MLX5_COMMAND_STR_CASE(CREATE_TIR);
-    MLX5_COMMAND_STR_CASE(MODIFY_TIR);
-    MLX5_COMMAND_STR_CASE(DESTROY_TIR);
-    MLX5_COMMAND_STR_CASE(QUERY_TIR);
-    MLX5_COMMAND_STR_CASE(CREATE_SQ);
-    MLX5_COMMAND_STR_CASE(MODIFY_SQ);
-    MLX5_COMMAND_STR_CASE(DESTROY_SQ);
-    MLX5_COMMAND_STR_CASE(QUERY_SQ);
-    MLX5_COMMAND_STR_CASE(CREATE_RQ);
-    MLX5_COMMAND_STR_CASE(MODIFY_RQ);
-    MLX5_COMMAND_STR_CASE(DESTROY_RQ);
-    MLX5_COMMAND_STR_CASE(QUERY_RQ);
-    MLX5_COMMAND_STR_CASE(CREATE_RMP);
-    MLX5_COMMAND_STR_CASE(MODIFY_RMP);
-    MLX5_COMMAND_STR_CASE(DESTROY_RMP);
-    MLX5_COMMAND_STR_CASE(QUERY_RMP);
-    MLX5_COMMAND_STR_CASE(CREATE_TIS);
-    MLX5_COMMAND_STR_CASE(MODIFY_TIS);
-    MLX5_COMMAND_STR_CASE(DESTROY_TIS);
-    MLX5_COMMAND_STR_CASE(QUERY_TIS);
-    MLX5_COMMAND_STR_CASE(CREATE_RQT);
-    MLX5_COMMAND_STR_CASE(MODIFY_RQT);
-    MLX5_COMMAND_STR_CASE(DESTROY_RQT);
-    MLX5_COMMAND_STR_CASE(QUERY_RQT);
-    MLX5_COMMAND_STR_CASE(SET_FLOW_TABLE_ROOT);
-    MLX5_COMMAND_STR_CASE(CREATE_FLOW_TABLE);
-    MLX5_COMMAND_STR_CASE(DESTROY_FLOW_TABLE);
-    MLX5_COMMAND_STR_CASE(QUERY_FLOW_TABLE);
-    MLX5_COMMAND_STR_CASE(CREATE_FLOW_GROUP);
-    MLX5_COMMAND_STR_CASE(DESTROY_FLOW_GROUP);
-    MLX5_COMMAND_STR_CASE(QUERY_FLOW_GROUP);
-    MLX5_COMMAND_STR_CASE(SET_FLOW_TABLE_ENTRY);
-    MLX5_COMMAND_STR_CASE(QUERY_FLOW_TABLE_ENTRY);
-    MLX5_COMMAND_STR_CASE(DELETE_FLOW_TABLE_ENTRY);
-    MLX5_COMMAND_STR_CASE(ALLOC_FLOW_COUNTER);
-    MLX5_COMMAND_STR_CASE(DEALLOC_FLOW_COUNTER);
-    MLX5_COMMAND_STR_CASE(QUERY_FLOW_COUNTER);
-    MLX5_COMMAND_STR_CASE(MODIFY_FLOW_TABLE);
-    MLX5_COMMAND_STR_CASE(ALLOC_PACKET_REFORMAT_CONTEXT);
-    MLX5_COMMAND_STR_CASE(DEALLOC_PACKET_REFORMAT_CONTEXT);
-    MLX5_COMMAND_STR_CASE(ALLOC_MODIFY_HEADER_CONTEXT);
-    MLX5_COMMAND_STR_CASE(DEALLOC_MODIFY_HEADER_CONTEXT);
-    MLX5_COMMAND_STR_CASE(FPGA_CREATE_QP);
-    MLX5_COMMAND_STR_CASE(FPGA_MODIFY_QP);
-    MLX5_COMMAND_STR_CASE(FPGA_QUERY_QP);
-    MLX5_COMMAND_STR_CASE(FPGA_QUERY_QP_COUNTERS);
-    MLX5_COMMAND_STR_CASE(FPGA_DESTROY_QP);
-    MLX5_COMMAND_STR_CASE(CREATE_XRQ);
-    MLX5_COMMAND_STR_CASE(DESTROY_XRQ);
-    MLX5_COMMAND_STR_CASE(QUERY_XRQ);
-    MLX5_COMMAND_STR_CASE(ARM_XRQ);
-    MLX5_COMMAND_STR_CASE(CREATE_GENERAL_OBJECT);
-    MLX5_COMMAND_STR_CASE(DESTROY_GENERAL_OBJECT);
-    MLX5_COMMAND_STR_CASE(MODIFY_GENERAL_OBJECT);
-    MLX5_COMMAND_STR_CASE(QUERY_GENERAL_OBJECT);
-    MLX5_COMMAND_STR_CASE(QUERY_MODIFY_HEADER_CONTEXT);
-    MLX5_COMMAND_STR_CASE(ALLOC_MEMIC);
-    MLX5_COMMAND_STR_CASE(DEALLOC_MEMIC);
-    MLX5_COMMAND_STR_CASE(QUERY_ESW_FUNCTIONS);
-    MLX5_COMMAND_STR_CASE(CREATE_UCTX);
-    MLX5_COMMAND_STR_CASE(DESTROY_UCTX);
-    MLX5_COMMAND_STR_CASE(CREATE_UMEM);
-    MLX5_COMMAND_STR_CASE(DESTROY_UMEM);
-    MLX5_COMMAND_STR_CASE(RELEASE_XRQ_ERROR);
-    MLX5_COMMAND_STR_CASE(MODIFY_XRQ);
-    MLX5_COMMAND_STR_CASE(QUERY_VHCA_STATE);
-    MLX5_COMMAND_STR_CASE(MODIFY_VHCA_STATE);
-    MLX5_COMMAND_STR_CASE(ALLOC_SF);
-    MLX5_COMMAND_STR_CASE(DEALLOC_SF);
-    MLX5_COMMAND_STR_CASE(SUSPEND_VHCA);
-    MLX5_COMMAND_STR_CASE(RESUME_VHCA);
-    MLX5_COMMAND_STR_CASE(QUERY_VHCA_MIGRATION_STATE);
-    MLX5_COMMAND_STR_CASE(SAVE_VHCA_STATE);
-    MLX5_COMMAND_STR_CASE(LOAD_VHCA_STATE);
-    MLX5_COMMAND_STR_CASE(SYNC_CRYPTO);
-    MLX5_COMMAND_STR_CASE(ALLOW_OTHER_VHCA_ACCESS);
-    default: return "unknown command opcode";
-    }
-}
-
-
-
-vlan header:
-#define IANA_VXLAN_UDP_PORT     4789
-#define IANA_VXLAN_GPE_UDP_PORT 4790
-
-/* VXLAN protocol (RFC 7348) header:
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |R|R|R|R|I|R|R|R|               Reserved                        |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |                VXLAN Network Identifier (VNI) |   Reserved    |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *
- * I = VXLAN Network Identifier (VNI) present.
- */
-
-
-
-.unlocked_ioctl = ib_uverbs_ioctl
-err_no: #define	ETIMEDOUT	110	/* Connection timed out */, tools/include/uapi/asm-generic/errno.h
-...
-user space
-ioctl(context->cmd_fd, RDMA_VERBS_IOCTL, &cmd->hdr)
-...
-ib_uverbs_ioctl
-    unlikely(cmd != RDMA_VERBS_IOCTL)
-    copy_from_user
-    srcu_read_lock
-    ib_uverbs_cmd_verbs -> IB/uverbs：使用 uverbs_api 解组 ioctl 命令 转换 ioctl 方法系统调用路径以使用 uverbs_api 数据结构。 新的 uapi 结构包含所有相同的信息，只是以不同且更优化的方式。 - 对于与属性相关的所有内容，使用 attr_bkey 而不是 2 级基数树。 这包括属性存储、存在以及缺失强制属性的检测。 - 避免在完成时迭代所有属性存储，而是使用 find_first_bit 和 attr_bkey 来仅定位那些需要清理的属性。 - 组织事物始终运行并始终依赖清理。 这避免了一堆棘手的错误展开情况。 - 使用基数树定位方法，并使用非常高效的增量基数树查找来定位属性 - 使用预先计算的 destroy_bkey 来处理 uobject 销毁 - 使用预先计算的分配大小和预先计算的“need_stack”以避免快速路径中的数学运算。 如果用户空间不传递（许多）不支持的属性，这是最佳的。 总的来说，这为属性访问器带来了更好的代码生成，所有内容现在都存储在由 attr_bkey 索引的位图或线性数组中。 编译器可以在编译时计算所有方法属性的 attr_bkey 值，这意味着像 uverbs_attr_is_valid() 这样的东西现在编译成单指令位测试
-        radix_tree_iter_lookup <- uapi_add_get_elm
-            uapi_key_ioctl_method(hdr->method_id)
-        method_elm = rcu_dereference_protected(*slot, true)
-        ib_uverbs_run_method
-            handler = srcu_dereference
-            ret = handler(&pbundle->bundle)
-            ...
-            ib_uverbs_alloc_pd -> IB_USER_VERBS_CMD_ALLOC_PD
-                uverbs_request
-                    copy_from_user
-                uobj_alloc(UVERBS_OBJECT_PD, attrs, &ib_dev)
-                    ...
-                    rdma_alloc_begin_uobject
-                        obj->type_class->alloc_begin
-                rdma_zalloc_drv_obj
-                rdma_restrack_new
-                rdma_restrack_set_name
-                ib_dev->ops.alloc_pd(pd, &attrs->driver_udata) -> .alloc_pd =  -> mlx5_ib_alloc_pd
-                    rdma_udata_to_drv_context
-                    mlx5_cmd_exec_inout(to_mdev(ibdev)->mdev, alloc_pd, in, out) -> 命令框架
-                        ...
-                    ib_copy_to_udata
-                rdma_restrack_add
-                    xa_insert
-                    or xa_alloc_cyclic
-                uobj_finalize_uobj_create
-                uverbs_response
-        bundle_destroy
-    srcu_read_unlock
-
-
-ioctl, cmd, 
-uverbs_core_api
-uverbs_def_write_intf
-static const struct uapi_definition uverbs_core_api[] = {
-	UAPI_DEF_CHAIN(uverbs_def_obj_async_fd),
-	UAPI_DEF_CHAIN(uverbs_def_obj_counters),
-	UAPI_DEF_CHAIN(uverbs_def_obj_cq),
-	UAPI_DEF_CHAIN(uverbs_def_obj_device),
-	UAPI_DEF_CHAIN(uverbs_def_obj_dm),
-	UAPI_DEF_CHAIN(uverbs_def_obj_flow_action),
-	UAPI_DEF_CHAIN(uverbs_def_obj_intf),
-	UAPI_DEF_CHAIN(uverbs_def_obj_mr),
-	UAPI_DEF_CHAIN(uverbs_def_obj_qp),
-	UAPI_DEF_CHAIN(uverbs_def_obj_srq),
-	UAPI_DEF_CHAIN(uverbs_def_obj_wq),
-	UAPI_DEF_CHAIN(uverbs_def_write_intf),
-	{},
-};
-
 
 
 
@@ -2332,16 +1948,15 @@ reg_user_mr
 intel irdma/ice/e810 driver:
 drivers/infiniband/hw/irdma/main.c
 module_init(irdma_init_module);
-    auxiliary_driver_register i40iw_auxiliary_drv
+    auxiliary_driver_register(&i40iw_auxiliary_drv)
         .probe = i40iw_probe
-    auxiliary_driver_register(&irdma_auxiliary_drv.adrv)
+    auxiliary_driver_register(&irdma_auxiliary_drv.adrv) -> rdma -> register rdma device
     irdma_register_notifiers
         register_inetaddr_notifier(&irdma_inetaddr_notifier);
         register_inet6addr_notifier(&irdma_inetaddr6_notifier);
         register_netevent_notifier(&irdma_net_notifier);
         register_netdevice_notifier(&irdma_netdevice_notifier);
 ...		
-irdma_probe <- irdma_auxiliary_drv
 
 irdma_ib_register_device
     irdma_init_rdma_device
@@ -2374,6 +1989,9 @@ static struct notifier_block irdma_net_notifier = {
 static struct notifier_block irdma_netdevice_notifier = {
 	.notifier_call = irdma_netdevice_event
 };
+irdma_netdevice_event
+    ibdev = ib_device_get_by_netdev(netdev, RDMA_DRIVER_IRDMA)
+    irdma_port_ibevent(iwdev)
 
 
 
@@ -4601,8 +4219,25 @@ ib_uverbs_init_event_queue
 ovs:
 module_init(dp_init) -> net：添加 Open vSwitch 内核组件。 Open vSwitch 是一款针对虚拟化环境的多层以太网交换机。 除了支持传统硬件交换机所期望的各种功能之外，它还支持细粒度的编程扩展和基于流的网络控制。 这种控制在各种应用程序中都很有用，但在多服务器虚拟化部署中尤其重要，多服务器虚拟化部署的特点通常是高度动态的端点以及需要维护多个租户的逻辑抽象。 Open vSwitch 数据路径为数据包转发提供了内核内快速路径。 它由用户空间守护进程 ovs-vswitchd 进行补充，该守护进程能够接受来自各种来源的配置并将其转换为数据包处理规则。 请参阅 http://openvswitch.org 了解更多信息和用户空间实用程序
 action_fifos_init
-...
-
+ovs_internal_dev_rtnl_link_register
+ovs_flow_init
+    static struct kmem_cache *flow_cache;
+    struct kmem_cache *flow_stats_cache __read_mostly;
+ovs_vport_init
+    static struct hlist_head *dev_table;
+    #define VPORT_HASH_BUCKETS 1024
+register_pernet_device(&ovs_net_ops)
+    ...
+    ovs_ct_init -> openvswitch：支持conntrack区域限制，目前，nf_conntrack_max用于限制每个网络命名空间的conntrack表中的最大conntrack条目数。 对于驻留在同一命名空间中的虚拟机和容器，它们共享相同的 conntrack 表，并且所有虚拟机和容器的 conntrack 条目总数受 nf_conntrack_max 限制。 在这种情况下，如果 VM/容器之一滥用 conntrack 条目，它会阻止其他 VM/容器将有效的 conntrack 条目提交到 conntrack 表中。 即使我们可以将虚拟机放在不同的网络命名空间中，当前的 nf_conntrack_max 配置有点僵化，我们无法限制不同的虚拟机/容器具有不同的 # conntrack 条目。 为了解决上述问题，该补丁提出了一种细粒度的机制，可以进一步限制每个区域的 conntrack 条目数量。 例如，我们可以为不同的VM指定不同的zone，并为每个zone设置conntrack限制。 通过提供这种隔离，行为不当的虚拟机仅消耗其自己区域中的 conntrack 条目，并且不会影响其他行为良好的虚拟机。 此外，用户可以根据自己的喜好对不同区域设置各种连接跟踪限制。 建议的实现利用 Netfilter 的 nf_conncount 后端来计算特定区域中的连接数。 如果连接数超出配置的限制，ovs 会将 ENOMEM 返回到用户空间。 如果用户空间没有配置区域限制，则限制默认为零，即没有限制，这向后兼容没有此补丁的行为。 向用户空间提供以下高级 API： - OVS_CT_LIMIT_CMD_SET：* 设置所有区域的默认连接限制 * 设置特定区域的连接限制 - OVS_CT_LIMIT_CMD_DEL：* 删除特定区域的连接限制 - OVS_CT_LIMIT_CMD_GET：* 获取默认值 所有区域的连接限制 * 获取特定区域的连接限制
+register_netdevice_notifier(&ovs_dp_device_notifier)
+ovs_netdev_init -> ovs：将具有依赖关系的 vport 转换为单独的模块，内部和 netdev vport 仍然是 openvswitch.ko 的一部分。 Encap vports（包括 vxlan、gre 和geneve）可以构建为单独的模块并按需加载。 模块使用后可以卸载。 数据路径端口在其生命周期内保留对 vport 模块的引用。 允许删除全局列表 vport_ops_list 的容易出错的维护
+    ovs_vport_ops_register(&ovs_netdev_vport_ops)
+        ops)->owner = THIS_MODULE;
+dp_register_genl
+    genl_register_family(dp_genl_families[i]) -> 注册通用netlink系列，@family：通用netlink系列首先验证后注册指定的系列。 只有一个家庭可以使用相同的姓氏或标识符进行登记。 该系列的操作、多播组和模块指针必须已分配。 成功返回 0 或负错误代码
+        genl_validate_ops
+        genl_lock_all
+drop_reasons_register_subsys
 
 int netif_rx(struct sk_buff *skb)
 
@@ -4878,7 +4513,7 @@ UCMA_CMD_CONNECT -> static ssize_t (*ucma_cmd_table[]) -> static ssize_t ucma_co
                         xa_store(&cm.local_id_table,
                 trace_cm_send_req
                 ib_send_cm_req(id_priv->cm_id.ib, &req)
-                    ib_mad_send_buf -> ib_mad_send_buf - MAD 数据缓冲区和发送的工作请求。@next：用于将 MAD 链接在一起以进行发布的指针。 @mad：为没有激活 RMPP 的 MAD 引用分配的 MAD 数据缓冲区。 对于使用 RMPP 的 MAD，引用公共和管理类特定标头。 @mad_agent：分配缓冲区的 MAD 代理。 @ah：发送 MAD 时使用的地址句柄。 @context：用户控制的上下文字段。 @hdr_len：表示MAD的数据头的大小。 此长度包括常见的 MAD、RMPP 和特定于类的标头。 @data_len：表示用户传输的数据的总大小。 @seg_count：为此发送分配的 RMPP 段数。 @seg_size：每个 RMPP 段中数据的大小。 这不包括特定于类的标头。 @seg_rmpp_size：每个 RMPP 段的大小，包括类特定标头。 @timeout_ms：等待响应的时间。 @retries：重试响应请求的次数。 对于使用 RMPP 的 MAD，这适用于每个窗口。 完成后，返回完成传输所需的重试次数。 用户负责初始化 MAD 缓冲区本身，任何 RMPP 标头除外。 超出 data_len 分配的额外段缓冲区空间是填充
+                    struct ib_mad_send_buf *msg -> ib_mad_send_buf - MAD 数据缓冲区和发送的工作请求。@next：用于将 MAD 链接在一起以进行发布的指针。 @mad：为没有激活 RMPP 的 MAD 引用分配的 MAD 数据缓冲区。 对于使用 RMPP 的 MAD，引用公共和管理类特定标头。 @mad_agent：分配缓冲区的 MAD 代理。 @ah：发送 MAD 时使用的地址句柄。 @context：用户控制的上下文字段。 @hdr_len：表示MAD的数据头的大小。 此长度包括常见的 MAD、RMPP 和特定于类的标头。 @data_len：表示用户传输的数据的总大小。 @seg_count：为此发送分配的 RMPP 段数。 @seg_size：每个 RMPP 段中数据的大小。 这不包括特定于类的标头。 @seg_rmpp_size：每个 RMPP 段的大小，包括类特定标头。 @timeout_ms：等待响应的时间。 @retries：重试响应请求的次数。 对于使用 RMPP 的 MAD，这适用于每个窗口。 完成后，返回完成传输所需的重试次数。 用户负责初始化 MAD 缓冲区本身，任何 RMPP 标头除外。 超出 data_len 分配的额外段缓冲区空间是填充
                     cm_validate_req_param(param)
                     cm_id_priv->timewait_info = cm_create_timewait_info(cm_id_priv->
                         INIT_DELAYED_WORK(&timewait_info->work.work, cm_work_handler)
@@ -8949,6 +8584,9 @@ linux import file,
 include/linux/types.h
 _Bool则是C99引入的标准，typedef为bool更符合多数编程者的习惯
 ssize_t：用于表示有符号整数的数据类型。ssize_t 通常用作文件读写函数（如 read() 和 write()）的返回类型，表示成功读取或写入的字节数，或者在出现错误时返回负值
+typedef uint64_t u64;
+
+
 
 struct callback_head， 也被重定义为了rcu_head，是Linux中著名的RCU（Read-Copy Update）机制的结构体。该结构体可以在读取时共享数据且不需要加锁，因此可以在一定程度上提高并发性能。可以理解为一种不需要加锁的读-写锁。但是这里并不是RCU锁的实际使用方法（如list_add_rcu()），它们只是类型定义，用于声明函数指针，这些函数指针可以作为参数传递给与 RCU 相关的函数或其他功能
 
@@ -9618,3 +9256,508 @@ reject_tg
 br_nf_dev_queue_xmit
     br_nf_ip_fragment(net, sk, skb, br_nf_push_frag_xmit)
         ip_do_fragment
+
+
+
+struct udev_monitor
+
+
+
+bpf,
+#define MAX_BPF_STACK	512
+#define BPF_COMPLEXITY_LIMIT_INSNS      1000000 /* yes. 1M insns */ -> bpf：增加复杂性限制和最大程序大小，大型验证器速度改进允许增加验证器复杂性限制。 现在，无论程序组成及其大小如何，验证程序只需很少的时间即可达到 insn_processed 限制。 在典型的 x86 机器上，非调试内核在 1/10 秒内处理 1M 条指令。 （在这些速度改进之前，特制的程序可能会达到多秒的验证时间）对于相同的 1M insns，带有调试的完整 kasan 内核大约需要 1 秒。 因此，将 BPF_COMPLEXITY_LIMIT_INSNS 限制提高到 1M。 还将每个程序的指令数从 4k 增加到内部 BPF_COMPLEXITY_LIMIT_INSNS 限制。 4k 限制会让用户感到困惑，因为具有数百个 insns 的小程序可能会达到 BPF_COMPLEXITY_LIMIT_INSNS 限制。 有时添加更多 insns 和 bpf_trace_printk 调试语句将使验证程序接受该程序，而删除代码将使验证程序拒绝它。 一些用户空间应用程序开始将 #define MAX_FOO 添加到其程序中并执行： MAX_FOO=100; 再次：使用 MAX_FOO 进行编译； 尝试加载； if (fails_to_load) { 减少 MAX_FOO; 再次转到； } 能够将最大处理量放入单个程序中。 其他用户人为地将其单个程序拆分为一组程序，并使用 tail_calls 的所有 32 次迭代来增加计算限制。 最先进的人使用无限的 tc-bpf 过滤器列表来执行许多 bpf 程序。 本质上，用户设法解决了 4k insn 限制。 此补丁消除了 uapi 对 root 程序的限制。 BPF_COMPLEXITY_LIMIT_INSNS 是内核内部限制，加载程序的成功不再取决于程序大小，而仅取决于验证者的“智能”。 随着每个内核版本的发布，验证者将继续变得更加智能
+
+
+errno,
+Linux驱动开发头文件剖析（二十二）：<linux/errno.h>、<uapi/asm-generic/errno.h>、<uapi/asm-generic/errno-base.h>: https://zhuanlan.zhihu.com/p/694143739
+
+static __attribute__((unused))
+void perror(const char *msg)
+{
+	fprintf(stderr, "%s%serrno=%d\n", (msg && *msg) ? msg : "", (msg && *msg) ? ": " : "", errno);
+}
+
+glibc, https://elixir.bootlin.com/glibc/latest/source/string/strerror.c
+#include <string.h>
+#include <locale/localeinfo.h>
+
+char *
+strerror (int errnum)
+{
+  return __strerror_l (errnum, __libc_tsd_get (locale_t, LOCALE));
+}
+
+
+deep kernel, 
+<asm-arch/ptrace.h
+struct pt_regs { -> register
+
+}
+
+subsys_system_register
+subsys_register
+drivers/base/bus.c
+int bus_register(const struct bus_type *bus)
+
+
+pci bus,
+include/linux/pci_ids.h
+struct pci_bus {
+    struct pci_bus	*parent;
+}
+
+struct pci_dev
+
+
+struct pci_driver {
+	const char		*name;
+	const struct pci_device_id *id_table;	/* Must be non-NULL for probe to be called */
+	int  (*probe)(struct pci_dev *dev, const struct pci_device_id *id);	/* New device inserted */
+	void (*remove)(struct pci_dev *dev);	/* Device removed (NULL if not a hot-plug capable driver) */
+	int  (*suspend)(struct pci_dev *dev, pm_message_t state);	/* Device suspended */
+	int  (*resume)(struct pci_dev *dev);	/* Device woken up */
+	void (*shutdown)(struct pci_dev *dev);
+	int  (*sriov_configure)(struct pci_dev *dev, int num_vfs); /* On PF */
+	int  (*sriov_set_msix_vec_count)(struct pci_dev *vf, int msix_vec_count); /* On PF */
+	u32  (*sriov_get_vf_total_msix)(struct pci_dev *pf);
+	const struct pci_error_handlers *err_handler;
+	const struct attribute_group **groups;
+	const struct attribute_group **dev_groups;
+	struct device_driver	driver;
+	struct pci_dynids	dynids;
+	bool driver_managed_dma;
+};
+struct pci_driver - PCI驱动结构体，@name：驱动名称。 @id_table：指向驱动程序感兴趣的设备 ID 表的指针。大多数驱动程序应使用 MODULE_DEVICE_TABLE(pci,...) 导出此表。 @probe：对于与 ID 表匹配且尚未被其他驱动程序“拥有”的所有 PCI 设备，将调用此探测函数（在对现有设备执行 pci_register_driver() 期间或稍后插入新设备时）。 对于 ID 表中的条目与设备匹配的每个设备，此函数都会传递一个“struct pci_dev \*”。 当驱动程序选择获取设备的“所有权”时，探测函数返回零，否则返回错误代码（负数）。 探测函数总是从进程上下文中调用，因此它可以休眠。 @remove：每当删除此驱动程序处理的设备时（无论是在驱动程序注销期间还是在手动将其从热插拔插槽中拔出时），都会调用remove()函数。 删除函数总是从进程上下文中调用，因此它可以休眠。 @suspend：将设备置于低功耗状态。 @resume：将设备从低功耗状态唤醒。 （有关 PCI 电源管理和相关功能的说明，请参阅 Documentation/power/pci.rst。） @shutdown：挂接到reboot_notifier_list (kernel/sys.c)。 旨在停止任何空闲的 DMA 操作。 对于启用 LAN 唤醒 (NIC) 或在重新启动之前更改设备的电源状态非常有用。 例如 驱动程序/net/e100.c。 @sriov_configure：可选的驱动程序回调，允许配置通过 sysfs“sriov_numvfs”文件启用的 VF 数量。 @sriov_set_msix_vec_count：PF 驱动程序回调，用于更改 VF 上的 MSI-X 矢量数量。 通过 sysfs“sriov_vf_msix_count”触发。 这将更改 VF 消息控制寄存器中的 MSI-X 表大小。 @sriov_get_vf_total_msix：PF 驱动程序回调，用于获取可分配给 VF 的 MSI-X 向量总数。 @err_handler：请参阅 Documentation/PCI/pci-error-recovery.rst @groups：Sysfs 属性组。 @dev_groups：附加到设备的属性，一旦绑定到驱动程序，将创建该设备。 @driver：驱动程序模型结构。 @dynids：动态添加的设备 ID 列表。 @driver_management_dma：设备驱动程序不使用内核 DMA API 进行 DMA。 对于大多数设备驱动程序来说，只要所有 DMA 都是通过内核 DMA API 处理的，就无需关心此标志。 对于一些特殊的驱动程序，例如VFIO驱动程序，它们知道如何自己管理DMA并设置此标志，以便IOMMU层允许它们设置和管理自己的I/O地址空间
+
+
+enum zone_type
+    ZONE_DMA
+    ZONE_NORMAL
+    ZONE_HIGHMEM
+
+typedef struct pglist_data
+
+
+enum node_states {
+
+
+
+sriov,
+/*
+ * num_vfs > 0; number of VFs to enable
+ * num_vfs = 0; disable all VFs
+ *
+ * Note: SRIOV spec doesn't allow partial VF
+ *       disable, so it's all or none.
+ */
+static ssize_t sriov_numvfs_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	int ret;
+	u16 num_vfs;
+
+	ret = kstrtou16(buf, 0, &num_vfs);
+	if (ret < 0)
+		return ret;
+
+	if (num_vfs > pci_sriov_get_totalvfs(pdev))
+		return -ERANGE;
+
+	device_lock(&pdev->dev);
+
+	if (num_vfs == pdev->sriov->num_VFs)
+		goto exit;
+
+	/* is PF driver loaded w/callback */
+	if (!pdev->driver || !pdev->driver->sriov_configure) {
+		pci_info(pdev, "Driver doesn't support SRIOV configuration via sysfs\n");
+		ret = -ENOENT;
+		goto exit;
+	}
+
+	if (num_vfs == 0) {
+		/* disable VFs */
+		ret = pdev->driver->sriov_configure(pdev, 0);
+		goto exit;
+	}
+
+	/* enable VFs */
+	if (pdev->sriov->num_VFs) {
+		pci_warn(pdev, "%d VFs already enabled. Disable before enabling %d VFs\n",
+			 pdev->sriov->num_VFs, num_vfs);
+		ret = -EBUSY;
+		goto exit;
+	}
+
+	ret = pdev->driver->sriov_configure(pdev, num_vfs);
+	if (ret < 0)
+		goto exit;
+
+	if (ret != num_vfs)
+		pci_warn(pdev, "%d VFs requested; only %d enabled\n",
+			 num_vfs, ret);
+
+exit:
+	device_unlock(&pdev->dev);
+
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+
+int pci_enable_sriov(struct pci_dev *dev, int nr_virtfn)
+{
+	might_sleep();
+
+	if (!dev->is_physfn)
+		return -ENOSYS;
+
+	return sriov_enable(dev, nr_virtfn);
+}
+
+sriov_enable(struct pci_dev *dev, int nr_virtfn)
+	pci_read_config_word(dev, iov->pos + PCI_SRIOV_INITIAL_VF, &initial);
+	这里省略数行，主要是用来判断initial，total_VFs，nr_virtfn是否合法
+	bus = pci_iov_virtfn_bus(dev, nr_virtfn - 1); //计算出来一个bus num分给VFs使用
+			dev->bus->number + ((dev->devfn + dev->sriov->offset + dev->sriov->stride * vf_id) >> 8); 
+	pci_enable_resources(dev, bars)；//设置VFs 配置空间的PCI_COMMAND字段
+	pcibios_sriov_enable(dev, initial);
+	pci_iov_set_numvfs(dev, nr_virtfn);/设置VFs number，读取offset，stride/
+	iov->ctrl |= PCI_SRIOV_CTRL_VFE | PCI_SRIOV_CTRL_MSE;
+	pci_write_config_word(dev, iov->pos + PCI_SRIOV_CTRL, iov->ctrl);/ VF Enable, VF Memory Space Enable/
+	sriov_add_vfs(dev, initial);
+		for (i = 0; i < num_vfs; i++) //逐个初始化，add VFs
+			rc = pci_iov_add_virtfn(dev, i); //和pcie初始化的流程基本一致，分配填充结构体，初始化设备，add 设备
+					virtfn_add_bus(dev->bus, pci_iov_virtfn_bus(dev, id));
+					virtfn = pci_alloc_dev(bus);
+					virtfn->devfn = pci_iov_virtfn_devfn(dev, id);
+					virtfn->vendor = dev->vendor;
+					virtfn->device = iov->vf_device;
+					virtfn->is_virtfn = 1;
+					virtfn->physfn = pci_dev_get(dev);
+					if (id == 0)
+						pci_read_vf_config_common(virtfn);
+					pci_setup_device(virtfn); //这两个函数就是按照capability初始化设备
+					中间省掉获取bar空间的代码，从PF上的SR-IVO的bar空间获取
+					pci_device_add(virtfn, virtfn->bus);
+					sprintf(buf, "virtfn%u", id);
+					rc = sysfs_create_link(&dev->dev.kobj, &virtfn->dev.kobj, buf);
+					rc = sysfs_create_link(&virtfn->dev.kobj, &dev->dev.kobj, "physfn");					
+					kobject_uevent(&virtfn->dev.kobj, KOBJ_CHANGE);
+					pci_bus_add_device(virtfn)
+					kobject_uevent(&dev->dev.kobj, KOBJ_CHANGE);
+
+
+tools/include/linux/kernel.h
+#define container_of(ptr, type, member) ({			\
+	const typeof(((type *)0)->member) * __mptr = (ptr);	\
+	(type *)((char *)__mptr - offsetof(type, member)); })
+#endif
+
+
+
+include/linux/list.h
+static inline void list_add
+
+
+linux/container_of.h
+#define container_of(ptr, type, member) ({				\
+	void *__mptr = (void *)(ptr);					\
+	static_assert(__same_type(*(ptr), ((type *)0)->member) ||	\
+		      __same_type(*(ptr), void),			\
+		      "pointer type mismatch in container_of()");	\
+	((type *)(__mptr - offsetof(type, member))); })
+
+
+
+<init.h>
+#define __init __attribute__ ((__section__ (".init.text"))) __cold
+#define __initdata __attribute__ ((__section__ (".init.data")))
+
+
+vmalloc是内核代码用来请求内存的接口函数，该内存在物理内存中不一定是连续的，但在虚拟内存中总是线性的。,<vmalloc.h> void *vmalloc(unsigned long size); 只需一个参数即可指定所需内存区域的大小 - 与前面讨论的函数相比，大小单位不是页而是字节，这在用户空间编程中很常见。 vmalloc 使用的最著名的例子是在内核的模块实现中。 由于模块可以随时加载，因此无法保证（特别是在系统已启动并运行很长时间的情况下）有足够的连续内存可用于有时大量的模块数据。 如果可以从较小的块中拼凑出足够的内存，则可以通过使用 vmalloc 来避免此问题。 vmalloc 还在内核中的大约 400 个其他位置被调用，特别是在设备和声音驱动程序中。 由于用于 vmalloc 的内存页面在任何情况下都必须主动映射到内核地址空间中，因此显然最好使用 ZONE_HIGHMEM 中的页面来实现此目的。 这允许内核保留更有价值的较低区域，而不会产生任何额外的缺点。 因此，vmalloc（以及第 3.5.8 节中讨论的映射函数）是内核能够将 highmem 页用于其自身目的（而不是用于用户空间应用程序）的少数场合之一。
+
+
+PF_RANDOMIZE
+
+
+static inline void flush_tlb_all(void); // 使所有的TLB表项失效
+
+// 使指定用户地址空间的所有TLB表项失效，参数mm是进程的内存描述符
+static inline void flush_tlb_mm(struct mm_struct *mm);
+
+// 使指定用户地址空间的某个范围TLB表项失效，
+// 参数vma虚拟内存区域，start是起始地址，end是结束地址。
+static inline void flush_tlb_range(struct vm_area_struct *vma,
+				   unsigned long start, unsigned long end);
+
+// 使指定用户地址空间里面的指定虚拟页的TLB表项失效，
+// 参数vma是虚拟内存区域，uaddr是一个虚拟页中的任意虚拟地址
+static inline void flush_tlb_page(struct vm_area_struct *vma,
+				  unsigned long uaddr);
+
+// 使内核的某个虚拟地址范围的TLB表项失效，参数start是起始地址，end是结束地址
+static inline void flush_tlb_kernel_range(unsigned long start, unsigned long end);
+
+// 内核把进程从一个处理器迁移到另一个处理器以后，调用该函数以更新页表缓存或上下文特定信息
+void tlb_migrate_finish(struct mm_struct *mm);
+
+
+// 使所有核的所有TLB表项失效
+static inline void flush_tlb_all(void)
+{
+    // 确保屏障之前的存储指令执行完毕，dsb是数据同步的屏障
+	dsb(ishst);
+    // 是所有核上匹配VMID，阶段1和异常级别1的所有TLB表项失效
+	__tlbi(vmalle1is);
+    // 确保之前的TLB失效指令执行完毕，ish表示数据同步屏障指令对所有和起作用
+	dsb(ish);
+    // 指令同步屏障，冲刷处理器流水线，重新读取屏障指令后面的所有指令
+	isb();
+}
+
+// 宏展开
+static inline void flush_tlb_all(void)
+{
+     asm volatile("dsb ishst" : : : "memory");
+     asm ("tlbi vmalle1is" : :);
+     asm volatile("dsb ish" : : : "memory");
+     asm volatile("isb" : : : "memory");
+}
+
+
+
+static u32 asid_bits; // 保存ASID长度
+static DEFINE_RAW_SPINLOCK(cpu_asid_lock);
+
+static atomic64_t asid_generation; // 高56位保存全局ASID版本号
+static unsigned long *asid_map; // 位图asid_map记录哪些ASID被分配
+
+static DEFINE_PER_CPU(atomic64_t, active_asids); // 保存处理器正在使用的ASID
+static DEFINE_PER_CPU(u64, reserved_asids); // 保留的ASID，用来在全局ASID版本号加1时保存处理器正在执行的进程的ASID
+static cpumask_t tlb_flush_pending;
+
+
+__schedule() -> context_switch() -> switch_mm_irqs_off() -> switch_mm() -> check_and_switch_context()
+arch/arm64/mm/context.c
+
+巨型页,当运行内存需求量较大的应用程序时，如果使用长度为4KB的页，将会产生较多的TLB未命中和缺页异常，严重影响应用程序的性能。如果使用长度为2MB甚至更大的巨型页，可以大幅减少TLB未命中和缺页异常的数量，大幅提高应用程序的性能。这才是内核引入巨型页（Huge Page）的真正原因
+
+
+// 全局变量hugetlb_max_hstate是巨型页池的数量
+int hugetlb_max_hstate __read_mostly;
+// 全局变量是默认巨型页池的索引
+unsigned int default_hstate_idx;
+// 全局数组hstates是巨型页池数组
+struct hstate hstates[HUGE_MAX_HSTATE];
+
+
+struct hstate {
+    // 分配永久巨型页并添加到巨型页池中的时候，在允许的内存节点集合中轮流从每个内存节点分配永久巨型页，这个成员用来记录下次从哪个内存节点分配永久巨型页
+	int next_nid_to_alloc;
+    // 从巨型页池释放空闲巨型页的时候，在允许的内存节点集合中轮流从每个内存节点释放巨型页，这个成员用来记录下次从哪个内存节点释放巨型页
+	int next_nid_to_free;
+    
+	unsigned int order; // 巨型页的长度，页的阶数
+	unsigned long mask; // 巨型页页号的掩码，将虚拟地址和掩码按位与，得到巨型页页号
+    
+	unsigned long max_huge_pages; // 永久巨型页的最大数量
+	unsigned long nr_huge_pages; // 巨型页的数量
+	unsigned long free_huge_pages; // 空闲巨型页的数量
+	unsigned long resv_huge_pages; // 预留巨型页的数量，它们已经承诺分配但还没有分配
+	unsigned long surplus_huge_pages; // 临时巨型页的数量
+	unsigned long nr_overcommit_huge_pages; // 临时巨型页的最大数量
+	struct list_head hugepage_activelist;  // 每个内存节点一个空闲巨型页链表
+	struct list_head hugepage_freelists[MAX_NUMNODES];  // 把已分配出去的巨型页链接起来
+    
+	unsigned int nr_huge_pages_node[MAX_NUMNODES]; // 每个内存节点中巨型页的数量
+	unsigned int free_huge_pages_node[MAX_NUMNODES]; // 每个内存节点中空闲巨型页的数量
+	unsigned int surplus_huge_pages_node[MAX_NUMNODES]; // 每个内存节点中临时巨型页的数量
+#ifdef CONFIG_CGROUP_HUGETLB
+	/* cgroup control files */
+	struct cftype cgroup_files[5];
+#endif
+	char name[HSTATE_NAME_LEN]; // 巨型页池的名称，格式是“hugepages-<size>kB”
+};
+
+static struct file_system_type hugetlbfs_fs_type = {
+     .name          = "hugetlbfs",
+     .mount         = hugetlbfs_mount,
+     .kill_sb       = kill_litter_super,
+};
+
+
+内核有一个透明巨型页线程（线程名称是khugepaged），定期地扫描允许使用透明巨型页的虚拟内存区域，尝试把普通页合并成巨型页
+
+
+ovs, net：添加 Open vSwitch 内核组件。 Open vSwitch 是一款针对虚拟化环境的多层以太网交换机。 除了支持传统硬件交换机所期望的各种功能之外，它还支持细粒度的编程扩展和基于流的网络控制。 这种控制在各种应用程序中都很有用，但在多服务器虚拟化部署中尤其重要，多服务器虚拟化部署的特点通常是高度动态的端点以及需要维护多个租户的逻辑抽象。 Open vSwitch 数据路径为数据包转发提供了内核内快速路径。 它由用户空间守护进程 ovs-vswitchd 进行补充，该守护进程能够接受来自各种来源的配置并将其转换为数据包处理规则
+commit, https://github.com/ssbandjl/linux/commit/ccb1352e76cff0524e7ccb2074826a092dd13016
+Documentation/networking/openvswitch.rst
+
+
+module_init(dp_init); -> static int __init dp_init(void)
+ovs_vport_init
+
+
+static struct vport_ops ovs_netdev_vport_ops = {
+	.type		= OVS_VPORT_TYPE_NETDEV,
+	.create		= netdev_create,
+	.destroy	= netdev_destroy,
+	.send		= dev_queue_xmit,
+};
+
+static struct vport *netdev_create
+    ovs_vport_alloc(0, &ovs_netdev_vport_ops, parms)
+    ovs_netdev_link
+        netdev_tracker_alloc(vport->dev, &vport->dev_tracker, GFP_KERNEL)
+        netdev_master_upper_dev_link
+        netdev_rx_handler_register(vport->dev, netdev_frame_hook, vport)
+        dev_disable_lro(vport->dev) -> openvswitch：将 dev 指针移至 vport 本身，这是将所有 OVS vport 表示为常规 struct net_devices 的第一步。 将 net_device 指针移至 vport 结构本身以摆脱 struct vport_netdev -> 禁用网络设备上的大型接收卸载 (LRO)。 必须在 RTNL 下调用。 如果接收到的数据包可能转发到另一个接口，则需要这样做
+        dev_set_promiscuity(vport->dev, 1) -> 开启混杂模式, 打标记等
+        
+
+
+struct vport {
+	struct net_device *dev;
+	netdevice_tracker dev_tracker;
+	struct datapath	*dp;
+	struct vport_portids __rcu *upcall_portids;
+	u16 port_no;
+
+	struct hlist_node hash_node;
+	struct hlist_node dp_hash_node;
+	const struct vport_ops *ops;
+	struct vport_upcall_stats_percpu __percpu *upcall_stats;
+
+	struct list_head detach_list;
+	struct rcu_head rcu;
+};
+
+enum ovs_vport_type {
+	OVS_VPORT_TYPE_UNSPEC,
+	OVS_VPORT_TYPE_NETDEV,   /* network device */
+	OVS_VPORT_TYPE_INTERNAL, /* network device implemented by datapath */
+	OVS_VPORT_TYPE_GRE,      /* GRE tunnel. */
+	OVS_VPORT_TYPE_VXLAN,	 /* VXLAN tunnel. */
+	OVS_VPORT_TYPE_GENEVE,	 /* Geneve tunnel. */
+	__OVS_VPORT_TYPE_MAX
+};
+
+
+这是key值，主要是提取数据包中协议相关信息，这是后期要进行流表匹配的关键结构
+struct sw_flow_key {
+
+
+
+ovs_vport_send
+
+
+netdev_frame_hook
+    netdev_port_receive(skb)
+        ovs_netdev_get_vport
+            rcu_dereference_rtnl - 带调试检查的 rcu_dereference，@p：要读取的指针，在取消引用之前执行 rcu_dereference(p)，但检查调用者是否持有 rcu_read_lock() 或 RTNL。 注意：请优先选择 rtnl_dereference() 或 rcu_dereference()
+        skb = skb_share_check(skb, GFP_ATOMIC) -> 检查缓冲区是否共享的，如果是就克隆它
+        ovs_vport_receive(vport, skb, skb_tunnel_info(skb)) -> 将接收到的数据包传递到数据路径进行处理 -> 路由：将lwtunnel状态移动到dst_entry，目前，lwtunnel状态驻留在每个协议数据中。 如果我们将 ipv6 流量封装在 ipv4 隧道中（反之亦然），就会出现问题。 隧道的xmit功能不知道数据包是通过ipv4还是ipv6路由到它的，但它需要lwtstate数据。 将 lwtstate 数据移动到 dst_entry 使得这种协议间隧道成为可能。 作为奖励，这带来了一个很好的差异统计 -> 获得隧道相关信息，比如隧道ID
+            unlikely
+                skb_scrub_packet(skb, true)
+            ovs_flow_key_extract(tun_info, skb, &key)
+                IS_ENABLED(CONFIG_NET_TC_SKB_EXT) -> net: openvswitch：从 tc 链索引设置 OvS recirc_id，卸载的 OvS 数据路径规则一对一转换为 tc 规则，例如以下简化的 OvS 规则：recirc_id(0),in_port(dev1),eth_type(0x0800),ct_state( -trk) actions:ct(),recirc(2) 将被翻译成以下 tc 规则： $ tc filter add dev dev1 ingress \ prio 1 chain 0 proto ip \ Flower tcp ct_state -trk \ action ct pipeline \ action goto chain 2 接收到的数据包将首先通过 tc 传输，如果它们没有被 tc 窃取（如上述规则所示），它们将继续通过 OvS 数据路径。 由于我们已经执行了一些可能修改数据包的操作（在本例中为操作 ct），并更新了操作统计信息，因此我们希望在 OvS 中使用正确的 recirc_id（此处为 recirc_id(2)）继续处理我们中断的位置。 为了支持这一点，为 tc 引入一个新的 skb 扩展，它将用于将 tc 链转换为 ovs recirc_id 以处理这些丢失情况。 最后一个 tc 链索引将由 tc goto 链操作设置并由 OvS 数据路径读取
+                if (tun_info)
+                    ip_tunnel_info_af
+                    ip_tunnel_info_opts_get
+                key->phy.priority = skb->priority
+                key->ovs_flow_hash = 0 -> openvswitch：从 flow_extract 中消除 memset()。随着新协议的添加，流密钥的大小往往会增加，尽管很少有协议关心所有字段。 为了优化散列和匹配，OVS 使用密钥的可变长度部分。 然而，当从数据包中提取字段时，我们仍然必须将整个密钥清零。 现在 OVS 实现了屏蔽，这就不再需要了。 根据定义，不属于给定协议一部分的任何字段（或结构中的漏洞）将不是掩码的一部分，并在查找期间被清零。 此外，由于屏蔽已经使用可变长度密钥，因此归零操作也会自动受益。 原则上，此时唯一需要做的就是在流程开始时删除 memset() 。 但是，某些字段假定它们初始化为零，现在必须显式完成。 此外，如果出现错误，我们还必须将相应字段清零，以表明不存在有效数据。 这些增加了代码总量，但在无错误情况下执行的代码很少。 当在 10G 链路上使用大数据包进行测试时，删除 memset() 将 ovs_flow_extract() 的配置文件从 0.64% 降低到 0.56%
+                res = key_extract_mac_proto(skb) -> openvswitch：添加对L3数据包的处理，支持L3数据包（不带以太网头的数据包）的接收、提取流密钥和发送。 请注意，即使在此补丁之后，仍然不允许将非以太网接口添加到网桥中。 同样，用于向/从用户空间发送和接收 L3 数据包的 netlink 接口尚未到位。 基于 Lorand Jakab 和 Simon Horman 之前的版本
+                key_extract(skb, key) -> openvswitch：将原始方向conntrack元组添加到sw_flow_key，将conntrack原始方向五元组的字段添加到struct sw_flow_key。 新字段最初被标记为不存在，并且每当执行 conntrack 操作并查找或生成 conntrack 条目时都会填充新字段。 这意味着这些字段对于所有未被 conntrack 拒绝为不可跟踪的数据包都存在。 sw_flow_key中的原始元组字段是从与当前数据包相关的conntrack条目的原始方向元组填充的，或者如果当前conntrack条目有主控，则从主conntrack条目的原始方向元组填充。 通常，具有指定帮助程序（例如 FTP）的连接的预期连接具有主 conntrack 条目。 新的 conntrack 原始元组字段的主要目的是允许出于策略决策目的对其进行匹配，前提是跟踪的连接回复数据包（以及原始方向数据包）以及任何相关连接的双向数据包的可接受性 基于应用于主连接原始方向 5 元组的 ACL 规则。 当实际数据包标头可能已被 NAT 转换时，这也使得更容易做出策略决策，因为原始方向 5 元组表示任何此类转换之前的数据包标头。 当使用原始方向 5 元组时，返回和/或相关数据包的允许性不需要仅基于 conntrack 条目的存在，从而允许将准入策略与已建立的 conntrack 状态分离。 虽然需要存在 conntrack 条目来允许返回或相关数据包，但策略更改可能会导致最初允许的连接随后被拒绝或丢弃。 如果返回和相关数据包的准入仅基于 conntrack 状态（例如，连接处于已建立状态），则导致连接被拒绝或丢弃的策略更改将需要查找并删除受此类影响的所有 conntrack 条目。 改变。 当使用原始方向 5 元组匹配时，可以允许受影响的 conntrack 条目超时，因为连接的已建立状态不再需要作为数据包准入的基础。 需要注意的是，相关连接的方向性可以与主连接的方向性相同或不同，并且原始方向五元组和conntrack状态位均不携带该信息。 如果需要，主连接的方向性可以存储在主连接的 conntrack 标记或标签中，这些标记或标签会自动由预期的相关连接继承。 conntrack 无法跟踪 ARP 和 ND 数据包的事实允许 ARP/ND 与新的 conntrack 原始元组字段之间的互斥。 因此，IP 地址与 ARP 和 ND 字段联合叠加。 这使得 sw_flow_key 不会因为这个补丁而增长太多，但这也意味着我们必须小心，不要在 ARP 或 ND 数据包中使用新的密钥字段。 ARP 很容易根据以太网类型区分并保持互斥，但 ND 作为 ICMPv6 协议需要多加注意
+                no err ->  ovs_ct_fill_key(skb, key, post_ct)
+            ovs_dp_process_packet -> openvswitch：仅对出口隧道路径使用tun_key。当前tun_key用于传递入口和出口路径上的隧道信息，这会导致混乱。 以下补丁删除了其在入口路径上的使用，使其成为仅出口参数
+                flow = ovs_flow_tbl_lookup_stats(&dp->table, key, skb_get_hash(skb), &n_mask_hit, &n_cache_hit) -> net: openvswitch: 添加流掩码缓存以提高性能，此优化的想法来自于 openvswitch 社区于 2014 年提交的一个补丁。 作者是 Pravin B Shelar。 为了获得高性能，我再次实现了它。 以后的补丁会用到它。 Pravin B Shelar 说： 在每个数据包上，OVS 都需要使用每个 | 查找流表。 掩码，直到找到匹配项。 数据包流密钥是第一个 | 用列表中的 mask 进行掩码，然后掩码键为 | 在流表中查找。 因此mask的数量可以| 影响数据包处理性能 -> mask_cache 将流映射到可能的掩码。 该缓存不是紧密耦合的缓存，这意味着掩码列表的更新可能会导致掩码缓存中的缓存条目不一致。 这是每个 cpu 缓存，分为 MC_HASH_SEGS 段。 如果发生哈希冲突，该条目将在下一个段中进行哈希处理
+                    unlikely no cache -> return flow_lookup(tbl, ti, ma, key, n_mask_hit, &cache, &mask_index)
+                    skb_hash = jhash_1word(skb_hash, key->recirc_id) -> Simple Jenkins hash
+                    for (seg = 0; seg < MC_HASH_SEGS; seg++)
+                        flow = flow_lookup(tbl, ti, ma, key, n_mask_hit, n_cache_hit, &e->mask_index)
+                    flow = flow_lookup(tbl, ti, ma, key, n_mask_hit, n_cache_hit, &ce->mask_index) -> cache miss -> net: openvswitch: addmaskscachehitcounter，添加一个统计maskscache命中次数的计数器，通过megaflownetlink统计导出 -> 流查找对流表进行完整查找。 它以 *index 中传递的索引掩码开始。 由于使用了 CPU 特定变量，因此必须在禁用 BH 的情况下调用此函数
+                        if (likely(*index < ma->max))
+                            masked_flow_lookup
+                                ovs_flow_mask_key(&masked_key, unmasked, false, mask) -> openvswitch：分配时零流量，当引入对巨型流的支持时，OVS 需要开始安装应用了掩码的流。 由于掩码是一项昂贵的操作，OVS 还进行了优化，仅采用非零掩码覆盖的流键部分。 存储在其余部分中的值应该无关紧要，因为它们被屏蔽了。 虽然这对于匹配的目的来说效果很好（必须始终查看掩码），但序列化到 netlink 可能会出现问题。 由于流和掩码是分开序列化的，因此流的未初始化部分可以用恰好存在的任何值进行编码。 就功能而言，这几乎没有影响，因为这些字段将根据定义被屏蔽。 然而，它会将内核内存泄漏到用户空间，这是一个潜在的安全漏洞。 其他代码路径也有可能查看屏蔽键并获取未初始化的数据，尽管目前这在实践中似乎不是问题。 这消除了正在安装的流的掩码优化。 这始终是这种情况，因为掩码优化实际上针对的是每个数据包的流操作
+                                hash = flow_hash(&masked_key, &mask->range)
+                                    jhash2(hash_key, hash_u32s, 0)
+                                head = find_bucket(ti, hash) -> openvswitch：将巨型流列表移出重新哈希结构。ovs-flow 重新哈希不会触及巨型流列表。 以下补丁将其移动到 dp 结构数据路径。 避免在每个数据包接收时访问巨型流列表头的额外间接操作
+                                    hash = jhash_1word(hash, ti->hash_seed);
+                                    &ti->buckets[hash & (ti->n_buckets - 1)]
+                                hlist_for_each_entry_rcu(flow, head, flow_table.node[ti->node_ver],
+                                    flow_cmp_masked_key(flow, &masked_key, &mask->range))
+                                        cmp_key(&flow->key, key, range->start, range->end)
+                ovs_flow_stats_update(flow, key->tp.flags, skb)
+                    spin_lock_init(&new_stats->lock);
+                    rcu_assign_pointer(flow->stats[cpu], new_stats)
+                    cpumask_set_cpu(cpu, flow->cpu_used_mask);
+                ovs_execute_actions(dp, skb, sf_acts, key)
+                    err = do_execute_actions(dp, skb, key, acts->actions, acts->actions_len)
+                        for (a = attr, rem = len; rem > 0;
+                            switch (nla_type(a))
+                            case OVS_ACTION_ATTR_OUTPUT: {
+                            ...
+                    if (level == 1) -> ovs：限制 ovs_execute_actions 中的 ovs 递归以免损坏堆栈，我们发现 openvswitch 的有缺陷的配置可能会覆盖 STACK_END_MAGIC 并导致内核硬崩溃，因为 ovs 内的递归过多。 该问题是由于 openvswitch 的堆栈使用率较高而产生的。 内核的其余部分在当前限制 10 (RECURSION_LIMIT) 下就可以了。 我们使用 ovs_execute_actions 中已有的递归计数器来实现 5 次递归的上限
+                u64_stats_update_begin(&stats->syncp)
+                u64_stats_update_end(&stats->syncp)
+
+
+
+
+
+static struct pernet_operations ovs_net_ops = {
+	.init = ovs_init_net,
+	.exit = ovs_exit_net,
+	.id   = &ovs_net_id,
+	.size = sizeof(struct ovs_net),
+};
+
+
+struct notifier_block ovs_dp_device_notifier = {
+	.notifier_call = dp_device_event
+};
+
+dp_device_event
+    ovs_netdev_get_vport
+    ovs_netdev_detach_dev
+
+
+ovs action, 
+enum ovs_action_attr {
+	OVS_ACTION_ATTR_UNSPEC,
+	OVS_ACTION_ATTR_OUTPUT,	      /* u32 port number. */
+	OVS_ACTION_ATTR_USERSPACE,    /* Nested OVS_USERSPACE_ATTR_*. */
+	OVS_ACTION_ATTR_SET,          /* One nested OVS_KEY_ATTR_*. */
+	OVS_ACTION_ATTR_PUSH_VLAN,    /* struct ovs_action_push_vlan. */
+	OVS_ACTION_ATTR_POP_VLAN,     /* No argument. */
+	OVS_ACTION_ATTR_SAMPLE,       /* Nested OVS_SAMPLE_ATTR_*. */
+	OVS_ACTION_ATTR_RECIRC,       /* u32 recirc_id. */
+	OVS_ACTION_ATTR_HASH,	      /* struct ovs_action_hash. */
+	OVS_ACTION_ATTR_PUSH_MPLS,    /* struct ovs_action_push_mpls. */
+	OVS_ACTION_ATTR_POP_MPLS,     /* __be16 ethertype. */
+	OVS_ACTION_ATTR_SET_MASKED,   /* One nested OVS_KEY_ATTR_* including
+				       * data immediately followed by a mask.
+				       * The data must be zero for the unmasked
+				       * bits. */
+	OVS_ACTION_ATTR_CT,           /* Nested OVS_CT_ATTR_* . */
+	OVS_ACTION_ATTR_TRUNC,        /* u32 struct ovs_action_trunc. */
+	OVS_ACTION_ATTR_PUSH_ETH,     /* struct ovs_action_push_eth. */
+	OVS_ACTION_ATTR_POP_ETH,      /* No argument. */
+	OVS_ACTION_ATTR_CT_CLEAR,     /* No argument. */
+	OVS_ACTION_ATTR_PUSH_NSH,     /* Nested OVS_NSH_KEY_ATTR_*. */
+	OVS_ACTION_ATTR_POP_NSH,      /* No argument. */
+	OVS_ACTION_ATTR_METER,        /* u32 meter ID. */
+	OVS_ACTION_ATTR_CLONE,        /* Nested OVS_CLONE_ATTR_*.  */
+	OVS_ACTION_ATTR_CHECK_PKT_LEN, /* Nested OVS_CHECK_PKT_LEN_ATTR_*. */
+	OVS_ACTION_ATTR_ADD_MPLS,     /* struct ovs_action_add_mpls. */
+	OVS_ACTION_ATTR_DEC_TTL,      /* Nested OVS_DEC_TTL_ATTR_*. */
+
+	__OVS_ACTION_ATTR_MAX,	      /* Nothing past this will be accepted
+				       * from userspace. */
+};
+
