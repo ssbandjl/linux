@@ -1910,6 +1910,9 @@ ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
                             dev->cqp->process_cqp_sds(dev, &sdinfo) -> irdma_update_sds_noccq
                                 cqp_sds_wqe_fill
                                     irdma_sc_cqp_get_next_send_wqe_idx
+                                        IRDMA_ATOMIC_RING_MOVE_HEAD(cqp->sq_ring, *wqe_idx, ret_code)
+                                        wqe = cqp->sq_base[*wqe_idx].elem -> 从DMA的VA基址依次往后填充
+                                        IRDMA_CQP_INIT_WQE(wqe) -> #define IRDMA_CQP_INIT_WQE(wqe) memset(wqe, 0, 64) -> WQE大小为64字节
                                     switch (wqe_entries)
                                     case 3:
                                     ...
@@ -1964,8 +1967,12 @@ irdma_ib_register_device
         or
         irdma_init_iw_device
         ib_set_device_ops(&iwdev->ibdev, &irdma_dev_ops)
+            .owner = THIS_MODULE,
+            ...
+            INIT_RDMA_OBJ_SIZE(ib_pd, irdma_pd, ibpd), -> set size, 计算整个结构体大小, 强制判断第一个字段
+                BUILD_BUG_ON_ZERO(offsetof(struct drv_struct, member))
     ib_device_set_netdev
-    dma_set_max_seg_size
+    dma_set_max_seg_size(iwdev->rf->hw.device, UINT_MAX)
     ib_register_device(&iwdev->ibdev, "irdma%d", iwdev->rf->hw.device)
     irdma_port_ibevent(iwdev)
         event.event = iwdev->iw_status ? IB_EVENT_PORT_ACTIVE : IB_EVENT_PORT_ERR
@@ -4532,7 +4539,7 @@ UCMA_CMD_CONNECT -> static ssize_t (*ucma_cmd_table[]) -> static ssize_t ucma_co
                             rdma_ah_set_port_num(ah_attr, port_num)
                             rdma_ah_set_static_rate(ah_attr, rec->rate)
                             roce_resolve_route_from_path(rec, gid_attr)
-                                might_sleep -> RDMA/addr：将 addr_resolve 标记为 might_sleep()，在通过 ib_nl_fetch_ha() 的一条路径下，这会调用 nlmsg_new(GFP_KERNEL)，这是一个睡眠调用。 这是一条非常罕见的路径，因此将 fetch_ha() 和有条件调用 fetch_ha() 的模块外部入口点标记为 might_sleep()
+                                might_sleep -> RDMA/addr：将 addr_resolve 标记为 might_sleep()，在通过 ib_nl_fetch_ha() 的一条路径下，这会调用 nlmsg_new(GFP_KERNEL)，这是一个睡眠调用。 这是一条非常罕见的路径，因此将 fetch_ha() 和有条件调用 fetch_ha() 的模块外部入口点标记为 might_sleep() -> 在当前CONFIG_DEBUG_ATOMIC_SLEEP选项使能的前提下， 可以看到__might_sleep还是干了不少事情的，最主要的工作是在第一个if语句那里，尤其是preempt_count_equals和 irqs_disabled，都是用来判断当前的上下文是否是一个atomic context，因为我们知道，只要进程获得了spin_lock的任一个变种形式的lock，那么无论是单处理器系统还是多处理器系统，都会导致 preempt_count发生变化，而irq_disabled则是用来判断当前中断是否开启。__might_sleep正是根据这些信息来判断当前正在执行的代码上下文是否是个atomic，如果不是，那么函数就直接返回了，因为一切正常。如果是，那么代码下行
                                 rdma_gid2ip((struct sockaddr *)&sgid, &rec->sgid)
                                     if (ipv6_addr_v4mapped((struct in6_addr *)gid))
                                         memcpy(&out_in->sin_addr.s_addr, gid->raw + 12, 4)
@@ -5687,30 +5694,32 @@ drivers/infiniband/core/uverbs_main.c
 drivers/infiniband/core/device.c -> ib_register_device - 向 IB 核心注册 IB 设备 @device：要注册的设备 @name：唯一的字符串设备名称。 这可能包括“%”，这将导致将唯一索引添加到传递的设备名称中。 @dma_device：指向支持 DMA 的设备的指针。 如果%NULL，则将使用IB 设备。 在这种情况下，调用者应该为 DMA 完全设置 ibdev。 这通常意味着使用 dma_virt_ops。 低级驱动程序使用 ib_register_device() 将其设备注册到 IB 内核。 所有注册的客户端都将收到添加的每个设备的回调。 @device 必须使用 ib_alloc_device() 进行分配。 如果驱动程序使用 ops.dealloc_driver 并异步调用任何 ib_unregister_device() ，则一旦该函数返回，设备指针可能会被释放
 int ib_register_device(struct ib_device *device, const char *name, struct device *dma_device) -> roce和IB注册的flow: https://blog.csdn.net/tiantao2012/article/details/77746141
     assign_name(device, name) -> DMA/devices：使用 xarray 来存储 client_data，现在我们为每个客户端都有了一个小 ID，我们可以使用 xarray 而不是线性搜索链表来获取客户端数据。 这将提供更快且可扩展的客户端数据查找，并使我们能够修改锁定方案。 由于xarray可以使用标记来存储'going_down'，因此完全消除了struct ib_client_data并将client_data值直接存储在xarray中。 然而，这确实需要一个特殊的迭代器，因为我们仍然必须迭代任何 NULL client_data 值。 还消除了 client_data_lock 以支持内部 xarray 锁定
+        if (strchr(name, '%')) -> if name have %
+            alloc_name(device, name)
         dev_set_name
-            err = kobject_set_name_vargs(&dev->kobj, fmt, vargs)
+            err = kobject_set_name_vargs(&dev->kobj, fmt, vargs) -> Set the name of a kobject
         __ib_device_get_by_name <- static DEFINE_XARRAY_FLAGS(devices, XA_FLAGS_ALLOC);
             xa_for_each (&devices, index, device)
+        strscpy -> 将字符串或尽可能多的字符串复制到目标缓冲区中。 该例程返回复制的字符数（不包括尾随的 NUL）或 -E2BIG（如果目标缓冲区不够大）。 如果字符串缓冲区重叠，则行为未定义。 目标缓冲区始终以 NUL 终止，除非它的大小为零。，优先于 strlcpy，因为 API 不需要从 src 字符串读取超出指定“count”字节的内存，并且返回值更容易进行错误检查 比 strlcpy 的。 此外，与当前的 strlcpy 实现不同，该实现对于从其下面更改的字符串具有鲁棒性。 优于 strncpy，因为它始终返回有效字符串，并且不会不必要地强制目标缓冲区的尾部清零。 如果需要归零，使用 strscpy 进行溢出测试可能会更干净，然后只需 memset 目标缓冲区的尾部
+        xa_alloc_cyclic(&devices, &device->index, device, xa_limit_31b, -> 在 XArray 中找到存储此条目的位置 -> 在 @xa 中查找 @limit.min 和 @limit.max 之间的空条目，将索引存储到 @id 指针中，然后将条目存储在该索引处。 并发查找不会看到未初始化的@id。 对空条目的搜索将从 @next 开始，并在必要时回绕。 只能在使用 xa_init_flags() 中设置的标志 XA_FLAGS_ALLOC 初始化的 xarray 上进行操作。 上下文：任何上下文。 获取并释放 xa_lock。 如果 @gfp 标志允许，可以睡觉。 返回：如果分配成功且没有包装，则返回 0。 如果包装后分配成功，则为 1；如果无法分配内存，则为 -ENOMEM；如果 @limit 中没有可用条目，则为 -EBUSY。 */
     setup_device(device) -> ib_register_device() 执行多个分配和初始化步骤。 将其拆分为更小、更易读的函数，以便于审查和维护 -> setup_device() 分配内存并设置需要调用设备操作的数据，这是在 ib_alloc_device 期间未完成这些操作的唯一原因。 它由 ib_dealloc_device() 撤消
-        ib_device_check_mandatory -> must option
-            IB_MANDATORY_FUNC
+        ib_device_check_mandatory -> must option(强制检查提供的verbs API 顺序及是否支持)
+            #define IB_MANDATORY_FUNC(x) { offsetof(struct ib_device_ops, x), #x }
             mandatory_table
             IB_MANDATORY_FUNC(query_device),
             ...
         setup_port_data -> RDMA/device：将 ib_device per_port 数据合并到一个位置，没有理由对每个端口数据进行 3 次分配。 将它们组合在一起并使所有每端口数据的生命周期与 struct ib_device 匹配。 后续补丁将需要更多特定于端口的数据，现在有一个好地方可以放置它
-            alloc_port_data
-                rdma_end_port
-                rdma_for_each_port
-                    INIT_LIST_HEAD(&pdata->pkey_list)
-                    INIT_HLIST_NODE(&pdata->ndev_hash_link)
+            alloc_port_data -> likely alloc before
             rdma_for_each_port
                 get_port_immutable -> .get_port_immutable = irdma_roce_port_immutable -> 获取端口信息并固化
+                    immutable->core_cap_flags = RDMA_CORE_PORT_IBA_ROCE_UDP_ENCAP -> #define RDMA_CORE_PORT_IBA_ROCE_UDP_ENCAP (RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP | RDMA_CORE_CAP_IB_MAD | RDMA_CORE_CAP_IB_CM | RDMA_CORE_CAP_AF_IB | RDMA_CORE_CAP_ETH_AH)
                     ib_query_port -> 校验端口有效性, 是否iwarp -> __ib_query_port
                         return device->ops.query_port(device, port_num, port_attr) -> or xtrdma_qeury_port
                             static int irdma_query_port(struct ib_device *ibdev, u32 port,
-                                props->max_mtu = IB_MTU_4096
-                                props->lid = 1;
-                                props->lmc = 0;
+                                props->max_mtu = IB_MTU_4096 -> 5
+                                props->active_mtu = ib_mtu_int_to_enum(netdev->mtu)
+                                props->lid = 1; -> 本地标识符
+                                props->lmc = 0; -> LID 掩码控制(lid mask control) 由子网管理器分配的每个端口值。 LMC的值指定本地标识符中的路径比特数
                                 props->sm_lid = 0;
                                 props->sm_sl = 0;
                                 props->state = IB_PORT_ACTIVE;
@@ -5734,13 +5743,34 @@ int ib_register_device(struct ib_device *device, const char *name, struct device
                                     __ethtool_get_link_ksettings -> net: ethtool: 添加新的 ETHTOOL_xLINKSETTINGS API，此补丁定义了新的 ETHTOOL_GLINKSETTINGS/SLINKSETTINGS API，由新的 get_link_ksettings/set_link_ksettings 回调处理。 此 API 提供对大多数旧版 ethtool_cmd 字段的支持，添加对更大链接模式掩码（最多 4064 位，可变长度）的支持，并删除 ethtool_cmd 已弃用的字段（transceiver/maxrxpkt/maxtxpkt）。 此 API 弃用了旧版 ETHTOOL_GSET/SSET API，并提供以下向后兼容性属性： - 带有旧版驱动程序的旧版 ethtool：没有变化，仍然使用 get_settings/set_settings 回调。 - 具有新 get/set_link_ksettings 驱动程序的旧版 ethtool：使用新的驱动程序回调，数据在内部转换为旧版 ethtool_cmd。 ETHTOOL_GSET 将仅返回每个链接模式掩码的第一个 32b。 如果用户尝试将 ethtool_cmd 弃用字段设置为非 0（收发器/maxrxpkt/maxtxpkt），ETHTOOL_SSET 将失败。 如果驱动程序设置较高位，则会记录内核警告。 - 未来的 ethtool 与遗留驱动程序：没有变化，仍然使用 get_settings/set_settings 回调，内部转换为新的数据结构。 不推荐使用的字段（transceiver/maxrxpkt/maxtxpkt）将被忽略，并在用户空间中被视为 0。 请注意，“未来”的 ethtool 工具将不允许更改这些已弃用的字段。 - 未来的 ethtool 具有新的驱动程序：直接调用新的回调。 “未来”ethtool 的含义是： - 查询：首先尝试 ETHTOOL_GLINKSETTINGS，如果失败则恢复到 ETHTOOL_GSET - 设置：首先查询并记住 ETHTOOL_GLINKSETTINGS 或 ETHTOOL_GSET 中哪一个成功了 + 如果 ETHTOOL_GLINKSETTINGS 成功，则使用 ETHTOOL_SLINKSETTINGS 更改配置。 失败是最终的（不要尝试 ETHTOOL_SSET）。 + 否则 ETHTOOL_GSET 成功，使用 ETHTOOL_SSET 更改配置。 失败是最终的（不要尝试 ETHTOOL_SLINKSETTINGS）。 通过新 API 的交互用户/内核首先需要进行一次小的 ETHTOOL_GLINKSETTINGS 握手，以就链接模式位图的长度达成一致。 如果内核不同意用户的要求，它将返回用户期望的位图长度作为负长度（并且 cmd 字段为 0）。 当内核和用户同意时，内核返回所有字段中的有效信息（即链接模式长度> 0且cmd为ETHTOOL_GLINKSETTINGS）。 跨越用户/内核边界的数据结构与 32/64 位无关。 在内部转换为合法的内核位图。 当第一个“link_settings”驱动程序开始出现时，内部 __ethtool_get_settings 内核帮助程序将逐渐被 __ethtool_get_link_ksettings 取代。 所以这个补丁并没有改变它，在需要改变之前它就会被删除
                                         dev->ethtool_ops->get_link_ksettings(dev, link_ksettings)
                                             cmd->base.duplex = DUPLEX_FULL;
-                                    ib_get_width_and_speed -> 获取/计算RDMA网卡位宽和速度 -> RDMA/core：从netdev获取IB宽度和速度，以前无法查询网卡的通道数(lanes )，因此相同的netdev_speed会得到固定的位宽和速度。 随着网卡规格越来越多样化，这种固定模式已经不再适用，因此需要一种方法来根据通道数获取正确的宽度和速度。 该补丁从 net_device 检索 netdev 通道和速度，并将其转换为 IB 位宽和速度
+                                    ib_get_width_and_speed(netdev_speed, lksettings.lanes, speed, width) -> 获取/计算RDMA网卡位宽和速度 -> RDMA/core：从netdev获取IB宽度和速度，以前无法查询网卡的通道数(lanes )，因此相同的netdev_speed会得到固定的位宽和速度。 随着网卡规格越来越多样化，这种固定模式已经不再适用，因此需要一种方法来根据通道数获取正确的宽度和速度。 该补丁从 net_device 检索 netdev 通道和速度，并将其转换为 IB 位宽和速度
+                                        switch (netdev_speed / lanes)
+                                        case SPEED_2500:
+                                            *speed = IB_SPEED_SDR;
+                                        case SPEED_5000:
+                                            *speed = IB_SPEED_DDR;
+                                        case SPEED_10000:
+                                            *speed = IB_SPEED_FDR10;
+                                        case SPEED_14000:
+                                            *speed = IB_SPEED_FDR;
+                                        case SPEED_25000:
+                                            *speed = IB_SPEED_EDR;
+                                        case SPEED_50000:
+                                            *speed = IB_SPEED_HDR;
+                                        case SPEED_100000: -> 100G
+                                            *speed = IB_SPEED_NDR;
+                                        default:
+                                            *speed = IB_SPEED_SDR;
                                 props->gid_tbl_len = 32;
                                 props->pkey_tbl_len = IRDMA_PKEY_TBL_SZ -> 1
                                 props->max_msg_sz = iwdev->rf->sc_dev.hw_attrs.max_hw_outbound_msg_size
+                                props->port_cap_flags |= IB_PORT_CM_SUP | IB_PORT_REINIT_SUP -> 指示该端口支持节点的重新初始化, 参考Linux内核网络实现原理
+                                props->max_msg_sz = iwdev->rf->sc_dev.hw_attrs.max_hw_outbound_msg_size <- dev->hw_attrs.max_hw_outbound_msg_size = IRDMA_MAX_OUTBOUND_MSG_SIZE -> 2GB
                             ib_get_cached_subnet_prefix -> IB/core：通过缓存读取ib_query_port中的subnet_prefix。 ib_query_port() 调用 device->ops.query_port() 来获取端口属性。 查询方法是特定于设备驱动程序的。 相同的函数调用device->ops.query_gid()来获取GID并提取subnet_prefix (gid_prefix)。 GID 和subnet_prefix 存储在缓存中。 但如果设备是 Infiniband 设备，则不会从缓存中读取它们。 以下更改利用了缓存的subnet_prefix。 RDBMS 测试表明，此更改使性能有了显着提高
                                 *sn_pfx = device->port_data[port_num].cache.subnet_prefix;
-                    immutable->max_mad_size = IB_MGMT_MAD_SIZE
+                    immutable->max_mad_size = IB_MGMT_MAD_SIZE -> 256
+                    immutable->pkey_tbl_len = attr.pkey_tbl_len -> 设置设备支持的pkey和gid数量
+                    immutable->gid_tbl_len = attr.gid_tbl_len
                 verify_immutable -> 校验固化的端口数据
                     rdma_cap_ib_mad -> rdma_cap_ib_mad - 检查设备的端口是否支持 Infiniband 管理数据报。 @device：要检查的设备 @port_num：要检查的端口号 管理数据报 (MAD) 是 InfiniBand 规范的必需部分，并且受所有 InfiniBand 设备支持。 OPA 接口还支持稍微扩展的版本。 返回：如果端口支持发送/接收MAD数据包，则返回true
                         device->port_data[port_num].immutable.core_cap_flags & RDMA_CORE_CAP_IB_MAD
@@ -5751,20 +5781,20 @@ int ib_register_device(struct ib_device *device, const char *name, struct device
         gid_table_setup_one
             _gid_table_setup_one
                 struct ib_gid_table *table
-                rdma_for_each_port (ib_dev, rdma_port)
+                rdma_for_each_port (ib_dev, rdma_port) -> 每个Port一个GID表
                     table = alloc_gid_table(ib_dev->port_data[rdma_port].immutable.gid_tbl_len)
                         struct ib_gid_table *table = kzalloc(sizeof(*table),
                         table->data_vec = kcalloc(sz, sizeof(*table->data_vec),
                         table->sz = sz;
                     gid_table_reserve_default(ib_dev, rdma_port, table)
                         roce_gid_type_mask = roce_gid_type_mask_support(ib_dev, port)
-                        num_default_gids = hweight_long(roce_gid_type_mask) -> 计算1的个数
-                        table->default_gid_indices |= BIT(i)
+                        num_default_gids = hweight_long(roce_gid_type_mask) -> 计算1的个数, 得到默认GID个数
+                        table->default_gid_indices |= BIT(i) -> 保留GID
                     ib_dev->port_data[rdma_port].cache.gid = table -> init gid table
             rdma_roce_rescan_device -> 重新扫描系统中的所有网络设备，并根据需要将其 gid 添加到相关 RoCE 设备 -> {net, IB}/mlx5：管理多端口 RoCE 的端口关联，调用 mlx5_ib_add 时确定要添加的 mlx5 核心设备是否能够进行双端口 RoCE 操作。 如果是，请使用 num_vhca_ports 和affiliate_nic_vport_criteria 功能确定它是主设备还是从设备。 如果该设备是从属设备，请尝试找到与其关联的主设备。 可以关联的设备将共享系统映像 GUID。 如果没有找到，请将其放入非关联端口列表中。 如果找到主设备，则通过在 NIC vport 上下文中配置端口从属关系将端口绑定到它。 同样，当调用 mlx5_ib_remove 时确定端口类型。 如果它是从端口，则将其与主设备取消关联，否则只需将其从非关联端口列表中删除即可。 即使第二个端口不可用于关联，IB 设备也会注册为多端口设备。 当第二个端口稍后附属时，必须刷新 GID 缓存才能获取缓存中第二个端口的默认 GID。 导出roce_rescan_device以提供在绑定新端口后刷新缓存的机制。 在多端口配置中，所有 IB 对象（QP、MR、PD 等）相关命令应流经主站 mlx5_core_dev，其他命令必须发送到从端口 mlx5_core_mdev，提供一个接口来获取非 IB 对象命令的正确 mdev
                 ib_enum_roce_netdev pass_all_filter enum_all_gids_of_dev_cb
         rdma_for_each_port
-            ib_cache_update -> IB/核心：仅在相应事件上更新 PKEY 和 GID 缓存，HCA 中的 PKEY 和 GID 表都可以保存数百个条目。 阅读它们是昂贵的。 部分原因是用于检索它们的 API 一次仅返回一个条目。 此外，在某些实现上，例如 CX-3，VF 在这方面是半虚拟化的，并且必须依赖 PF 驱动程序来执行读取。 这再次需要 VF 到 PF 的通信。 IB Core 的缓存会根据所有事件进行刷新。 因此，根据收到的事件分别为 IB_EVENT_PKEY_CHANGE 和 IB_EVENT_GID_CHANGE 来过滤 PKEY 和 GID 缓存的刷新
+            ib_cache_update(device, p, true, true, true) -> IB/核心：仅在相应事件上更新 PKEY 和 GID 缓存，HCA 中的 PKEY 和 GID 表都可以保存数百个条目。 阅读它们是昂贵的。 部分原因是用于检索它们的 API 一次仅返回一个条目。 此外，在某些实现上，例如 CX-3，VF 在这方面是半虚拟化的，并且必须依赖 PF 驱动程序来执行读取。 这再次需要 VF 到 PF 的通信。 IB Core 的缓存会根据所有事件进行刷新。 因此，根据收到的事件分别为 IB_EVENT_PKEY_CHANGE 和 IB_EVENT_GID_CHANGE 来过滤 PKEY 和 GID 缓存的刷新
                 rdma_is_port_valid
                 ib_query_port(device, port, tprops)
                 rdma_protocol_roce
@@ -5876,7 +5906,6 @@ const struct uapi_definition uverbs_def_write_intf[] = {
         UAPI_DEF_METHOD_NEEDS_FN(dealloc_pd))),
     ...
 }
-====>
 {
     .kind = UAPI_DEF_OBJECT_START, 
     .object_start = { .object_id = UVERBS_OBJECT_PD }, 
@@ -6271,8 +6300,22 @@ rxe_newlink -> 添加对 RDMA_NLDEV_CMD_NEWLINK/DELLINK 消息的支持，允许
                 ib_set_device_ops(dev, &rxe_dev_ops)
                 ib_device_set_netdev(&rxe->ib_dev, rxe->ndev, 1) ->  将 ib_dev 与底层 net_device 相关联，@ib_dev：要修改的设备 @ndev：要关联的 net_device，可能为 NULL @port：net_device 连接到的 IB 端口 驱动程序应使用它将 ib_device 链接到 netdev，以便 netdev 显示在 ib_enum_roce_netdev 等接口中。 任何端口只能有一个 netdev 附属。 调用者必须确保给定的 ndev 未未注册或正在取消注册，并且当 ndev 发送 NETDEV_UNREGISTER 事件时，ib_device 未注册或使用 NULL 调用 ib_device_set_netdev()
                     alloc_port_data -> 驱动程序希望在 ib_register_driver 之前调用它，因此我们必须尽早设置端口数据 -> RDMA/device：添加 ib_device_set_netdev() 作为 get_netdev 的替代方案，关联的 netdev 实际上不应该非常动态，因此对于大多数驱动程序来说，没有理由进行这样的回调。 提供一个 API 来通知核心代码有关网络开发从属关系，并使用核心维护的数据结构。 这使得核心代码能够更加了解 ndev 关系，从而允许一些基于此的新 API。 这也使用了某种意义上的锁定，许多驱动程序都有令人困惑的 RCU 锁定，或者缺少不正确的锁定
+                        pdata_rcu = kzalloc -> device->port_data 直接按端口号进行索引，以使对该数据的访问尽可能高效。 因此 port_data 被声明为一个从 1 开始的数组，开头可能有空槽 -> struct_size -> 使用尾随数组计算结构的大小。 ：指向结构体的指针
+                        device->port_data = pdata_rcu->pdata
+                        rdma_for_each_port (device, port)
+                            struct ib_port_data *pdata = &device->port_data[port]
+                            INIT_LIST_HEAD(&pdata->pkey_list)
+                            INIT_HLIST_NODE(&pdata->ndev_hash_link)
+                    rdma_is_port_valid
+                    pdata = &ib_dev->port_data[port]
+                    old_ndev = rcu_dereference_protected(pdata->netdev, lockdep_is_held(&pdata->netdev_lock)) -> cache
+                    netdev_tracker_free(ndev, &pdata->netdev_tracker)
+                    netdev_hold(ndev, &pdata->netdev_tracker, GFP_ATOMIC)
                     add_ndev_hash
-                        hash_add_rcu(ndev_hash, &pdata->ndev_hash_link, -> RDMA/device：添加 ib_device_get_by_netdev()，多个驱动程序需要从给定的 netdev 查找 ib_device。 rxe 在无法入睡的情况下需要快速完成此操作，因此选择使用 RCU 安全哈希表来实现转换。 哈希表可以具有多对一的映射。 这是为了支持未来多个 IB 驱动程序（即 iWarp 和 RoCE）连接到相同网络设备的情况。 driver_ids 需要不同才能支持这一点。 在此过程中，这通过推迟其 kfree 使 struct ib_device 和 ib_port_data RCU 变得安全
+                        might_sleep
+                        if (hash_hashed(&pdata->ndev_hash_link))
+                            hash_del_rcu(&pdata->ndev_hash_link) -> delete old item from hash table
+                        hash_add_rcu(ndev_hash, &pdata->ndev_hash_link, -> RDMA/device：添加 ib_device_get_by_netdev()，多个驱动程序需要从给定的 netdev 查找 ib_device。 rxe 在无法入睡的情况下需要快速完成此操作，因此选择使用 RCU 安全哈希表来实现转换。 哈希表可以具有多对一的映射。 这是为了支持未来多个 IB 驱动程序（即 iWarp 和 RoCE）连接到相同网络设备的情况。 driver_ids 需要不同才能支持这一点。 在此过程中，这通过推迟其 kfree 使 struct ib_device 和 ib_port_data RCU 变得安全 <- static struct hlist_head ndev_hash[1 << (5)]
                         hash_add_rcu(ndev_hash, &pdata->ndev_hash_link,(uintptr_t)pdata->netdev); -> add an object to a rcu enabled hashtable
                 rxe_icrc_init
                     tfm = crypto_alloc_shash("crc32", 0, 0)
@@ -7366,7 +7409,28 @@ struct ib_port_attr {
 	u16			port_cap_flags2;
 };
 
-
+struct ibv_port_attr {
+    enum ibv_port_state     state;          /* Logical port state */
+    enum ibv_mtu            max_mtu;        /* Max MTU supported by port */
+    enum ibv_mtu            active_mtu;     /* Actual MTU */
+    int                     gid_tbl_len;    /* Length of source GID table */
+    uint32_t                port_cap_flags; /* Port capabilities */
+    uint32_t                max_msg_sz;     /* Maximum message size */
+    uint32_t                bad_pkey_cntr;  /* Bad P_Key counter */
+    uint32_t                qkey_viol_cntr; /* Q_Key violation counter */ -> Q_key违反次数
+    uint16_t                pkey_tbl_len;   /* Length of partition table */
+    uint16_t                lid;            /* Base port LID */
+    uint16_t                sm_lid;         /* SM LID */
+    uint8_t                 lmc;            /* LMC of LID */ 
+    uint8_t                 max_vl_num;     /* Maximum number of VLs */
+    uint8_t                 sm_sl;          /* SM service level */
+    uint8_t                 subnet_timeout; /* Subnet propagation delay */ -> 子网传播时延
+    uint8_t                 init_type_reply;/* Type of initialization performed by SM */
+    uint8_t                 active_width;   /* Currently active link width */
+    uint8_t                 active_speed;   /* Currently active link speed */
+    uint8_t                 phys_state;     /* Physical port state */
+    uint8_t                 link_layer;     /* link layer protocol of the port */
+};
 
 
 
@@ -7527,10 +7591,9 @@ static int mlx5_ib_add_gid
 
 通过扫描设备的回调枚举设备所有的GIDs(根据IP计算GID,并缓存GID)
 static void enum_all_gids_of_dev_cb(struct ib_device *ib_dev, u32 port, struct net_device *rdma_ndev,void *cookie)
-    for_each_net(net) -> 两层for循环
+    for_each_net(net) -> 两层for循环 -> list_for_each_entry(VAR, &net_namespace_list, list)
         for_each_netdev(net, ndev)
-    当不处于绑定模式时，过滤并添加主网络设备的默认 GID，或者当处于绑定模式时，添加绑定主设备的默认 GID
-    is_ndev_for_default_gid_filter
+    is_ndev_for_default_gid_filter -> 检查给定的网络设备是否可以被视为默认 GID -> 当不处于绑定模式时，过滤并添加主网络设备的默认 GID，或者当处于绑定模式时，添加绑定主设备的默认 GID -> 当rdma netdevice用于bonding时，bonding master netdevice应考虑默认GID。 因此，在考虑绑定时请忽略从属 rdma 网络设备。 另外，当event(cookie)网络设备是bond master设备时，请确保它是rdma网络设备的上层网络设备
         add_default_gids(ib_dev, port, rdma_ndev, ndev) -> ib_cache_gid_set_default_gid
             mask = GID_ATTR_FIND_MASK_GID_TYPE | -> IB/core：修复了更改 mac 地址时删除默认 GID 的问题，在 [1] 之前，当网络设备的 MAC 地址更改时，默认 GID 应该被删除并添加回来，这会按以下顺序影响节点和/或端口 GUID。 netdevice_event() -> NETDEV_CHANGEADDR default_del_cmd() del_netdev_default_ips() bond_delete_netdev_default_gids() ib_cache_gid_set_default_gid() ib_cache_gid_del() add_cmd() [..] 但是，在非绑定场景中不会调用 ib_cache_gid_del()，因为 event_ndev 和 rdma_ndev 相同。 因此，修复这种情况，当事件 ndev 和 rdma_dev 相同时忽略检查上层设备； 类似于 bond_set_netdev_default_gids()。 此修复 ib_cache_gid_del() 被正确调用； 但是 ib_cache_gid_del() 找不到要删除的默认 GID，因为 find_gid() 被赋予 default_gid = false 并设置了 GID_ATTR_FIND_MASK_DEFAULT。 但后来它被 ib_cache_gid_set_default_gid() 覆盖，作为 add_cmd() 的一部分。 因此，mac 地址更改通常适用于默认 GID。 通过重构系列 [1]，可以检测到这种不正确的行为。 因此，删除默认GID时，请设置default_gid并设置MASK标志。 当删除基于IP的GID时，清除default_gid并设置MASK标志。 [1] https://patchwork.kernel.org/patch/10319151/
             for (gid_type = 0; gid_type < IB_GID_TYPE_SIZE; ++gid_type) -> 遍历3种GID类型
@@ -7553,7 +7616,7 @@ static void enum_all_gids_of_dev_cb(struct ib_device *ib_dev, u32 port, struct n
                     ib_dispatch_event_clients(&event) -> IB/核心：让 IB 核心分发缓存更新事件 目前，当低级驱动程序通知 Pkey、GID 和端口更改事件时，它们会按照注册的顺序通知给已注册的处理程序。 IB 核心和其他 ULP（例如 IPoIB）对 GID、LID、Pkey 更改事件感兴趣。 由于 ULP 完成的所有 GID 查询均由 IB 核心提供服务，并且 IB 核心将缓存更新推迟到工作队列，因此其他客户端在处理自己的事件时可能会看到过时的缓存数据。 例如，下面的调用树显示了 ipoib 如何在更新 WQ 中的缓存的同时调用 rdma_query_gid()。 mlx5_ib_handle_event() ib_dispatch_event() ib_cache_event()queue_work() -> 缓存更新速度较慢 [..] ipoib_event()queue_work() [..] 工作处理程序 ipoib_ib_dev_flush_light() __ipoib_ib_dev_flush() ipoib_dev_addr_changed_valid() rdma_query_gid() <- 返回旧 GID ，缓存未更新。 将所有事件分派移至工作队列，以便始终在通知任何客户端之前完成缓存更新
                         list_for_each_entry(handler, &event->device->event_handler_list, list)
                             handler->handler(handler, event)
-    is_eth_port_of_netdev_filter
+    if (is_eth_port_of_netdev_filter(ib_dev, port,
         real_dev = rdma_vlan_dev_real_dev(cookie) -> IB/core：删除从 void 到 net_device 的指针转换，此补丁避免了从 void 到 net_device 的不必要的类型转换 -> IB/核心：为 IBoE 添加 VLAN 支持，为 IBoE 添加 802.1q VLAN 支持。 VLAN 标记按以下方式编码在从链路本地地址派生的 GID 中： 当 GID 包含 VLAN 时，GID[11] GID[12] 包含 VLAN ID。 数据包的 3 位用户优先级字段与 SL 的 3 位相同。 对于 rdma_cm 应用程序，TOS 字段用于通过右移 5 位来生成 SL 字段，从而有效地占用 TOS 字段的 3 MS 位 -> commit: https://github.com/ssbandjl/linux/commit/af7bd463761c6abd8ca8d831f9cc0ac19f3b7d4b
             is_vlan_dev(dev) ? vlan_dev_real_dev(dev) : NULL
                 net_device *ret = vlan_dev_priv(dev)->real_dev -> while (is_vlan_dev(ret)) -> 递归拿到vlan设备对应的真实设备
@@ -7565,33 +7628,34 @@ static void enum_all_gids_of_dev_cb(struct ib_device *ib_dev, u32 port, struct n
             bond_option_active_slave_get_rcu
                 rcu_dereference_rtnl(bond->curr_active_slave)
                 bond_uses_primary(bond)
-    _add_netdev_ips(ib_dev, port, ndev)
-        enum_netdev_ipv4_ips(ib_dev, port, ndev) -> 枚举IPv4设备的IP地址
-            __in_dev_get_rcu
-            list_add_tail(&entry->list, &sin_list)
-            update_gid_ip(GID_ADD, ib_dev, port, ndev, (struct sockaddr *)&sin_iter->ip);
-                rdma_ip2gid(addr, &gid) -> IP地址到GID的转换算法 -> IB/core：verbs/cm 结构中的以太网 L2 属性，此补丁添加了对 verbs/cm/cma 结构中的以太网 L2 属性的支持。 在处理 L2 以太网时，我们应该以与使用 IB L2（和 L4 PKEY）属性类似的方式使用 smac、dmac、vlan ID 和优先级。 因此，这些属性被添加到以下结构中： * ib_ah_attr - 添加了 dmac * ib_qp_attr - 添加了 smac 和 vlan_id，（sl 保留 vlan 优先级） * ib_wc - 添加了 smac、vlan_id * ib_sa_path_rec - 添加了 smac、dmac、vlan_id * cm_av - 添加了 smac 和 vlan_id 对于路径记录结构，在将其打包为有线格式时特别注意避免新字段，因此我们不会破坏 IB CM 和 SA 有线协议。 在主动侧，CM 被填充。 其内部结构来自 ULP 提供的路径。 我们添加了 ETH L2 属性并将它们放入 CM 地址句柄（struct cm_av）中。 在被动侧，CM 从与 REQ 消息关联的 WC 中填充其内部结构。 我们添加了从 WC 获取 ETH L2 属性的内容。 当硬件驱动程序在 WC 中提供所需的 ETH L2 属性时，它们会设置 IB_WC_WITH_SMAC 和 IB_WC_WITH_VLAN 标志。 IB 核心代码检查这些标志是否存在，如果没有，则从 ib_init_ah_from_wc() 辅助函数进行地址解析。 ib_modify_qp_is_ok 也被更新以考虑链路层。 有些参数对于以太网链路层是必需的，而对于IB来说则无关。 修改供应商驱动程序以支持新的函数签名
-                    case AF_INET: -> ipv4
-                        ipv6_addr_set_v4mapped(((struct sockaddr_in *)addr)->sin_addr.s_addr, (struct in6_addr *)gid)
-                            ipv6_addr_set(v4mapped, 0, 0, htonl(0x0000FFFF), addr)
-                                __ipv6_addr_set_half(&addr->s6_addr32[0], w1, w2)
-                                __ipv6_addr_set_half(&addr->s6_addr32[2], w3, w4)
-                    case AF_INET6:
-                        *(struct in6_addr *)&gid->raw =	((struct sockaddr_in6 *)addr)->sin6_addr
-                update_gid(gid_op, ib_dev, port, &gid, &gid_attr)
-                    unsigned long gid_type_mask = roce_gid_type_mask_support(ib_dev, port) -> IB/core：将gid_type添加到gid属性中，为了支持多种GID类型，我们需要存储每个GID的gid_type。 这也与 RoCE v2 附件“RoCEv2 端口 GID 表条目应具有表示 L3 地址类型的“GID 类型”属性”保持一致。 当前支持的 GID 是 IB_GID_TYPE_IB，这也是 RoCE v1 GID 类型。 这意味着 gid_type 应添加到 roce_gid_table 元数据中
-                    ib_cache_gid_add(ib_dev, port, gid, gid_attr) -> .is_supported = &mlx5_rdma_supported,
-                        __ib_cache_gid_add
-                    or ib_cache_gid_del(ib_dev, port, gid, gid_attr) -> _ib_cache_gid_del
-                        find_gid
-                        del_gid(ib_dev, port, table, ix) -> del_gid
-                            mlx5r_del_gid_macsec_operations -> del flow
-                        dispatch_gid_change_event(ib_dev, port)
-        enum_netdev_ipv6_ips(ib_dev, port, ndev)
-            in6_dev = in6_dev_get(ndev)
-            list_add_tail(&entry->list, &sin6_list)
-            rdma_ip2gid((struct sockaddr *)&sin6_iter->sin6, &gid)
-            update_gid(GID_ADD, ib_dev, port, &gid, &gid_attr)
+    if (is_eth_port_of_netdev_filter(ib_dev, port,
+        _add_netdev_ips(ib_dev, port, ndev)
+            enum_netdev_ipv4_ips(ib_dev, port, ndev) -> 枚举IPv4设备的IP地址
+                __in_dev_get_rcu
+                list_add_tail(&entry->list, &sin_list)
+                update_gid_ip(GID_ADD, ib_dev, port, ndev, (struct sockaddr *)&sin_iter->ip);
+                    rdma_ip2gid(addr, &gid) -> IP地址到GID的转换算法 -> IB/core：verbs/cm 结构中的以太网 L2 属性，此补丁添加了对 verbs/cm/cma 结构中的以太网 L2 属性的支持。 在处理 L2 以太网时，我们应该以与使用 IB L2（和 L4 PKEY）属性类似的方式使用 smac、dmac、vlan ID 和优先级。 因此，这些属性被添加到以下结构中： * ib_ah_attr - 添加了 dmac * ib_qp_attr - 添加了 smac 和 vlan_id，（sl 保留 vlan 优先级） * ib_wc - 添加了 smac、vlan_id * ib_sa_path_rec - 添加了 smac、dmac、vlan_id * cm_av - 添加了 smac 和 vlan_id 对于路径记录结构，在将其打包为有线格式时特别注意避免新字段，因此我们不会破坏 IB CM 和 SA 有线协议。 在主动侧，CM 被填充。 其内部结构来自 ULP 提供的路径。 我们添加了 ETH L2 属性并将它们放入 CM 地址句柄（struct cm_av）中。 在被动侧，CM 从与 REQ 消息关联的 WC 中填充其内部结构。 我们添加了从 WC 获取 ETH L2 属性的内容。 当硬件驱动程序在 WC 中提供所需的 ETH L2 属性时，它们会设置 IB_WC_WITH_SMAC 和 IB_WC_WITH_VLAN 标志。 IB 核心代码检查这些标志是否存在，如果没有，则从 ib_init_ah_from_wc() 辅助函数进行地址解析。 ib_modify_qp_is_ok 也被更新以考虑链路层。 有些参数对于以太网链路层是必需的，而对于IB来说则无关。 修改供应商驱动程序以支持新的函数签名
+                        case AF_INET: -> ipv4
+                            ipv6_addr_set_v4mapped(((struct sockaddr_in *)addr)->sin_addr.s_addr, (struct in6_addr *)gid)
+                                ipv6_addr_set(v4mapped, 0, 0, htonl(0x0000FFFF), addr)
+                                    __ipv6_addr_set_half(&addr->s6_addr32[0], w1, w2)
+                                    __ipv6_addr_set_half(&addr->s6_addr32[2], w3, w4)
+                        case AF_INET6:
+                            *(struct in6_addr *)&gid->raw =	((struct sockaddr_in6 *)addr)->sin6_addr
+                    update_gid(gid_op, ib_dev, port, &gid, &gid_attr)
+                        unsigned long gid_type_mask = roce_gid_type_mask_support(ib_dev, port) -> IB/core：将gid_type添加到gid属性中，为了支持多种GID类型，我们需要存储每个GID的gid_type。 这也与 RoCE v2 附件“RoCEv2 端口 GID 表条目应具有表示 L3 地址类型的“GID 类型”属性”保持一致。 当前支持的 GID 是 IB_GID_TYPE_IB，这也是 RoCE v1 GID 类型。 这意味着 gid_type 应添加到 roce_gid_table 元数据中
+                        ib_cache_gid_add(ib_dev, port, gid, gid_attr) -> .is_supported = &mlx5_rdma_supported,
+                            __ib_cache_gid_add
+                        or ib_cache_gid_del(ib_dev, port, gid, gid_attr) -> _ib_cache_gid_del
+                            find_gid
+                            del_gid(ib_dev, port, table, ix) -> del_gid
+                                mlx5r_del_gid_macsec_operations -> del flow
+                            dispatch_gid_change_event(ib_dev, port)
+            enum_netdev_ipv6_ips(ib_dev, port, ndev)
+                in6_dev = in6_dev_get(ndev)
+                list_add_tail(&entry->list, &sin6_list)
+                rdma_ip2gid((struct sockaddr *)&sin6_iter->sin6, &gid)
+                update_gid(GID_ADD, ib_dev, port, &gid, &gid_attr)
 
 
 
@@ -8520,13 +8584,6 @@ static int irdma_probe(
                         icrdma_init_hw
                             dev->hw_regs[i] = (u32 __iomem *)(hw_addr + icrdma_regs[i])
 
-irdma_sc_cqp_get_next_send_wqe_idx
-    IRDMA_ATOMIC_RING_MOVE_HEAD(cqp->sq_ring, *wqe_idx, ret_code)
-    wqe = cqp->sq_base[*wqe_idx].elem -> 从DMA的VA基址依次往后填充
-    IRDMA_CQP_INIT_WQE(wqe) -> #define IRDMA_CQP_INIT_WQE(wqe) memset(wqe, 0, 64) -> WQE大小为64字节
-
-
-
 ring, 环形链表, 从头部取出一个元数后, 将头指针向后移动一位
 #define IRDMA_RING_MOVE_HEAD(_ring, _retcode) \
 	{ \
@@ -8570,6 +8627,126 @@ Firmware Management Protocol (FMP), fpm
 
 
 vfio, Documentation/driver-api/vfio.rst
+echo 1 | sudo tee /sys/module/vfio_pci/parameters/enable_sriov
+modprobe vfio-pci enable_sriov=1 -> module_init(vfio_pci_init) -> vfio/pci：将 pci_driver 代码从 vfio_pci_core.c 中拆分出来，将 vfio_pci 驱动程序拆分为两个逻辑部分，即实现“对任何 PCI 设备的通用 VFIO 支持”的“struct pci_driver”（vfio_pci.c）和代码库（ vfio_pci_core.c），帮助在 PCI 设备之上实现 struct vfio_device。 vfio_pci.ko 继续在 sysfs 下提供相同的接口，此更改不会对功能产生影响。 以下补丁将把 vfio_pci 和 vfio_pci_core 变成一个单独的模块。 这是为了允许另一个模块提供 pci_driver 并允许该模块自定义 VFIO 的设置方式、注入其自己的操作以及轻松扩展供应商特定的功能。 此时，vfio_pci_core 仍然包含许多混合到其中的 vfio_pci 功能。 后续补丁将移出更多大型物品，但需要另一个清理系列才能清除所有物品
+    vfio_pci_core_set_params
+    pci_register_driver(&vfio_pci_driver)
+    vfio_pci_fill_ids()
+    pci_add_dynid(&vfio_pci_driver, vendor, device, subvendor, subdevice, class, class_mask, 0) -> 将新的 PCI 设备 ID 添加到此驱动程序并重新探测设备
+
+
+static struct pci_driver vfio_pci_driver = {
+	.name			= "vfio-pci",
+	.id_table		= vfio_pci_table,
+	.probe			= vfio_pci_probe,
+	.remove			= vfio_pci_remove,
+	.sriov_configure	= vfio_pci_sriov_configure,
+	.err_handler		= &vfio_pci_core_err_handlers,
+	.driver_managed_dma	= true,
+};
+
+vfio_pci_probe
+    vfio_pci_is_denylisted
+    vdev = vfio_alloc_device(vfio_pci_core_device, vdev, &pdev->dev, &vfio_pci_ops) -> container_of(_vfio_alloc_device
+        vfio_init_device(device, dev, ops) -> vfio：添加统一 vfio_device 生命周期的帮助程序，其想法是让 vfio 核心管理 vfio_device 生命周期，而不是重复跨驱动程序的逻辑。 这也是将struct device添加到vfio_device的准备步骤。 新的助手对和 vfio_device 中的 kref： - vfio_alloc_device() - vfio_put_device() 驱动程序可以注册 @init/@release 回调来管理包装 vfio_device 的任何私有状态。 然而，vfio-ccw 不适合这个模型，因为它的私有结构混合了父级和 mdev 信息，因此生命周期混乱，因此必须在 vfio 设备的生命周期之外分配/释放。 根据之前的讨论，IBM 人员不会在短期内解决这个问题。 不必等待这些修改，而是引入另一个帮助程序 vfio_init_device()，以便 ccw 可以调用它来初始化预分配的 vfio_device。 ccw 技巧的进一步含义是 vfio_device 无法在 vfio 核心中统一释放。 相反，需要*每个*驱动程序来实现@release并释放内部的vfio_device。 那么ccw可以自行选择延迟免费。 另一个技巧是 kvzalloc() 用于满足 gvt 的需要，gvt 使用 vzalloc()，而所有其他都使用 kzalloc()。 因此，驱动程序应该调用帮助程序 vfio_free_device() 来释放 vfio_device，而不是假设 kfree() 或 vfree() 是适用的。 稍后，一旦 ccw 混乱得到修复，我们就可以删除这些技巧并完全处理 vfio 核心中的结构分配/释放。 所有现有用法转换为新模型后，现有 vfio_{un}init_group_dev() 将被弃用
+            ida_alloc_max
+            init_completion(&device->comp)
+            ret = ops->init(device) -> vfio_pci_core_init_dev
+                INIT_LIST_HEAD(&vdev->dummy_resources_list)
+                INIT_LIST_HEAD(&vdev->ioeventfds_list)
+                INIT_LIST_HEAD(&vdev->vma_list)
+                INIT_LIST_HEAD(&vdev->sriov_pfs_item)
+                xa_init(&vdev->ctx) -> vfio/pci：使用xarray进行中断上下文存储，中断上下文在分配中断时静态分配。 分配后，通过使用向量作为索引直接访问数组的元素来管理上下文。 当中断被禁用时，存储被释放。 启用 MSI-X 后，可以动态分配单个 MSI-X 中断。 需要中断上下文的动态存储来支持这一点。 将中断上下文数组替换为 xarray（类似于内核用作 MSI 描述符存储的数组），它可以支持动态扩展，同时保持使用向量作为索引的自定义。 使用动态存储，不再需要在分配中断时预分配中断上下文。 MSI 和 MSI-X 中断上下文仅在中断启用时使用。 因此，它们的分配可以被延迟，直到中断使能为止。 只有启用的中断才会有关联的中断上下文。 是否已分配中断（Linux irq number存在）成为是否允许中断的标准
+            device_initialize(&device->device)
+    dev_set_drvdata(&pdev->dev, vdev) -> vfio/pci：让所有 VFIO PCI 驱动程序将 vfio_pci_core_device 存储在 drvdata 中，在 drvdata 中拥有一致的指针将允许下一个补丁使用某些核心代码帮助程序中的 drvdata。 在 vfio_pci_core_register_device() 内使用 WARN_ON 来检测错过此的驱动程序
+    vfio_pci_core_register_device(vdev)
+        if (pdev->hdr_type != PCI_HEADER_TYPE_NORMAL)
+        if (pci_num_vf(pdev)) -> 防止绑定到启用了 VF 的 PF，VF 可能正在被主机或其他用户使用。 如果 VF 已经存在，我们就无法捕获它们，也无法跟踪 VF 用户。 此处禁用 SR-IOV 将开始删除 VF，这将解除驱动程序的绑定，如果该 VF 也被 vfio-pci 使用，则驱动程序很容易发生阻塞。 直接拒绝这些PF，让用户去整理就好了
+        vfio_assign_device_set -> vfio/pci：转向设备集基础设施，PCI 希望拥有通常的 open/close_device() 逻辑，但略有不同，即 open/close_device() 必须在由所有 vfio_device 共享的单锁下完成 PCI“重置组”。 复位组以及设备集由 pci_reset_bus() 接触的设备决定，可以是整个总线，也可以只是插槽。 依靠核心代码来完成 reflck 所做的一切并完全删除 reflck -> vfio：为打开/释放vfio_device_ops提供更好的通用支持，当前驱动程序ops有一个打开/释放对，每次打开或关闭设备FD时都会调用一次。 添加一组额外的 open/close_device() 操作，这些操作在设备 FD 第一次打开和最后一次关闭时调用。 分析表明所有驱动程序都需要这种语义。 有些人将其开放编码作为其 reflck 实现的一部分，有些人只是有错误并且完全错过了它。 为了保留 PCI 和 FSL 所依赖的当前语义，引入“设备集”的概念，它是一组在打开时共享相同锁的 vfio_device。 设备集是通过提供“set_id”指针来建立的。 所有提供相同指针的 vfio_device 将连接到相同的单例内存并锁定整个集合。 这有效地取代了名称奇怪的 reflck。 转换后，set_id 将源自： - fsl_mc_device (fsl) 的 struct device - struct pci_slot (pci) - struct pci_bus (pci) - struct vfio_device（所有） 该设计确保上述指针有效 只要 vfio_device 已注册，它们就会形成可靠的唯一密钥以将 vfio_device 分组。 此实现使用 xarray 而不是搜索驱动程序核心结构，这简化了该区域中有些棘手的锁定。 以下补丁转换所有驱动程序
+            INIT_LIST_HEAD(&new_dev_set->device_list)
+            dev_set = __xa_cmpxchg -> 比较和存储, 调用此函数时，您必须已经持有 xa_lock。 如果需要分配内存，它将释放锁，然后重新获取它
+        vfio_pci_vf_init -> vfio_pci_probe() 相当复杂，有可选的 VF 和 VGA 子组件。 将它们移至清晰的 init/uninit 函数中，并在探测/删除中具有线性流程。 这修复了一些小错误： - vfio_pci_remove() 的顺序错误，vga_client_register() 删除通知程序并且位于 kfree(vdev) 之后，但通知程序引用 vdev，因此它可以在比赛中在 free 之后使用。 - vga_client_register() 可能会失败但被忽略 组织事物，因此销毁顺序与创建顺序相反
+            if (pdev->is_virtfn) 
+                pci_physfn
+                list_for_each_entry(cur, &vfio_pci_sriov_pfs,
+            vdev->nb.notifier_call = vfio_pci_bus_notifier
+                if (action == BUS_NOTIFY_ADD_DEVICE
+            ret = bus_register_notifier(&pci_bus_type, &vdev->nb)
+        vfio_pci_vga_init -> Video Graphics Array (VGA) connector
+            vfio_pci_is_vga
+            aperture_remove_conflicting_pci_devices
+            vga_client_register(pdev, vfio_pci_set_decode)
+            vga_set_legacy_decoding(pdev, vfio_pci_set_decode(pdev, false))
+        vfio_pci_probe_power_state
+            pci_read_config_word(pdev, pdev->pm_cap + PCI_PM_CTRL, &pmcsr)
+        vfio_pci_set_power_state
+        pm_runtime_allow
+        vfio_register_group_dev -> vfio：简化中介设备的 iommu 组分配，重用 vfio_noiommu_group_alloc 中的逻辑，通过分解通用函数为中介设备分配假单设备 iommu 组，并用枚举替换 struct vfio_group 中的 noiommu 布尔字段以区分这三个 不同类型的团体
+            dev_set_name(&device->device, "vfio%d", device->index)
+            vfio_device_set_group(device, type)
+                vfio_group_find_or_alloc
+                    vfio_noiommu_group_alloc
+                    group = vfio_group_find_from_iommu(iommu_group) -> list_for_each_entry(group, &vfio.group_list
+                        vfio_group_has_device
+                    group = vfio_create_group(iommu_group, VFIO_IOMMU)
+                        group = vfio_group_alloc(iommu_group, type)
+                            cdev_init(&group->cdev, &vfio_group_fops)
+                            INIT_LIST_HEAD(&group->device_list)
+                        dev_set_name(&group->dev, "%s%d"
+                        cdev_device_add(&group->cdev, &group->dev)
+                        list_add(&group->vfio_next, &vfio.group_list)
+                or vfio_noiommu_group_alloc
+            vfio_device_add(device) -> vfio：为 vfio_device 添加 cdev，这会添加对 vfio_device 的 cdev 支持。 它允许用户直接打开 vfio 设备，而不使用旧容器/组接口，这是支持嵌套翻译等新 iommu 功能的先决条件。以这种方式打开的设备 fd 无法访问 设备，因为 fops open() 不会打开设备，直到成功的 VFIO_DEVICE_BIND_IOMMUFD ioctl（将在以后的补丁中添加）。 通过此补丁，注册到 vfio 核心的设备将同时创建旧组和新设备接口。 - 组接口：/dev/vfio/$groupID - 设备接口：/dev/vfio/devices/vfioX - 普通设备（“X”是跨 vfio 设备的唯一编号） 对于给定设备，用户可以识别匹配的 vfioX 通过搜索设备的 sysfs 路径下的 vfio-dev 文件夹。 以 PCI 设备 (0000:6a:01.0) 为例，/sys/bus/pci/devices/0000\:6a\:01.0/vfio-dev/vfioX 表示 /dev/vfio/devices/ 下匹配的 vfioX，并且 vfio-dev/vfioX/dev 包含匹配的 /dev/vfio/devices/vfioX 的主次编号。 用户可以通过打开/dev/vfio/devices/vfioX 来获取设备fd。 此补丁中的 vfio_device cdev 逻辑： *) __vfio_register_dev() 路径最终会为每个 vfio_device 执行 cdev_device_add()（如果配置了 VFIO_DEVICE_CDEV）。 *) vfio_unregister_group_dev() 路径执行 cdev_device_del(); cdev 接口不支持 noiommu 设备，因此 VFIO 仅为没有 IOMMU 的物理设备创建旧组接口。 noiommu 用户应使用旧组界面
+                device_add
+            vfio_device_group_register -> list_add(&device->group_next, &device->group->device_list)
+            vfio_device_debugfs_init -> vfio/migration：为热迁移驱动添加debugfs，热迁移过程涉及多个设备、软件和操作步骤。 任何一个节点出现错误都可能导致热迁移操作失败。 这个复杂的过程使得当功能出现故障时定位和分析原因变得非常困难。 为了在热迁移失败时快速定位问题原因，我在vfio热迁移驱动中添加了一组debugf, commit, https://github.com/ssbandjl/linux/commit/2202844e4468c7539dba0c0b06577c93735af952
+                vdev->debug_root = debugfs_create_dir(dev_name(vdev->dev),
+                vfio_dev_migration = debugfs_create_dir("migration",
+                debugfs_create_devm_seqfile(dev, "state", vfio_dev_migration,
+
+
+整个debugfs目录将基于CONFIG_DEBUG_FS宏的定义。 如果不启用该宏，vfio.h中的接口将为空定义，并且不会执行debugfs目录的创建和初始化, debugfs将创建一个公共根目录“vfio”文件，然后为每个实时迁移设备创建一个dev_name()文件。 首先，在此设备目录下创建“迁移”的统一状态采集文件。 然后，创建一个公共实时迁移状态查找文件“state”
+    +-------------------------------------------+
+    |                                           |
+    |                                           |
+    |                  QEMU                     |
+    |                                           |
+    |                                           |
+    +---+----------------------------+----------+
+        |      ^                     |      ^
+        |      |                     |      |
+        |      |                     |      |
+        v      |                     v      |
+     +---------+--+               +---------+--+
+     |src vfio_dev|               |dst vfio_dev|
+     +--+---------+               +--+---------+
+        |      ^                     |      ^
+        |      |                     |      |
+        v      |                     |      |
+   +-----------+----+           +-----------+----+
+   |src dev debugfs |           |dst dev debugfs |
+   +----------------+           +----------------+
+
+
+
+static const struct vfio_device_ops vfio_pci_ops = {
+	.name		= "vfio-pci",
+	.init		= vfio_pci_core_init_dev,
+	.release	= vfio_pci_core_release_dev,
+	.open_device	= vfio_pci_open_device,
+	.close_device	= vfio_pci_core_close_device,
+	.ioctl		= vfio_pci_core_ioctl,
+	.device_feature = vfio_pci_core_ioctl_feature,
+	.read		= vfio_pci_core_read,
+	.write		= vfio_pci_core_write,
+	.mmap		= vfio_pci_core_mmap,
+	.request	= vfio_pci_core_request,
+	.match		= vfio_pci_core_match,
+	.bind_iommufd	= vfio_iommufd_physical_bind,
+	.unbind_iommufd	= vfio_iommufd_physical_unbind,
+	.attach_ioas	= vfio_iommufd_physical_attach_ioas,
+	.detach_ioas	= vfio_iommufd_physical_detach_ioas,
+};
 
 
 pci, Documentation/PCI/pci.rst
@@ -9473,6 +9650,8 @@ linux/container_of.h
 	((type *)(__mptr - offsetof(type, member))); })
 
 
+#define __same_type(a, b) __builtin_types_compatible_p(typeof(a), typeof(b))
+__builtin_types_compatible_p 函数能判断a和b的类型是否相同，相同返回1，否则返回0
 
 <init.h>
 #define __init __attribute__ ((__section__ (".init.text"))) __cold
@@ -9760,4 +9939,338 @@ enum ovs_action_attr {
 	__OVS_ACTION_ATTR_MAX,	      /* Nothing past this will be accepted
 				       * from userspace. */
 };
+
+
+
+modprobe vfio, vfio.ko
+static struct vfio {
+	struct class			*device_class;
+	struct ida			device_ida;
+} vfio; -> VFIO 是一种安全的用户级驱动程序，可与虚拟机和用户级驱动程序一起使用。 VFIO 利用 IOMMU 组来确保使用中的设备的隔离，从而允许非特权用户访问。 VFIO 旨在取代 KVM 设备分配和 UIO 驱动程序（在目标平台包含功能足够的 IOMMU 的情况下）。 此版本 VFIO 的新增功能是支持通过 IOMMU 核心管理的 IOMMU 组，并对 API 进行了修改，删除了组合并接口。 我们现在回到一个更类似于原始 VFIO 且支持 UIOMMU 的模型，其中从 /dev/vfio/vfio 获取的文件描述符允许访问 IOMMU，但仅在添加组之后，避免了以前此类类型的权限问题 模型。 IOMMU 支持现在也是完全模块化的，因为 IOMMU 在不同平台上具有截然不同的接口要求。 VFIO 用户能够查询和初始化他们选择的 IOMMU 模型。 请参阅后续文档提交以获取进一步的描述和使用示例
+commit, https://github.com/ssbandjl/linux/commit/cba3345cc494ad286ca8823f44b2c16cae496679
+module_init(vfio_init)
+    ida_init(&vfio.device_ida)
+    vfio_group_init()
+        INIT_LIST_HEAD(&vfio.group_list)
+        vfio_container_init
+            INIT_LIST_HEAD(&vfio.iommu_drivers_list)
+            misc_register(&vfio_dev)
+            if (IS_ENABLED(CONFIG_VFIO_NOIOMMU))
+                vfio_register_iommu_driver(&vfio_noiommu_ops)
+                    list_add(&driver->vfio_next, &vfio.iommu_drivers_list)
+        vfio.class = class_create("vfio") -> /dev/vfio/$GROUP
+        alloc_chrdev_region(&vfio.group_devt, 0, MINORMASK + 1, "vfio") -> register_chrdev_region 需要开发者指定设备的主设备号，而 alloc_chrdev_region 则是由内核自动分配主设备号
+    vfio_virqfd_init() -> create_singlethread_workqueue("vfio-irqfd-cleanup")
+    vfio.device_class = class_create("vfio-dev")
+    vfio_cdev_init(vfio.device_class)
+    alloc_chrdev_region(&device_devt, 0, MINORMASK + 1, "vfio-dev")
+    vfio_debugfs_create_root -> vfio_debugfs_root = debugfs_create_dir("vfio", NULL)
+
+
+
+static struct miscdevice vfio_dev = {
+	.minor = VFIO_MINOR,
+	.name = "vfio",
+	.fops = &vfio_fops,
+	.nodename = "vfio/vfio",
+	.mode = S_IRUGO | S_IWUGO,
+};
+
+static const struct file_operations vfio_fops = {
+	.owner		= THIS_MODULE,
+	.open		= vfio_fops_open,
+	.release	= vfio_fops_release,
+	.unlocked_ioctl	= vfio_fops_unl_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
+};
+
+
+
+
+static const struct vfio_iommu_driver_ops vfio_noiommu_ops = {
+	.name = "vfio-noiommu",
+	.owner = THIS_MODULE,
+	.open = vfio_noiommu_open,
+	.release = vfio_noiommu_release,
+	.ioctl = vfio_noiommu_ioctl,
+	.attach_group = vfio_noiommu_attach_group,
+	.detach_group = vfio_noiommu_detach_group,
+};
+
+
+vfio_fops_open
+    INIT_LIST_HEAD(&container->group_list)
+
+
+
+include/uapi/linux/vfio.h
+
+
+
+vfio_pci_sriov_configure -> vfio_pci_core_sriov_configure
+    if (nr_virtfn)
+        list_add_tail(&vdev->sriov_pfs_item, &vfio_pci_sriov_pfs)
+        pm_runtime_resume_and_get
+        vfio_pci_set_power_state
+        pci_enable_sriov
+    pci_disable_sriov
+
+
+vfio_df_ioctl_bind_iommufd
+
+
+static const struct file_operations vfio_group_fops = {
+	.owner		= THIS_MODULE,
+	.unlocked_ioctl	= vfio_group_fops_unl_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
+	.open		= vfio_group_fops_open,
+	.release	= vfio_group_fops_release,
+};
+
+vfio_group_fops_unl_ioctl
+    switch (cmd)
+    case VFIO_GROUP_GET_DEVICE_FD
+        vfio_group_ioctl_get_device_fd
+            vfio_device_open_file
+                vfio_df_group_open
+                    vfio_df_open
+                        vfio_df_device_first_open
+                            device->ops->open_device(device) -> vfio_pci_open_device
+                                vfio_pci_core_enable
+                                    pci_enable_device
+                                    pci_try_reset_function
+                                    pci_read_config_word(pdev, PCI_COMMAND, &cmd)
+                                    vfio_pci_zdev_open_device -> vfio-pci/zdev：添加打开/关闭设备挂钩，在vfio-pci open_device期间，传递与vfio组关联的KVM（如果存在）。 这是为了将特殊指示符 (GISA) 传递给固件，以允许 zPCI 解释工具仅用于与 vfio-pci 设备关联的特定 KVM。 在 vfio-pci close_device 期间，取消注册通知程序
+                                        return zpci_kvm_hook.kvm_register(zdev, vdev->vdev.kvm) -> 启用 zPCI 指令的解释执行 + 适配器中断、s390x KVM vfio-pci 的转发。 这是通过在 VFIO 组与 KVM 来宾关联时触发例程、向固件传输特殊令牌（GISA 名称）以使该特定来宾能够在该 zPCI 设备上解释执行来完成的。 然后，加载/存储解释启用由用户空间控制（基于 SHM 位是否放置在虚拟函数句柄中）。 适配器事件通知解释是通过新的 KVM ioctl 从用户空间控制的。 通过允许解释 zPCI 指令以及向 guest 虚拟机传送中断的固件，我们可以降低 zPCI 的 guest SIE 退出频率。 从 guest 配置的角度来看，您可以按照与以前相同的方式传递 zPCI 设备，并且默认情况下使用解释支持（如果在 kernel+qemu 中可用）。 将跟进更新的 QEMU 系列的链接。 变更日志 v7->v8： - 修复 ioctl 文档 (Thomas) - 从 ioctl 中删除 copy_to_user，来自旧版本 (Thomas) - KVM_S390_ZPCIOP_REG_AEN：未定义标志失败 (Thomas) - kvm_s390_pci_zpci_reg_aen：清理主机标志设置 (Thomas) 并修复意外的错误 位反转 - CONFIG_VFIO_PCI_ZDEV_KVM：添加意外遗漏在帮助文本中的“say Y”（Jason） - 重构“vfio：删除 VFIO_GROUP_NOTIFY_SET_KVM”之上的 vfio-pci-zdev 片段（Jason） - open_device/ close_device 现在将直接调用 kvm 注册例程。 将 open_device 调用移至 vfio_pci_core_enable，以便可以传播错误。 对于奇偶校验，将 close_device 调用移至 vfio_pci_core_disable -> commit, https://lwn.net/Articles/897230/
+                                    vfio_config_init -> 对于每个设备，我们分配一个 pci_config_map 来指示占用每个双字的能力，从而指示我们用于读写的 struct perm_bits。 我们还分配一个虚拟化配置空间，用于跟踪我们为用户模拟的位的读取和写入。 从设备填充初始值。 在所有 vfio-pci 设备之间使用共享 struct perm_bits 可以使我们免于为每个设备的 virt 和 write 分配 cfg_size 缓冲区。 我们可以删除 vconfig 并为需要模拟位的每个区域分配单独的缓冲区，但指针数组的大小将相当（至少对于标准配置空间）-> 关键数据结构, struct vfio_pci_core_device, 将pci硬件能力和配置通过vfio的pci设备暴露给上层
+                                        map = kmalloc(pdev->cfg_size, GFP_KERNEL_ACCOUNT) -> 配置空间、caps 和 ecaps 都是双字对齐的，因此我们可以使用每个双字一个字节来记录类型。 但能力的长度没有要求，所以能力之间的差距需要字节粒度
+                                        vfio_fill_vconfig_bytes -> vfio：添加PCI设备驱动，添加PCI设备对VFIO的支持。 PCI 设备公开用于访问设备的配置空间、I/O 端口空间和 MMIO 区域的区域。 PCI 配置访问在内核中虚拟化，使我们能够通过防止各种访问同时减少跨各种用户空间驱动程序的重复支持来确保系统的完整性。 I/O 端口支持读/写访问，而 MMIO 还支持足够大小区域的 mmap。 使用 eventfds 向用户空间提供对 INTx、MSI 和 MSI-X 中断的支持 -> commit, https://github.com/ssbandjl/linux/commit/89e1f7d4c66d85f42c3d52ea3866eb10cadf6153
+                                        vdev->rbar[0] = le32_to_cpu(*(__le32 *)&vconfig[PCI_BASE_ADDRESS_0]);
+                                        ...
+                                        vfio_cap_init
+                                        vfio_ecap_init
+                                    vdev->has_dyn_msix = pci_msix_can_alloc_dyn(pdev)
+                                vfio_pci_core_finish_enable
+                                    vfio_pci_probe_mmaps
+                                        for (i = 0; i < PCI_STD_NUM_BARS; i++) -> 6
+                                            dummy_res->resource.name = "vfio sub-page reserved"
+                                    eeh_dev_open -> eeh_dev_open - 增加 PE 的直通设备计数，@pdev：PCI 设备 增加指定 PE 的直通设备计数。 结果，在 PE 上检测到的 EEH 错误将不会被报告。 PE 所有者将负责检测和恢复 -> Extended Error Handling -> 基于 IBM POWER 的 pSeries 和 iSeries 计算机包括 PCI 总线控制器芯片，这些芯片具有检测和报告各种 PCI 总线错误情况的扩展功能。 这些功能的名称为“EEH”，即“扩展错误处理”。 EEH 硬件功能允许清除 PCI 总线错误并“重新启动”PCI 卡，而无需重新启动操作系统。 这与传统的 PCI 错误处理相反，在传统 PCI 错误处理中，PCI 芯片直接连接到 CPU，错误会导致 CPU 机器检查/检查停止条件，从而完全停止 CPU。 另一种“传统”技术是忽略此类错误，这可能导致用户数据或内核数据的数据损坏、适配器挂起/无响应或系统崩溃/锁定。 因此，EEH 背后的想法是，通过保护操作系统免受 PCI 错误的影响，并赋予操作系统“重新启动”/恢复各个 PCI 设备的能力，操作系统可以变得更加可靠和健壮。 其他供应商基于 PCI-E 规范的未来系统可能包含类似的功能, ref, https://android.googlesource.com/kernel/common/+/bcmdhd-3.10/Documentation/powerpc/eeh-pci-error-recovery.txt
+    vfio_group_ioctl_get_status
+        iommu_group_dma_owner_claimed ->  Query group dma ownership status -> 多个设备可以放置在同一个 IOMMU 组中，因为它们无法相互隔离。 这些设备必须完全受内核控制或用户空间控制，不能混合。 这在 iommu 核心中添加了 dma 所有权管理，并公开了设备驱动程序和设备用户空间分配框架（即 VFIO）的多个接口，以便可以在一开始就检测到用户和内核控制的 dma 之间的任何冲突。 面向设备驱动程序的接口是 int iommu_device_use_default_domain(struct device *dev); void iommu_device_unuse_default_domain(struct device *dev); 通过调用 iommu_device_use_default_domain()，设备驱动程序告诉 iommu 层设备 dma 是通过内核 DMA API 处理的。 iommu 层将管理 IOVA 并使用默认域进行 DMA 地址转换。 面向设备用户空间分配框架的接口是 int iommu_group_claim_dma_owner(struct iommu_group *group, void *owner); 无效 iommu_group_release_dma_owner(struct iommu_group *group); bool iommu_group_dma_owner_claimed(struct iommu_group *group); 如果 DMA 所有者声明接口返回失败，则必须禁止设备用户空间分配
+    vfio_group_ioctl_set_container
+        f = fdget(fd)
+        container = vfio_container_from_file(f.file)
+        vfio_container_attach_group
+            driver->ops->attach_group(container->iommu_data, group->iommu_group, group->type) -> vfio_noiommu_attach_group
+            list_add(&group->container_next, &container->group_list)
+            vfio_container_get(container)
+        iommufd = iommufd_ctx_from_file(f.file)
+        iommufd_vfio_compat_set_no_iommu
+        or iommufd_vfio_compat_ioas_create -> 确保创建了 compat IOAS，@ictx：要操作的上下文 兼容性 IOAS 是 vfio 兼容性 ioctls 操作的 IOAS，因为它们的 ABI 中没有 IOAS ID 输入。 仅附加组应该会导致内部 ioas 的默认创建，如果已经以某种方式分配了现有 ioas，则这不会执行任何操作
+            ioas = iommufd_ioas_alloc(ictx) -> iommufd：vfio容器FD ioctl兼容性，iommufd可以通过将/dev/vfio/vfio容器IOCTL映射到io_pagetable操作来直接实现它们。 用户空间应用程序可以针对 iommufd 进行测试并确认兼容性，然后只需进行一些小更改即可打开 /dev/iommu 而不是 /dev/vfio/vfio。 出于测试目的，/dev/vfio/vfio 可以符号链接到 /dev/iommu，然后所有应用程序将使用兼容性路径，无需更改代码。 后续系列允许 iommufd 直接提供 /dev/vfio/vfio，这也允许 rlimit 模式同样工作。 该系列仅提供 iommufd 方面的兼容性。 实际上将其链接到 VFIO_SET_CONTAINER 是一个后续系列，在求职信中有一个链接。 在内部，兼容性 API 使用普通的 IOAS 对象，该对象与 vfio 一样，在连接第一个设备时自动分配。 用户空间还可以使用 IOMMU_VFIO_IOAS ioctl 直接查询或设置此 IOAS 对象。 这允许混合和匹配新的仅 iommufd 功能，同时仍然使用 VFIO 样式映射/取消映射 ioctl。 虽然这足以操作 qemu，但它有一些差异： - 资源限制依赖于内存 cgroup 来限制用户空间可以执行的操作，而不是模块参数 dma_entry_limit。 - VFIO P2P 未实现。 vfio 的 DMABUF 补丁是 iommufd 导入特殊 DMABUF 的解决方案的开始。 这是为了避免进一步传播 follow_pfn() 安全问题。 - 尚未完成对迂腐兼容性细节（例如 errnos 等）的全面审核 - powerpc SPAPR 被遗漏，因为它未连接到 iommu_domain 框架。 似乎对 SPAPR 的兴趣很小，因为它目前在 v6.1-rc1 中不起作用。 他们必须转换到 iommu 子系统框架才能享受 iommfd。 以下内容不会被实现，我们希望将它们从 VFIO type1 中删除： - 软件访问“脏跟踪”。 正如求职信中所讨论的，这将在 VFIO 中完成
+                ioas = iommufd_object_alloc(ictx, ioas, IOMMUFD_OBJ_IOAS)
+                iopt_init_table(&ioas->iopt) -> iommufd：提供 IOVA 到 PFN 映射的数据结构 这是 IOAS 数据结构的其余部分。 提供一个名为 io_pagetable 的对象，该对象由指向 iopt_pages 的 iopt_areas 以及镜像 IOVA 到 PFN 映射的 iommu_domains 列表组成。 顶部是 iopt_areas 的简单区间树，指示 IOVA 到 iopt_pages 的映射。 xarray 跟踪域列表。 基于附加的域，存在区域的最小对齐（可能小于 PAGE_SIZE）、无法映射的保留 IOVA 的间隔树以及始终可映射的允许 IOVA 的 IOVA。 “访问”的概念指的是类似于 VFIO mdev 的东西，它访问 IOVA 并使用“struct page *”进行基于 CPU 的访问。 外部提供了一个 API，该 API 符合 IOCTL 接口对映射/取消映射和域附加的要求。 API 提供“复制”原语，通过重新使用 iopt_pages，在与现有映射不同的 IOAS 中建立新的 IOVA 映射。 这是提供单钉扎的基本机制。 其设计目的是支持预注册流程，其中用户空间将设置一个没有域的虚拟 IOAS，映射到内存中，然后建立将所有 PFN 固定到 xarray 中的访问权限。 然后，可以使用副本在不同的 IOAS 中创建新的 IOVA 映射，并附加 iommu_domains。 复制后，将从 xarray 中读取 PFN 并将其映射到 iommu_domains 中，从而避免任何 pin_user_pages() 开销
+                    iopt->area_itree = RB_ROOT_CACHED
+                    iopt->allowed_itree = RB_ROOT_CACHED
+                    iopt->reserved_itree = RB_ROOT_CACHED
+                    xa_init_flags(&iopt->domains, XA_FLAGS_ACCOUNT)
+                    xa_init_flags(&iopt->access_list, XA_FLAGS_ALLOC)
+                INIT_LIST_HEAD(&ioas->hwpt_list) -> iommufd：添加一个硬件页表对象，hw_pagetable 对象将内部结构 iommu_domain 暴露给用户空间。 当任何 DMA 设备连接到 IOAS 以通过 iommu 驱动程序控制 io 页表时，需要 iommu_domain。 为了与 VFIO 兼容，当 DMA 设备连接到 IOAS 时，会自动创建 hw_pagetable。 如果兼容的 iommu_domain 已存在，则与其关联的 hw_pagetable 将用于附件。 在最初的系列中，hw_pagetable 对象没有 iommufd uAPI。 下一个补丁提供面向驱动程序的 IO 页表附加 API，允许驱动程序接受 IOAS 或 hw_pagetable ID，并让驱动程序返回从 IOAS 自动选择的 hw_pagetable ID。 期望驱动程序将通过其自己的 FD 提供 uAPI，以将其设备附加到 iommufd。 这允许用户空间了解设备到 iommu_domains 的映射并覆盖自动连接。 未来的硬件特定接口将允许用户空间使用带有 IOMMU 驱动程序特定参数的 iommu_domains 创建 hw_pagetable 对象。 该基础设施将允许将这些域链接到 IOAS 和设备
+            iommufd_object_finalize -> 允许并发访问该对象，一旦另一个线程可以看到该对象指针，就可以防止对象销毁。 除了特殊的仅内核对象之外，没有内核方法可以可靠地销毁单个对象。 因此，所有创建对象的 API 都必须使用 iommufd_object_abort() 来处理错误，并且只有在对象创建不会失败时才调用 iommufd_object_finalize()
+                old = xa_store(&ictx->objects, obj->id, obj, GFP_KERNEL)
+    vfio_group_ioctl_unset_container
+        vfio_group_detach_container
+            driver->ops->detach_group(container->iommu_data,
+
+
+
+
+vfio_group_fops_open
+    struct vfio_group *group
+    group->opened_file = filep
+    filep->private_data = group
+
+================================
+vfio code demo:
+int container, group, device, i;
+struct vfio_group_status group_status =
+                                { .argsz = sizeof(group_status) };
+struct vfio_iommu_type1_info iommu_info = { .argsz = sizeof(iommu_info) };
+struct vfio_iommu_type1_dma_map dma_map = { .argsz = sizeof(dma_map) };
+struct vfio_device_info device_info = { .argsz = sizeof(device_info) };
+
+/* Create a new container */
+container = open("/dev/vfio/vfio", O_RDWR);
+
+if (ioctl(container, VFIO_GET_API_VERSION) != VFIO_API_VERSION)
+        /* Unknown API version */
+
+if (!ioctl(container, VFIO_CHECK_EXTENSION, VFIO_TYPE1_IOMMU))
+        /* Doesn't support the IOMMU driver we want. */
+
+/* Open the group */
+group = open("/dev/vfio/26", O_RDWR);
+
+/* Test the group is viable and available */
+ioctl(group, VFIO_GROUP_GET_STATUS, &group_status);
+
+if (!(group_status.flags & VFIO_GROUP_FLAGS_VIABLE))
+        /* Group is not viable (ie, not all devices bound for vfio) */
+
+/* Add the group to the container */
+ioctl(group, VFIO_GROUP_SET_CONTAINER, &container);
+
+/* Enable the IOMMU model we want */
+ioctl(container, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU);
+
+/* Get addition IOMMU info */
+ioctl(container, VFIO_IOMMU_GET_INFO, &iommu_info);
+
+/* Allocate some space and setup a DMA mapping */
+dma_map.vaddr = mmap(0, 1024 * 1024, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+dma_map.size = 1024 * 1024;
+dma_map.iova = 0; /* 1MB starting at 0x0 from device view */
+dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
+
+ioctl(container, VFIO_IOMMU_MAP_DMA, &dma_map);
+
+/* Get a file descriptor for the device */
+device = ioctl(group, VFIO_GROUP_GET_DEVICE_FD, "0000:06:0d.0");
+
+/* Test and setup the device */
+ioctl(device, VFIO_DEVICE_GET_INFO, &device_info);
+
+for (i = 0; i < device_info.num_regions; i++) {
+        struct vfio_region_info reg = { .argsz = sizeof(reg) };
+
+        reg.index = i;
+
+        ioctl(device, VFIO_DEVICE_GET_REGION_INFO, &reg);
+
+        /* Setup mappings... read/write offsets, mmaps
+         * For PCI devices, config space is a region */
+}
+
+for (i = 0; i < device_info.num_irqs; i++) {
+        struct vfio_irq_info irq = { .argsz = sizeof(irq) };
+
+        irq.index = i;
+
+        ioctl(device, VFIO_DEVICE_GET_IRQ_INFO, &irq);
+
+        /* Setup IRQs... eventfds, VFIO_DEVICE_SET_IRQS */
+}
+
+/* Gratuitous device reset and go... */
+ioctl(device, VFIO_DEVICE_RESET);
+
+
+struct vfio_device_bind_iommufd bind = {
+        .argsz = sizeof(bind),
+        .flags = 0,
+};
+struct iommu_ioas_alloc alloc_data  = {
+        .size = sizeof(alloc_data),
+        .flags = 0,
+};
+struct vfio_device_attach_iommufd_pt attach_data = {
+        .argsz = sizeof(attach_data),
+        .flags = 0,
+};
+struct iommu_ioas_map map = {
+        .size = sizeof(map),
+        .flags = IOMMU_IOAS_MAP_READABLE |
+                 IOMMU_IOAS_MAP_WRITEABLE |
+                 IOMMU_IOAS_MAP_FIXED_IOVA,
+        .__reserved = 0,
+};
+
+iommufd = open("/dev/iommu", O_RDWR);
+
+bind.iommufd = iommufd;
+ioctl(cdev_fd, VFIO_DEVICE_BIND_IOMMUFD, &bind);
+
+ioctl(iommufd, IOMMU_IOAS_ALLOC, &alloc_data);
+attach_data.pt_id = alloc_data.out_ioas_id;
+ioctl(cdev_fd, VFIO_DEVICE_ATTACH_IOMMUFD_PT, &attach_data);
+
+/* Allocate some space and setup a DMA mapping */
+map.user_va = (int64_t)mmap(0, 1024 * 1024, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+map.iova = 0; /* 1MB starting at 0x0 from device view */
+map.length = 1024 * 1024;
+map.ioas_id = alloc_data.out_ioas_id;;
+
+ioctl(iommufd, IOMMU_IOAS_MAP, &map);
+
+/* Other device operations as stated in "VFIO Usage Example" */
+
+
+
+id_table -> 对于与 ID 表匹配且尚未被其他驱动程序“拥有”的所有 PCI 设备，将调用此探测函数（在对现有设备执行 pci_register_driver() 期间或稍后插入新设备时）。 对于 ID 表中的条目与设备匹配的每个设备，此函数都会传递一个“struct pci_dev *”。 当驱动程序选择获取设备的“所有权”时，探测函数返回零，否则返回错误代码（负数）。 探测函数总是从进程上下文中调用，因此它可以休眠
+
+
+check kernel cmd, 
+cat /proc/cmdline
+BOOT_IMAGE=/boot/vmlinuz-5.15.0-71-generic root=UUID=88917def-9077-4cb7-b470-a84668cc4c99 ro vga=792 console=tty0 console=ttyS0,115200n8 net.ifnames=0 noibrs crashkernel=0M-1G:0M,1G-4G:192M,4G-128G:384M,128G-:512M nvme_core.io_timeout=4294967295 nvme_core.admin_timeout=4294967295 iommu=pt
+
+cat /boot/config-$(uname -r) | grep NOIOMMU
+CONFIG_VFIO_NOIOMMU=y
+
+
+
+
+IP-over-InfiniBand protocol (IPoIB)
+modprobe ib_ipoib
+module_init(ipoib_init_module);
+    ib_register_client(&ipoib_client)
+static struct ib_client ipoib_client = {
+	.name   = "ipoib",
+	.add    = ipoib_add_one,
+	.remove = ipoib_remove_one,
+	.get_net_dev_by_params = ipoib_get_net_dev_by_params,
+};
+ipoib_add_one
+    ipoib_add_port | ipoib_vlan_add
+        ipoib_intf_alloc
+            ipoib_intf_init
+                ipoib_build_priv
+                    ipoib_mcast_join_task
+                        ipoib_mcast_join
+                            ib_sa_join_multicast
+                                static struct mcast_group *acquire_group(struct mlx4_ib_demux_ctx *ctx,
+                                    mlx4_ib_mcg_work_handler
+                                        handle_join_req
+                                            send_reply_to_slave
+                                                send_mad_to_slave
+                                                    wc.slid = rdma_ah_get_dlid(&ah_attr);  /* opensm lid */
+
+
+
+BUILD_BUG_ON：只有条件condition为0时可编译，但不返回值，否则编译器报错。
+BUILD_BUG_ON_ZERO：只有条件e为0时返回0，否则编译器报错
+
+
+
+下面的结构体中包含了一个零长度的数组
+struct ib_pkey_cache {
+	int             table_len;
+	u16             table[0];
+};
+那如果要定义一个这个结构体的指针的话，申请的空间改怎么计算呢？
+可以参看下面的code
+struct ib_pkey_cache      *pkey_cache = NULL；
+pkey_cache = kmalloc(struct_size(pkey_cache, table, tprops->pkey_tbl_len),
+			     GFP_KERNEL);
+	if (!pkey_cache)
+		goto err;
+这段code 用tprops->pkey_tbl_len 来表示要给原本零长度数组分配的空间，然后用
+struct_size来计算整个结构体的长度, 计算方式就是(数组元素大小 * 元素个数 + 结构体本身的大小)
+其中struct_size 是一个宏，实现如下：
+#define struct_size(p, member, n)					\
+	__ab_c_size(n,							\
+		    sizeof(*(p)->member) + __must_be_array((p)->member),\
+		    sizeof(*(p)))
+
 
