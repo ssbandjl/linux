@@ -752,7 +752,21 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
                 mlx5_fw_reset_events_start
                 mlx5_hv_vhca_init
                 mlx5_rsc_dump_init
-                mlx5_fpga_device_start
+                mlx5_fpga_device_start -> net/mlx5：FPGA 和 IPSec 初始化在流量控制之前进行，某些流量控制命名空间初始化（即出口命名空间）可能取决于 FPGA 功能。 更改初始化顺序，以便 FPGA 在流程引导之前进行初始化。 流控制 fs 命令初始化可能取决于 IPSec 功能。 更改初始化顺序，以便 IPSec 也将在流量引导之前初始化 -> net/mlx5：FPGA，添加对Innova的基本支持，Mellanox Innova是一块带有ConnectX的网卡和一块FPGA在同一块板上。 FPGA 是线上凸块，因此会影响 ConnectX ASIC 上 mlx5_core 驱动程序的运行。 在 mlx5_core 中添加对 Innova 的基本支持。 这允许通过检测 FPGA 功能位并在初始化 ConnectX 接口之前验证其负载状态，将 Innova 卡用作常规 NIC。 还可以检测 FPGA 致命运行时故障并在发生时进入错误状态。 所有新的 FPGA 相关逻辑都放置在其自己的子目录“fpga”中，可以通过选择 CONFIG_MLX5_FPGA 来构建该子目录。 这为以后的补丁集中进一步支持各种 Innova 功能做好了准备。 随着更多功能的提交，将提供有关硬件架构的更多详细信息, commit: https://github.com/ssbandjl/linux/commit/e29341fb3a5b885a4bb5b9a38f2814ca07d3382c
+                    mlx5_fpga_caps
+                    mlx5_fpga_device_load_check
+                    mlx5_is_fpga_lookaside
+                    mlx5_core_reserve_gids
+                    fpga_err_event
+                    fpga_qp_err_event
+                    mlx5_fpga_conn_device_init
+                        mlx5_nic_vport_enable_roce
+                            mlx5_nic_vport_update_roce_state(mdev, MLX5_VPORT_ROCE_ENABLED)
+                            MLX5_CMD_OP_MODIFY_NIC_VPORT_CONTEXT
+                        mlx5_get_uars_page
+                        mlx5_core_alloc_pd
+                        mlx5_fpga_conn_create_mkey
+                    mlx5_fpga_device_brb
                 mlx5_fs_core_init
                 mlx5_core_set_hca_defaults
                 mlx5_vhca_event_start
@@ -1830,10 +1844,12 @@ static struct ib_client uverbs_client = {
 
 
 
-ibv_reg_mr:
+ibv_reg_mr, Register a user memory region, 
 drivers/infiniband/hw/irdma/verbs.c
 IB_USER_VERBS_CMD_REG_MR
-ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
+ib_uverbs_reg_mr -> mr = pd->device->ops.reg_user_mr(pd, cmd.start, cmd.length, cmd.hca_va, cmd.access_flags, &attrs->driver_udata) -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
+    
+    ...
     region = ib_umem_get -> pin住以及通过DMA映射的用户空间内存, IB/uverbs：将 ib_umem_get()/ib_umem_release() 导出到模块，导出 ib_umem_get()/ib_umem_release() 并让低级驱动程序控制何时调用 ib_umem_get() 来pin和 DMA 映射用户空间，而不是总是调用它 在调用低级驱动程序的 reg_user_mr 方法之前在 ib_uverbs_reg_mr() 中。 还将这些函数移至 ib_core 模块而不是 ib_uverbs 中，以便使用它们的驱动程序模块不依赖于 ib_uverbs。 这具有许多优点： - 从使通用代码成为可以根据特定设备的详细信息指示由设备特定代码使用或覆盖的库的角度来看，这是更好的设计。 - 不需要固定用户空间内存区域的驱动程序不需要承受调用 ib_mem_get() 的性能损失。 例如，虽然我没有尝试在此补丁中实现它，但 ipath 驱动程序应该能够避免固定内存并仅使用 copy_{to,from}_user() 来访问用户空间内存区域。 - 需要特殊映射处理的缓冲区可以由低级驱动程序识别。 例如，通过使用额外标志映射 CQ 缓冲区，可以解决用户空间中 mthca CQ 的一些特定于 Altix 的内存排序问题。 - 需要为内存区域以外的内容固定和 DMA 映射用户空间内存的驱动程序可以直接使用 ib_umem_get()，而不是使用其 reg_phys_mr 方法的额外参数进行黑客攻击。 例如，待合并的 mlx4 驱动程序需要引脚和 DMA 映射 QP 和 CQ 缓冲区，但不需要为这些缓冲区创建内存密钥。 因此，最干净的解决方案是 mlx4 在 create_qp 和 create_cq 方法中调用 ib_umem_get() -> 调用 ib_umem_get 来完成内存页面pin操作 + 将pin住的内存页面组织为DMA SG List
         can_do_mlock -> [PATCH] IB uverbs：内存固定实现(pin)，添加对固定用户空间内存区域并返回该区域中的页面列表的支持。 这包括根据 vm_locked 跟踪固定内存并防止非特权用户超过 RLIMIT_MEMLOCK
         mmgrab(mm) -> 抓住内存(引用+1)
@@ -1874,23 +1890,31 @@ ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
             list_add_tail(&iwpbl->list, &ucontext->qp_reg_mem_list)
     case IRDMA_MEMREG_TYPE_MEM
         irdma_reg_user_mr_type_mem
+            lvl = iwmr->page_cnt != 1 ? PBLE_LEVEL_1 | PBLE_LEVEL_2 : PBLE_LEVEL_0
             irdma_setup_pbles -> 使用位掩码重构 PBLE 函数来表示所需的 PBLE 级别，而使用 2 个参数 use_pble 和 lvl_one_only 使代码变得混乱
             HW 使用主机内存作为许多协议上下文对象和队列状态跟踪的后备存储。 主机内存缓存 (HMC) 是负责管理存储在主机内存中的这些对象的组件。 添加函数和数据结构来管理 HMC 为各种对象使用的支持页面的分配, 本文主要分析inux内核intel/hns3/mlx5等RDMA驱动上下文内存管理机制优缺点: https://zhuanlan.zhihu.com/p/610503666, 实现物理缓冲区列表条目 (PBLE) 资源管理器来管理 PBLE HMC 资源对象池, 
-                irdma_get_pble ?
+                irdma_get_pble -> if (lvl)
                     get_lvl1_lvl2_pble
-                        get_lvl1_pble
-                            irdma_prm_get_pbles
-                                bitmap_find_next_zero_area
-                                bitmap_set
+                        status = get_lvl1_pble(pble_rsrc, palloc)
+                            irdma_prm_get_pbles(&pble_rsrc->pinfo, &lvl1->chunkinfo, palloc->total_cnt << 3, &lvl1->addr, &fpm_addr)
+                                bits_needed = DIV_ROUND_UP_ULL(mem_size, BIT_ULL(pprm->pble_shift))
+                                pchunk = (struct irdma_chunk *)chunk_entry
+                                bit_idx = bitmap_find_next_zero_area(pchunk->bitmapbuf, pchunk->sizeofbitmap, 0, bits_needed, 0)
+                                offset = bit_idx << pprm->pble_shift
+                                bitmap_set(pchunk->bitmapbuf, bit_idx, bits_needed)
+                                pprm->free_pble_cnt -= chunkinfo->bits_used << (pprm->pble_shift - 3)
+                            palloc->level = PBLE_LEVEL_1
+                            lvl1->idx = fpm_to_idx(pble_rsrc, fpm_addr)
                         get_lvl2_pble
                             ...
                     add_pble_prm -> Host Memory Cache (HMC) 主机内存缓存, prm 页资源管理
+                        get_sd_pd_idx(pble_rsrc, idx)
                         irdma_get_type
                         add_sd_direct
                             irdma_add_sd_table_entry
                             dma_alloc_coherent
                             memcpy(&sd_entry->u.pd_table.pd_page_addr, &dma_mem,
-                        add_bp_pages -> 为段描述添加后端内存页
+                        add_bp_pages -> 为段描述添加后端内存页 -> add backing pages for sd (BP)
                             irdma_pble_get_paged_mem
                                 irdma_map_vm_page_list
                                     vmalloc_to_page -> 找到由vmalloc( )所分配的内存的虚拟地址所映射的物理页，并返回该页的指针描述符
@@ -1924,10 +1948,13 @@ ib_uverbs_reg_mr -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
                 irdma_copy_user_pgaddrs -> 将用户页面地址复制到本地 pble 的操作系统
                     sg_page -> 获取scatterlist所对应的page指针
                     rdma_umem_for_each_dma_block -> 迭代 umem 的连续 DMA 块
-                        rdma_block_iter_dma_address -> 获取块迭代器持有的当前块的对齐 dma 地址
-                        irdma_next_pbl_addr
-            irdma_check_mr_contiguous
-                irdma_check_mem_contiguous
+                        *pbl = rdma_block_iter_dma_address(&biter) -> 获取块迭代器持有的当前块的对齐 dma 地址
+                            biter->__dma_addr & ~(BIT_ULL(biter->__pg_bit) - 1) -> aligned dma address
+                        pbl = irdma_next_pbl_addr(pbl, &pinfo, &idx)
+            if (lvl)
+                irdma_check_mr_contiguous
+                    irdma_check_mem_contiguous
+                        if ((*arr + (pg_size * pg_idx)) != arr[pg_idx])
             irdma_create_stag -> 随机stag
                 get_random_bytes
                 irdma_alloc_rsrc -> RDMA/irdma：注册辅助驱动程序并实现私有通道 OP，注册可以从 Intel PCI netdev 驱动程序 i40e 和ice 连接到辅助 RDMA 设备的辅助驱动程序。 实现私有通道操作，并注册网络通知程序
@@ -2207,27 +2234,40 @@ irdma_probe
             INIT_LIST_HEAD(&cqp->cqp_pending_reqs)
             init_waitqueue_head(&cqp->cqp_requests[i].waitq) <- wake_up(&cqp_request->waitq)
         irdma_hmc_setup(rf)
-            rf->sd_type = IRDMA_SD_TYPE_DIRECT
-            irdma_cfg_fpm_val(&rf->sc_dev, qpcnt) -> 算法
+            qpcnt = rsrc_limits_table[rf->limits_sel].qplimit
+            rf->sd_type = IRDMA_SD_TYPE_DIRECT -> 默认段描述符为直接寻址
+            irdma_cfg_fpm_val(&rf->sc_dev, qpcnt) -> 算法, 配置PCI功能私有内存 (FPM)
                 irdma_sc_init_iw_hmc(dev, dev->hmc_fn_id)
+                    wait_type = (u8)IRDMA_CQP_WAIT_POLL_REGS
                     irdma_sc_query_fpm_val(dev->cqp, 0, hmc_info->hmc_fn_id, &query_fpm_mem, true, wait_type)
                         wqe = irdma_sc_cqp_get_next_send_wqe(cqp, scratch)
+                        hdr = FIELD_PREP(IRDMA_CQPSQ_OPCODE, IRDMA_CQP_OP_QUERY_FPM_VAL) -> 查询CQP的FPM大小
                         irdma_sc_cqp_post_sq(cqp)
                         irdma_cqp_poll_registers(cqp, tail,
                             irdma_get_cqp_reg_info(cqp, &val, &newtail, &error)
                             error = readl(cqp->dev->hw_regs[IRDMA_CQPERRCODES])
                     irdma_sc_parse_fpm_query_buf(dev, query_fpm_mem.va, hmc_info,
+                        hmc_info->first_sd_index = (u16)FIELD_GET(IRDMA_QUERY_FPM_FIRST_PE_SD_INDEX, temp)
+                        hmc_info->sd_table.sd_cnt = max_pe_sds + hmc_info->first_sd_index;
+                        ...
                         irdma_sc_decode_fpm_query(buf, 32, obj_info, IRDMA_HMC_IW_HTE)
-                        obj_info[IRDMA_HMC_IW_APBVT_ENTRY].size = 8192
+                            get_64bit_val(buf, buf_idx, &temp)
+                        obj_info[IRDMA_HMC_IW_APBVT_ENTRY].size = 
+                        ...
+                for (i = IRDMA_HMC_IW_QP; i < IRDMA_HMC_IW_MAX; i++)
+                    hmc_info->hmc_obj[i].cnt = hmc_info->hmc_obj[i].max_cnt -> 初始化HMC对象个数
                 sd_needed = irdma_est_sd(dev, hmc_info) -> 返回 HMC 的 SD 的近似数量
-                    size += round_up(hmc_info->hmc_obj[IRDMA_HMC_IW_PBLE].cnt *
+                    size += round_up(hmc_info->hmc_obj[IRDMA_HMC_IW_PBLE].cnt * hmc_info->hmc_obj[IRDMA_HMC_IW_PBLE].size, 512)
                 qpwanted = min(qp_count, hmc_info->hmc_obj[IRDMA_HMC_IW_QP].max_cnt)
+                pblewanted = hmc_info->hmc_obj[IRDMA_HMC_IW_PBLE].max_cnt
+                "HMC: req_qp=%d max_sd=%d, max_qp = %d, max_cq=%d, max_mr=%d, max_pble=%d, mc=%d, av=%d\n",
                 while (irdma_q1_cnt(dev, hmc_info, qpwanted) > hmc_info->hmc_obj[IRDMA_HMC_IW_Q1].max_cnt)
                     roundup_pow_of_two
                 cfg_fpm_value_gen_1
                 or
                 cfg_fpm_value_gen_2
                 irdma_sc_cfg_iw_fpm(dev, dev->hmc_fn_id) -> warp
+                    irdma_sc_commit_fpm_val -> IRDMA_COMMIT_FPM_BUF_SIZE | IRDMA_CQP_OP_COMMIT_FPM_VAL -> 提交FPM配置
                     irdma_sc_parse_fpm_commit_buf
                         irdma_sc_decode_fpm_commit
                             obj_info[rsrc_idx].cnt = (u32)FIELD_GET(IRDMA_COMMIT_FPM_QPCNT, temp) -> 初始化时获取支持的QP数量规格
@@ -2238,29 +2278,40 @@ irdma_probe
 	                    irdma_find_sd_index_limit(info->hmc_info, info->rsrc_type, info->start_idx, info->count, &sd_idx, &sd_lmt) -> 查找段描述符索引限制，@hmc_info：指向 HMC 配置信息结构的指针 @type：我们正在搜索的 HMC 资源类型 @idx：对象的起始索引 @cnt：我们尝试创建的对象数量 @ sd_idx：返回相关段描述符索引的指针 @sd_limit：返回段描述符最大数量的指针 该函数计算 irdma_hmc_rsrc_type 定义的资源的段描述符索引和索引限制
                         irdma_find_pd_index_limit(info->hmc_info, info->rsrc_type, info->start_idx, info->count, &pd_idx, &pd_lmt) -> finds page descriptor index limit
                         for (j = sd_idx; j < sd_lmt; j++)
-                            irdma_add_sd_table_entry(dev->hw, info->hmc_info, j, info->entry_type, IRDMA_HMC_DIRECT_BP_SIZE) -> RDMA/irdma：添加 HMC 后备存储设置功能，HW 使用主机内存作为多个协议上下文对象和队列状态跟踪的后备存储。 主机内存缓存 (HMC) 是负责管理存储在主机内存中的这些对象的组件。 添加函数和数据结构来管理 HMC 为各种对象使用的支持页面的分配 -> Adds a segment descriptor to the table
+                            irdma_add_sd_table_entry(dev->hw, info->hmc_info, j, info->entry_type, IRDMA_HMC_DIRECT_BP_SIZE) -> 0x200000 (2MB) -> RDMA/irdma：添加 HMC 后备存储设置功能，HW 使用主机内存作为多个协议上下文对象和队列状态跟踪的后备存储。 主机内存缓存 (HMC) 是负责管理存储在主机内存中的这些对象的组件。 添加函数和数据结构来管理 HMC 为各种对象使用的支持页面的分配 -> Adds a segment descriptor to the table (SD)
                                 allocate a 4K pd page or 2M backing page
-                                dma_mem.size = ALIGN(alloc_len, IRDMA_HMC_PD_BP_BUF_ALIGNMENT)
-                                dma_mem.va = dma_alloc_coherent(hw->device, dma_mem.size,
+                                dma_mem.size = ALIGN(alloc_len, IRDMA_HMC_PD_BP_BUF_ALIGNMENT) -> 4K
+                                dma_mem.va = dma_alloc_coherent(hw->device, dma_mem.size, &dma_mem.pa, GFP_KERNEL)
                                 if (type == IRDMA_SD_TYPE_PAGED)
-                                    vmem->size = sizeof(struct irdma_hmc_pd_entry) * 512
+                                    vmem->size = sizeof(struct irdma_hmc_pd_entry) * 512 -> 2MB = 512 * 4K
                                     vmem->va = kzalloc(vmem->size, GFP_KERNEL)
                                     sd_entry->u.pd_table.pd_entry = vmem->va
                                     memcpy(&sd_entry->u.pd_table.pd_page_addr, &dma_mem, sizeof(sd_entry->u.pd_table.pd_page_addr))
                                 else
                                     memcpy(&sd_entry->u.bp.addr, &dma_mem, sizeof(sd_entry->u.bp.addr))
                             irdma_add_pd_table_entry -> Adds page descriptor to the specified table -> 将页面描述符添加到指定的表中，@dev：指向我们的设备结构的指针@hmc_info：指向HMC配置信息结构的指针@pd_index：要操作的页面描述符索引@rsrc_pg：如果不为NULL，则使用预分配的页面而不是分配 新的一个。 该函数： 1. 初始化 pd 条目 2. 在 pd_table 中添加 pd_entry 3. 在 irdma_hmc_pd_entry 结构中标记该条目有效 4. 将 pd_entry 的引用计数初始化为 1 假设： 1. pd 的内存应该固定，物理上连续并且 在 4K 边界上对齐并将内存归零。 2.大小应为4K
-                                page->size = ALIGN(IRDMA_HMC_PAGED_BP_SIZE, IRDMA_HMC_PD_BP_BUF_ALIGNMENT)
-                                page->va = dma_alloc_coherent(dev->hw->device, page->size, &page->pa,GFP_KERNEL)
-                                memcpy(&pd_entry->bp.addr, page, sizeof(pd_entry->bp.addr))
-                                pd_entry->bp.entry_type = IRDMA_SD_TYPE_PAGED
-                                irdma_invalidate_pf_hmc_pd(dev, sd_idx, rel_pd_idx) -> 使 PF 硬件中的 pd 缓存无效
-                                    writel(val, dev->hw_regs[IRDMA_PFHMC_PDINV])
-                        irdma_hmc_finish_add_sd_reg(dev, info) -> irdma_hmc_sd_grp -> 为 cqp 设置 sd 条目组
+                                if (!pd_entry->valid)
+                                    page->size = ALIGN(IRDMA_HMC_PAGED_BP_SIZE, IRDMA_HMC_PD_BP_BUF_ALIGNMENT)
+                                    page->va = dma_alloc_coherent(dev->hw->device, page->size, &page->pa,GFP_KERNEL)
+                                    memcpy(&pd_entry->bp.addr, page, sizeof(pd_entry->bp.addr))
+                                    pd_entry->bp.entry_type = IRDMA_SD_TYPE_PAGED
+                                    pd_entry->sd_index = sd_idx
+                                    pd_entry->valid = true
+                                    pd_table->use_cnt++
+                                    irdma_invalidate_pf_hmc_pd(dev, sd_idx, rel_pd_idx) -> 使 PF 硬件中的 pd 缓存无效
+                                        writel(val, dev->hw_regs[IRDMA_PFHMC_PDINV])
+                        sd_entry->valid = true
+                        irdma_hmc_finish_add_sd_reg(dev, info) -> irdma_hmc_sd_grp(dev, info->hmc_info, info->hmc_info->sd_indexes[0], info->add_sd_cnt, true) -> 为 cqp 设置 sd 条目组
                             for (i = sd_index; i < sd_index + sd_cnt; i++)
                                 irdma_set_sd_entry(pa, i, sd_entry->entry_type,
+                                    entry->data = pa | IRDMA_HMC_MAX_BP_COUNT
+                                    entry->cmd = idx | FIELD_PREP(IRDMA_PFHMC_SDCMD_PMSDWR, 1) | BIT(15)
                                 or irdma_clr_sd_entry(i, sd_entry->entry_type,
-                                ret_code = dev->cqp->process_cqp_sds(dev, &sdinfo)
+                                if (sdinfo.cnt == IRDMA_MAX_SD_ENTRIES)
+                                    ret_code = dev->cqp->process_cqp_sds(dev, &sdinfo)
+                    irdma_sc_static_hmc_pages_allocated(dev->cqp, 0, dev->hmc_fn_id, true, true) -> cqp wqe to allocate hmc pages
+                        IRDMA_SHMC_PAGE_ALLOCATED_HMC_FN_ID
+                        IRDMA_CQP_OP_SHMC_PAGES_ALLOCATED | IRDMA_CQPSQ_WQEVALID
         irdma_initialize_hw_rsrc -> 初始化硬件资源跟踪数组
             if (rf->rdma_ver != IRDMA_GEN_1)
                 rf->allocated_ws_nodes = bitmap_zalloc(IRDMA_MAX_WS_NODES,
@@ -2389,8 +2440,13 @@ irdma_probe
                 irdma_create_ceq
                 irdma_cfg_ceq_vector
                 irdma_ena_intr
-            irdma_hmc_init_pble -> Initialize pble resources during module load
+            status = irdma_hmc_init_pble(&rf->sc_dev, rf->pble_rsrc) -> Initialize pble resources during module load
+                struct irdma_hmc_info *hmc_info
+                relationship hmc_info and pble_rsrc
+                if (pble_rsrc->fpm_base_addr & 0xfff)
+                    fpm_idx = (4096 - (pble_rsrc->fpm_base_addr & 0xfff)) >> 3
                 pble_rsrc->fpm_base_addr = hmc_info->hmc_obj[IRDMA_HMC_IW_PBLE].base
+                pble_rsrc->pinfo.pble_shift = PBLE_SHIFT
                 INIT_LIST_HEAD(&pble_rsrc->pinfo.clist)
                 add_pble_prm(pble_rsrc)
             irdma_setup_aeq
@@ -7409,27 +7465,28 @@ struct ib_port_attr {
 	u16			port_cap_flags2;
 };
 
+IB端口属性
 struct ibv_port_attr {
     enum ibv_port_state     state;          /* Logical port state */
     enum ibv_mtu            max_mtu;        /* Max MTU supported by port */
     enum ibv_mtu            active_mtu;     /* Actual MTU */
-    int                     gid_tbl_len;    /* Length of source GID table */
+    int                     gid_tbl_len;    /* Length of source GID table */ -> 源GID表长度
     uint32_t                port_cap_flags; /* Port capabilities */
     uint32_t                max_msg_sz;     /* Maximum message size */
     uint32_t                bad_pkey_cntr;  /* Bad P_Key counter */
     uint32_t                qkey_viol_cntr; /* Q_Key violation counter */ -> Q_key违反次数
-    uint16_t                pkey_tbl_len;   /* Length of partition table */
-    uint16_t                lid;            /* Base port LID */
-    uint16_t                sm_lid;         /* SM LID */
-    uint8_t                 lmc;            /* LMC of LID */ 
+    uint16_t                pkey_tbl_len;   /* Length of partition table */ -> 分区键表长度
+    uint16_t                lid;            /* Base port LID */ -> 基本端口的本地标识
+    uint16_t                sm_lid;         /* SM LID */ -> 子网标识
+    uint8_t                 lmc;            /* LMC of LID */ -> LID 掩码控制(lid mask control) 由子网管理器分配的每个端口值。 LMC的值指定本地标识符中的路径比特数
     uint8_t                 max_vl_num;     /* Maximum number of VLs */
     uint8_t                 sm_sl;          /* SM service level */
     uint8_t                 subnet_timeout; /* Subnet propagation delay */ -> 子网传播时延
     uint8_t                 init_type_reply;/* Type of initialization performed by SM */
-    uint8_t                 active_width;   /* Currently active link width */
-    uint8_t                 active_speed;   /* Currently active link speed */
+    uint8_t                 active_width;   /* Currently active link width */ -> 当前位宽
+    uint8_t                 active_speed;   /* Currently active link speed */ -> 当前带宽速度
     uint8_t                 phys_state;     /* Physical port state */
-    uint8_t                 link_layer;     /* link layer protocol of the port */
+    uint8_t                 link_layer;     /* link layer protocol of the port */ -> 链路层类型
 };
 
 
@@ -10273,4 +10330,52 @@ struct_size来计算整个结构体的长度, 计算方式就是(数组元素大
 		    sizeof(*(p)->member) + __must_be_array((p)->member),\
 		    sizeof(*(p)))
 
+hmc impl, https://lore.kernel.org/linux-rdma/9DD61F30A802C4429A01CA4200E302A7AC7078BD@fmsmsx123.amr.corp.intel.com/T/#m20a8d733d6db084b45b235daf71041f01a273027
+hmc.h
+hmc.c
 
+#define IRDMA_HMC_MAX_BP_COUNT			512
+
+struct irdma_hmc_info {
+	u32 signature;
+	u8 hmc_fn_id;
+	u16 first_sd_index;
+	struct irdma_hmc_obj_info *hmc_obj;
+	struct irdma_virt_mem hmc_obj_virt_mem;
+	struct irdma_hmc_sd_table sd_table;
+	u16 sd_indexes[IRDMA_HMC_MAX_SD_COUNT];
+};
+
+
+段描述符条目(SD Entry)
+struct irdma_hmc_sd_entry {
+	enum irdma_sd_entry_type entry_type;
+	bool valid;
+	union {
+		struct irdma_hmc_pd_table pd_table; -> 页描述符 (PD)
+		struct irdma_hmc_bp bp; -> 后备页(BP)
+	} u;
+};
+
+
+ib_create_qp
+    ib_create_qp_kernel
+        rdma_rw_init_mrs
+            ib_mr_pool_init
+                mr = ib_alloc_mr(qp->pd, type, max_num_sg)
+
+
+
+
+continue memory,
+void __init dma_contiguous_reserve(phys_addr_t limit)
+CONFIG_CMA_SIZE_MBYTES
+
+free_area_init
+memmap_init
+memmap_init_range
+memmap_init_zone_range
+
+
+mlx5_ib_enable_driver
+    mlx5_ib_test_wc
