@@ -28,8 +28,30 @@ Kconfig 文件的作用是：
 
 drivers/nvme/host/core.c
 module_init(nvme_core_init) -> static int __init nvme_core_init(void)
-alloc_chrdev_region nvme
-class_create("nvme")
+    _nvme_check_size
+        BUILD_BUG_ON(sizeof(struct nvme_common_command) != 64)
+        ...
+    nvme_wq = alloc_workqueue("nvme-wq",
+    nvme_reset_wq
+    nvme_delete_wq
+    alloc_chrdev_region(&nvme_ctrl_base_chr_devt, 0, NVME_MINORS, "nvme")
+    class_create("nvme")
+    nvme_class->dev_uevent = nvme_class_uevent
+        add_uevent_var(env, "NVME_TRTYPE=%s", ctrl->ops->name)
+        NVME_TRADDR
+        NVME_TRSVCID
+        NVME_HOST_TRADDR
+        NVME_HOST_IFACE
+    nvme_subsys_class = class_create("nvme-subsystem")
+    alloc_chrdev_region(&nvme_ns_chr_devt, 0, NVME_MINORS, "nvme-generic")
+    nvme_ns_chr_class = class_create("nvme-generic")
+    nvme_init_auth -> 注册“.nvme”密钥环以保存 TLS 和 DH-HMAC-CHAP 的密钥，并添加新的配置选项 NVME_KEYRING。 我们需要一个单独的 NVMe 密钥环，因为配置是通过单独的命令（例如 configfs）完成的，并且不能使用通常的每会话或每进程密钥环
+        nvme_auth_wq
+        nvme_chap_buf_cache = kmem_cache_create("nvme-chap-buf-cache"
+        nvme_chap_buf_pool = mempool_create(16, mempool_alloc_slab, mempool_free_slab, nvme_chap_buf_cache) -> usage -> chap->buf = mempool_alloc(nvme_chap_buf_pool, GFP_KERNEL)
+
+
+
 
 target驱动实现: https://github.com/torvalds/linux/commit/8f000cac6e7a6edca7ab93bafc7ed28b27c1545b
 enum {
@@ -724,6 +746,8 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
                     mlx5_init_fc_stats -> net/mlx5_core：流计数器基础结构 如果计数器在创建时设置了老化标志，则会将其添加到将从工作队列定期查询的计数器列表中。 查询结果和上次使用时间戳被缓存。 添加/删除计数器必须非常高效，因为一秒钟可能会发出数千个此类操作。 只有一个对计数器的引用，没有老化，因此不需要锁。 但是，启用老化的计数器存储在列表中。 为了使代码尽可能无锁，所有列表操作和对硬件的访问都是从单个上下文（周期性计数器查询线程）完成的。 硬件支持每个 FTE 使用多个计数器，但目前我们为每个 FTE 使用一个计数器
                         mlx5_fc_stats_work
                         mlx5_fc_pool_init -> net/mlx5：添加流量计数器池 根据流量计数器批量添加流量计数器池，从而无需在流量创建过程中通过昂贵的 FW 命令分配新计数器。 获取/释放流量计数器所需的时间从约 50 [us] 缩短至约 50 [ns]。 该池是 mlx5 驱动程序实例的一部分，并为老化流提供流量计数器。 mlx5_fc_create() 已修改为默认为池中的老化流提供计数器，并且 mlx5_destroy_fc() 已修改为将计数器释放回池以供以后重用。 如果批量分配不受支持或失败，并且对于非老化流，后备行为是分配并释放各个计数器。 该池由流量计数器批量的三个列表组成：完全使用的批量之一、部分使用的批量之一和未使用的批量之一。 首先从部分使用的块中提供计数器，以帮助限制块碎片。 该池维护一个阈值，并努力将可用计数器的数量维持在该阈值以下。 当发出计数器获取请求且没有可用计数器时，池的大小会增加；当批量释放最后一个计数器且可用计数器多于阈值时，池的大小会减小。 所有池大小的更改都是在获取/释放过程的上下文中完成的。 阈值与池提供的已用计数器数量直接相关，同时受到硬性最大值的限制，并且每次分配/释放批量时都会重新计算。 这可确保池仅在大量使用时才为可用计数器消耗大量内存。 当完全填充且处于硬最大值时，可用计数器的缓冲区消耗约 40 [MB]
+                            ft_pool = kzalloc(sizeof(*ft_pool),
+                            ft_pool->ft_left[i] = FT_SIZE / FT_POOLS[i]
                     mlx5_ft_pool_init -> 固件目前支持 4 个 4 种大小的池 (FT_POOLS)，以及 16M 的虚拟内存区域 (MLX5_FT_SIZE)，该区域为每个流表池复制。 我们可以为每个池分配最多 	16M 的空间，并通过 mlx5_ft_pool_get_avail_sz 跟踪我们使用了多少空间。 固件目前不会报告任何此类情况。 ESW_POOL预计从大到小排序并匹配固件池
                     kmem_cache_create -> kernel里分配一些小内存用到的是slab分配器, kmem_cache_create()只是分配size大小的缓存，并不会调用对象的构造函数，只有当再调用kmem_cache_alloc()时才会构造对象，另外调用kmem_cache_create()并没有分配slab，是在创建对象的时候发现没有空闲对象，调用cache_grow()分配一个slab，然后再分配对象
                 mlx5_dm_create -> net/mlx5：将设备内存管理移至 mlx5_core 将设备内存分配和释放命令 SW ICM 内存移至 mlx5_core，以向所有 mlx5_core 用户公开此 API。 这是为支持内核中的软件控制做准备，其中需要分配和注册设备内存以进行直接规则插入。 此外，还引入了一个 API，用于使用 create_mkey 命令注册此设备内存以供将来的远程访问操作
@@ -1847,8 +1871,11 @@ static struct ib_client uverbs_client = {
 ibv_reg_mr, Register a user memory region, 
 drivers/infiniband/hw/irdma/verbs.c
 IB_USER_VERBS_CMD_REG_MR
-ib_uverbs_reg_mr -> mr = pd->device->ops.reg_user_mr(pd, cmd.start, cmd.length, cmd.hca_va, cmd.access_flags, &attrs->driver_udata) -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
-    
+ib_uverbs_reg_mr -> 
+    uobj = uobj_get_write(UVERBS_OBJECT_MR, cmd.mr_handle, attrs)
+    ib_check_mr_access -> enum ib_access_flags
+    uobj_get_obj_read(pd, UVERBS_OBJECT_PD, cmd.pd_handle,
+    mr = pd->device->ops.reg_user_mr(pd, cmd.start, cmd.length, cmd.hca_va, cmd.access_flags, &attrs->driver_udata) -> .reg_user_mr = irdma_reg_user_mr <- DECLARE_UVERBS_WRITE
     ...
     region = ib_umem_get -> pin住以及通过DMA映射的用户空间内存, IB/uverbs：将 ib_umem_get()/ib_umem_release() 导出到模块，导出 ib_umem_get()/ib_umem_release() 并让低级驱动程序控制何时调用 ib_umem_get() 来pin和 DMA 映射用户空间，而不是总是调用它 在调用低级驱动程序的 reg_user_mr 方法之前在 ib_uverbs_reg_mr() 中。 还将这些函数移至 ib_core 模块而不是 ib_uverbs 中，以便使用它们的驱动程序模块不依赖于 ib_uverbs。 这具有许多优点： - 从使通用代码成为可以根据特定设备的详细信息指示由设备特定代码使用或覆盖的库的角度来看，这是更好的设计。 - 不需要固定用户空间内存区域的驱动程序不需要承受调用 ib_mem_get() 的性能损失。 例如，虽然我没有尝试在此补丁中实现它，但 ipath 驱动程序应该能够避免固定内存并仅使用 copy_{to,from}_user() 来访问用户空间内存区域。 - 需要特殊映射处理的缓冲区可以由低级驱动程序识别。 例如，通过使用额外标志映射 CQ 缓冲区，可以解决用户空间中 mthca CQ 的一些特定于 Altix 的内存排序问题。 - 需要为内存区域以外的内容固定和 DMA 映射用户空间内存的驱动程序可以直接使用 ib_umem_get()，而不是使用其 reg_phys_mr 方法的额外参数进行黑客攻击。 例如，待合并的 mlx4 驱动程序需要引脚和 DMA 映射 QP 和 CQ 缓冲区，但不需要为这些缓冲区创建内存密钥。 因此，最干净的解决方案是 mlx4 在 create_qp 和 create_cq 方法中调用 ib_umem_get() -> 调用 ib_umem_get 来完成内存页面pin操作 + 将pin住的内存页面组织为DMA SG List
         can_do_mlock -> [PATCH] IB uverbs：内存固定实现(pin)，添加对固定用户空间内存区域并返回该区域中的页面列表的支持。 这包括根据 vm_locked 跟踪固定内存并防止非特权用户超过 RLIMIT_MEMLOCK
@@ -1969,10 +1996,29 @@ ib_uverbs_reg_mr -> mr = pd->device->ops.reg_user_mr(pd, cmd.start, cmd.length, 
                 stag_info->reg_addr_pa = iwmr->pgaddrmem[0]
                 irdma_handle_cqp_op
                 irdma_put_cqp_request
-UVERBS_OBJECT_MR
-ib_check_mr_access
-uobj_get_obj_read
-reg_user_mr
+    rdma_restrack_new(&new_mr->res, RDMA_RESTRACK_MR)
+    rdma_restrack_set_name(&new_mr->res, NULL)
+    rdma_restrack_add(&new_mr->res)
+
+
+
+enum ib_access_flags {
+	IB_ACCESS_LOCAL_WRITE = IB_UVERBS_ACCESS_LOCAL_WRITE,
+	IB_ACCESS_REMOTE_WRITE = IB_UVERBS_ACCESS_REMOTE_WRITE,
+	IB_ACCESS_REMOTE_READ = IB_UVERBS_ACCESS_REMOTE_READ,
+	IB_ACCESS_REMOTE_ATOMIC = IB_UVERBS_ACCESS_REMOTE_ATOMIC,
+	IB_ACCESS_MW_BIND = IB_UVERBS_ACCESS_MW_BIND,
+	IB_ZERO_BASED = IB_UVERBS_ACCESS_ZERO_BASED,
+	IB_ACCESS_ON_DEMAND = IB_UVERBS_ACCESS_ON_DEMAND,
+	IB_ACCESS_HUGETLB = IB_UVERBS_ACCESS_HUGETLB,
+	IB_ACCESS_RELAXED_ORDERING = IB_UVERBS_ACCESS_RELAXED_ORDERING,
+	IB_ACCESS_FLUSH_GLOBAL = IB_UVERBS_ACCESS_FLUSH_GLOBAL, -> 启用 RDMA FLUSH 功能。它可以支持全局可见性和持久性放置类型(PM), rxe flush  commit: https://patchew.org/linux/20221116081951.32750-1-lizhijian@fujitsu.com/20221116081951.32750-3-lizhijian@fujitsu.com/
+	IB_ACCESS_FLUSH_PERSISTENT = IB_UVERBS_ACCESS_FLUSH_PERSISTENT,
+
+	IB_ACCESS_OPTIONAL = IB_UVERBS_ACCESS_OPTIONAL_RANGE,
+	IB_ACCESS_SUPPORTED =
+		((IB_ACCESS_FLUSH_PERSISTENT << 1) - 1) | IB_ACCESS_OPTIONAL,
+};
 
 
 intel irdma/ice/e810 driver:
@@ -2007,7 +2053,6 @@ irdma_ib_register_device
 
 
 
-.reg_user_mr = rxe_reg_user_mr,
 
 
 
@@ -2508,17 +2553,8 @@ static const struct irdma_irq_ops icrdma_irq_ops = {
 };
 
 
-static struct class ib_class = {
-    .name    = "infiniband",
-    .dev_release = ib_device_release,
-    .dev_uevent = ib_device_uevent,
-    .ns_type = &net_ns_type_operations,
-    .namespace = net_namespace,
-};
 
 
-
-iavf_register_client
 
 
 drivers/net/ethernet/hisilicon/Makefile
@@ -4429,16 +4465,6 @@ struct ice_vsi
 
 
 
-static struct class ib_class = {
-    .name    = "infiniband",
-    .dev_release = ib_device_release,
-    .dev_uevent = ib_device_uevent,
-    .ns_type = &net_ns_type_operations,
-    .namespace = net_namespace,
-};
-
-
-
 iavf_register_client
 
 
@@ -4756,8 +4782,8 @@ static const struct ib_device_ops irdma_dev_ops = {
 	.driver_id = RDMA_DRIVER_IRDMA,
 	.uverbs_abi_ver = IRDMA_ABI_VER,
 
-	.alloc_hw_port_stats = irdma_alloc_hw_port_stats,
-	.alloc_mr = irdma_alloc_mr,
+	.alloc_hw_port_stats = irdma_alloc_hw_port_stats, -> struct rdma_hw_stats
+	.alloc_mr = irdma_alloc_mr, -> 注册 stag 以进行快速内存注册
 	.alloc_mw = irdma_alloc_mw,
 	.alloc_pd = irdma_alloc_pd,
 	.alloc_ucontext = irdma_alloc_ucontext,
@@ -6548,15 +6574,32 @@ rxe_mr_init_user(rxe, start, length, iova, access, mr)
     xa_init
     umem = ib_umem_get(&rxe->ib_dev, start, length, access)
     rxe_mr_fill_pages_from_sgt(mr, &umem->sgt_append.sgt)
+        bool persistent = !!(mr->access & IB_ACCESS_FLUSH_PERSISTENT)
         XA_STATE(xas, &mr->page_list, 0)
         __sg_page_iter_start -> lib/scatterlist：添加简单页面迭代器，添加一个迭代器以从特定页面偏移量开始一次遍历分散列表一页。 与映射迭代器相反，它很小，即使在简单的循环中也能表现良好，例如将分散列表上的所有页面收集到数组中或根据页面的 DMA 地址设置 iommu 表。
+        __sg_page_iter_next
         sg_page_iter_page -> lib/scatterlist: sg_page_iter: 支持不带支持页面的 sg 列表，i915 驱动程序使用 sg 列表作为内存，而不支持“struct page”页面，与其他 IO 内存区域类似，仅设置这些内存区域的 DMA 地址。 它这样做是为了能够以统一的方式对带有和不带有后备页的 sg 列表的 HW MMU 表进行编程。 如果没有有效的页面指针，我们无法调用 nth_page 来获取 __sg_page_iter_next 中的当前页面，因此添加一个相关用户可以单独调用的帮助程序。 还添加一个助手来获取当前页面的 DMA 地址（来自 Daniel 的想法）。 转换 i915 中的所有位置，以使用新的 API
         is_pmem_page
             unsigned long paddr = page_to_phys(pg) -> physical
             region_intersects -> Region_intersects() - 确定区域与已知资源的交集， @start：区域起始地址 @size：区域大小 @flags：资源标志（在 iomem_resource 中） @desc：资源描述符（在 iomem_resource 中）或 IORES_DESC_NONE 检查是否指定 区域部分重叠或完全遮蔽由 @flags 和 @desc 标识的资源（IORES_DESC_NONE 可选）。 如果该区域不与 @flags/@desc 重叠，则返回 REGION_DISJOINT；如果该区域与 @flags/@desc 和其他资源重叠，则返回 REGION_MIXED；如果该区域与 @flags/@desc 重叠并且没有其他定义的资源，则返回 REGION_INTERSECTS。 请注意，当指定区域与 RAM 和未定义的内存孔重叠时，也会返回 REGION_INTERSECTS。 内存重新映射函数使用region_intersect()来确保用户不会重新映射RAM，并且比逐页遍历资源表的速度要快得多
+                __region_intersects  -> I/O 资源描述符，walk_iomem_res_desc() 和region_intersects() 使用描述符来搜索iomem 表中的特定资源范围。 当资源范围支持搜索接口时分配新的描述符。 否则，resource.desc 必须设置为 IORES_DESC_NONE (0)
     mr->ibmr.type = IB_MR_TYPE_USER
 rxe_finalize(mr)
 
+
+I/O Resource Descriptors
+enum {
+	IORES_DESC_NONE				= 0,
+	IORES_DESC_CRASH_KERNEL			= 1,
+	IORES_DESC_ACPI_TABLES			= 2,
+	IORES_DESC_ACPI_NV_STORAGE		= 3,
+	IORES_DESC_PERSISTENT_MEMORY		= 4,
+	IORES_DESC_PERSISTENT_MEMORY_LEGACY	= 5,
+	IORES_DESC_DEVICE_PRIVATE_MEMORY	= 6,
+	IORES_DESC_RESERVED			= 7,
+	IORES_DESC_SOFT_RESERVED		= 8,
+	IORES_DESC_CXL				= 9,
+};
 
 auto load modules, like: ib_code.ko
 [NETLINK]：为内核 netlink 套接字添加正确的模块引用计数。 - 删除将 netlink 编译为模块的虚假代码 - 为实现 netlink 协议的模块添加模块引用计数支持 - 添加对实现 netlink 协议的自动加载模块的支持，只要有人打开该协议的套接字
@@ -7378,13 +7421,18 @@ ib_init_ucontext(attrs)
         xa_insert(&rt->xa, res->id, res, GFP_KERNEL)
 ib_uverbs_init_async_event_file
     ib_uverbs_init_event_queue(&async_file->ev_queue)
+        INIT_LIST_HEAD(&ev_queue->event_list)
+        init_waitqueue_head(&ev_queue->poll_wait)
+        IO信号: https://zhuanlan.zhihu.com/p/571496225
+        等待队列: https://cslqm.github.io/2020/01/08/wait_queue_head_t/
+        等待队列wait.h详解: https://www.zhihu.com/people/muelsyse-rhinelab/posts
     INIT_IB_EVENT_HANDLER(&async_file->event_handler, ib_dev, ib_uverbs_event_handler);
         ib_uverbs_async_handler(container_of(handler, struct ib_uverbs_async_event_file,event_handler), event->element.port_num, event->event, NULL, NULL)
             list_add_tail(&entry->list, &async_file->ev_queue.event_list)
             list_add_tail(&entry->obj_list, obj_list)
             wake_up_interruptible(&async_file->ev_queue.poll_wait)
-    ib_register_event_handler(&async_file->event_handler) -> RDMA/core：将 ib_uverbs_async_event_file 制作为 uobject，这使得异步事件与完成事件对齐，因为两者都是 FD 类型的完整 uobject，并使用相同的 uobject 生命周期。 一堆重复的代码被合并，两个 FD 之间的总体流程现在非常相似
-        list_add_tail(&event_handler->list, &event_handler->device->event_handler_list)
+    ib_register_event_handler(&async_file->event_handler) -> RDMA/core：将 ib_uverbs_async_event_file 制作为 uobject，这使得异步事件与完成事件对齐，因为两者都是 FD 类型的完整 uobject，并使用相同的 uobject 生命周期。 一堆重复的代码被合并，两个 FD 之间的总体流程现在非常相似 -> 异步IB事件定义在IB规范的第11章(11.5 EVENT HANDLING)
+        list_add_tail(&event_handler->list, &event_handler->device->event_handler_list) -> 其他线程通过遍历事件控制器链表触发handler回调
 rdma_alloc_commit_uobject(uobj, attrs)
     uobj->uapi_object->type_class->alloc_commit(uobj)
 
@@ -7410,7 +7458,7 @@ pd = rdma_zalloc_drv_obj(ib_dev, ib_pd)
 rdma_restrack_new(&pd->res, RDMA_RESTRACK_PD)
 ret = ib_dev->ops.alloc_pd(pd, &attrs->driver_udata) -> irdma_alloc_pd
     irdma_alloc_rsrc
-    irdma_sc_pd_init
+    irdma_sc_pd_init -> set pd_id, abi_ver, dev to pd
     
 
 
@@ -10379,3 +10427,278 @@ memmap_init_zone_range
 
 mlx5_ib_enable_driver
     mlx5_ib_test_wc
+
+
+find linux kernel module entry:
+find ./ -type f -name "*.c"|xargs grep "module_init" |grep kvm
+
+
+
+struct rdma_hw_stats -> RDMA硬件状态, @lock - 互斥体，用于保护对计数器的生命周期和值的并行写入访问，这些计数器是 64 位的，不保证在 32 位系统上原子写入。 @timestamp - 由核心代码用来跟踪上次更新的时间 @lifespan - 由核心代码用来确定计数器在再次更新之前应该有多久。 存储在 jiffies 中，默认为 10 毫秒，驱动程序可以在分配例程期间指定自己的值来覆盖默认值。 @descs - 指向用于目录中计数器的静态描述符的指针数组。 @is_disabled - 指示每个计数器当前是否禁用的位图。 @num_counters - 有多少个硬件计数器。 如果名称短于此数字，则会导致内核错误。 鼓励驱动程序作者在代码中保留 BUILD_BUG_ON(ARRAY_SIZE(@name) < num_counters) 以防止出现这种情况。 @value - 由 sysfs 代码访问并由驱动程序 get_stats 例程填充的 u64 计数器数组
+struct rdma_hw_stats {
+	struct mutex	lock; /* Protect lifespan and values[] */
+	unsigned long	timestamp;
+	unsigned long	lifespan;
+	const struct rdma_stat_desc *descs;
+	unsigned long	*is_disabled;
+	int		num_counters;
+	u64		value[] __counted_by(num_counters); -> zero len array
+};
+
+static struct ib_mr *irdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
+    stag = irdma_create_stag(iwdev)
+    err_code = irdma_get_pble(iwdev->rf->pble_rsrc, palloc, iwmr->page_cnt,
+    irdma_hw_alloc_stag(iwdev, iwmr)
+        ...
+        cqp_info->cqp_cmd = IRDMA_OP_ALLOC_STAG
+        cqp_info->post_sq = 1
+        status = irdma_handle_cqp_op(iwdev->rf, cqp_request)
+        ...
+    iwpbl->pbl_allocated = true
+
+
+
+ib_verbs.h
+__printf(3, 4) __cold
+
+dynamic_ibdev_dbg(__dev, format, ##args)
+
+
+
+
+nvmeof, module
+drivers/nvme/host/rdma.c -> module_init(nvme_rdma_init_module)
+    ib_register_client(&nvme_rdma_ib_client) -> nvme_rdma
+    nvmf_register_transport(&nvme_rdma_transport)
+        list_add_tail(&ops->entry, &nvmf_transports)
+
+
+
+static struct nvmf_transport_ops nvme_rdma_transport = {
+	.name		= "rdma",
+	.module		= THIS_MODULE,
+	.required_opts	= NVMF_OPT_TRADDR,
+	.allowed_opts	= NVMF_OPT_TRSVCID | NVMF_OPT_RECONNECT_DELAY |
+			  NVMF_OPT_HOST_TRADDR | NVMF_OPT_CTRL_LOSS_TMO |
+			  NVMF_OPT_NR_WRITE_QUEUES | NVMF_OPT_NR_POLL_QUEUES |
+			  NVMF_OPT_TOS,
+	.create_ctrl	= nvme_rdma_create_ctrl,
+};
+
+
+
+nvmf_dev_write
+    buf = memdup_user_nul(ubuf, count)
+    nvmf_create_ctrl(nvmf_device, buf)
+        nvmf_parse_options(opts, buf)
+            strscpy(hostnqn, nvmf_default_host->nqn, NVMF_NQN_SIZE)
+            opts->host = nvmf_host_add(hostnqn, &hostid)
+                list_for_each_entry(host, &nvmf_hosts, list)
+            nvmf_host_alloc
+            list_add_tail(&host->list, &nvmf_hosts)
+        request_module("nvme-%s", opts->transport)
+        nvmf_check_required_opts
+        nvmf_lookup_transport
+        try_module_get
+        nvmf_check_required_opts(opts, ops->required_opts)
+        nvmf_check_allowed_opts(opts, NVMF_ALLOWED_OPTS | ops->allowed_opts | ops->required_opts)
+        ctrl = ops->create_ctrl(dev, opts) -> nvme_rdma_create_ctrl
+            INIT_LIST_HEAD(&ctrl->list)
+            inet_pton_with_scope
+            nvme_rdma_existing_controller
+            INIT_DELAYED_WORK(&ctrl->reconnect_work, nvme_rdma_reconnect_ctrl_work)
+            INIT_WORK(&ctrl->err_work, nvme_rdma_error_recovery_work)
+            INIT_WORK(&ctrl->ctrl.reset_work, nvme_rdma_reset_ctrl_work)
+            nvme_init_ctrl
+            nvme_change_ctrl_state
+            nvme_rdma_setup_ctrl
+            list_add_tail(&ctrl->list, &nvme_rdma_ctrl_list)
+
+
+
+
+
+
+
+
+
+drivers/nvme/host/fabrics.c
+module_init(nvmf_init)
+    nvmf_default_host = nvmf_host_default() -> nvme-fabrics：添加通用 NVMe over Fabrics 库，NVMe over Fabrics 库为传输和 nvme 核心提供接口，以处理独立于底层传输的特定于结构的命令和属性。 此外，fabrics 库添加了一个杂项设备接口，允许实际创建一个fabrics 控制器，因为我们不能像 PCI 情况那样自动发现它。 nvme-cli 实用程序已得到增强，可以使用此接口来支持结构连接和发现
+        uuid_gen(&id)
+        snprintf(nqn, NVMF_NQN_SIZE,"nqn.2014-08.org.nvmexpress:uuid:%pUb", &id)
+        host = nvmf_host_alloc(nqn, &id)
+            host = kmalloc(sizeof(*host),
+        list_add_tail(&host->list, &nvmf_hosts)
+    class_create("nvme-fabrics")
+    device_create(nvmf_class, NULL, MKDEV(0, 0), NULL, "ctl")
+    misc_register(&nvmf_misc)
+
+
+static struct miscdevice nvmf_misc = {
+	.minor		= MISC_DYNAMIC_MINOR,
+	.name           = "nvme-fabrics",
+	.fops		= &nvmf_dev_fops,
+};
+static const struct file_operations nvmf_dev_fops = {
+	.owner		= THIS_MODULE,
+	.write		= nvmf_dev_write,
+	.read		= seq_read,
+	.open		= nvmf_dev_open,
+	.release	= nvmf_dev_release,
+};
+
+
+nvmf_dev_open
+    single_open(file, nvmf_dev_show, NULL)
+        res = seq_open(file, op)
+nvmf_dev_show
+    seq_printf(seq_file, "instance=%d,cntlid=%d\n", ctrl->instance, ctrl->cntlid)
+
+
+
+ib_dispatch_event
+    is_cache_update_event(event)
+    else -> INIT_WORK(&work->work, ib_generic_event_task)
+
+
+
+ib_alloc_cq -> __ib_alloc_cq
+    rdma_dim_init -> struct dim - 动态中断调节 (DIM) 的主要结构。用于保存有关特定 DIM 实例的所有信息。 @state：算法状态（见下文） @prev_stats：上一次迭代的测量速率（用于比较） @start_sample：当前迭代开始时的采样数据 @measuring_sample：用于更新当前事件的 &dim_sample @work：要执行的工作 @priv：指向暗淡结构的指针 @profile_ix：当前审核配置文件 @mode：CQ 周期计数模式 @tune_state：算法调整状态（见下文） @steps_right：迈向更高审核的步数 @steps_left ：降低适度程度所采取的步数 @tired：停车深度计数器 */
+        dim->state = DIM_START_MEASURE -> enum dim_tune_state - DIM 算法调整状态，这些将确定算法应执行哪个操作。 @DIM_PARKING_ON_TOP：算法找到了一个局部最高点 - 出现显着差异时退出 @DIM_PARKING_TIRED：算法找到了一个深度最高点 - 如果累了 > 0，则不退出 @DIM_GOING_RIGHT：算法当前正在尝试更高的调节级别 @DIM_GOING_LEFT：算法当前正在尝试更低的调节级别 调节级别 */ m dim_tune_state {
+        INIT_WORK(&dim->work, ib_cq_rdma_dim_work) -> DMA/核心：为 ULP 提供 RDMA DIM 支持，在 infiniband 驱动程序中添加了应用 rdma_dim 自适应调节的接口。 现在有一个特殊函数用于分配使用 rdma_dim 的 ib_cq。   使用 null_blk 设备在 Mellanox 交换机上的两个具有 56 个内核的同等终端主机之间运行基于 NVMf 的 FIO 基准测试的性能改进（ConnectX-5 100GbE、x86）, rdma_dim 算法旨在以通用方式测量流量调节的有效性，因此应适用于所有 RDMA 存储协议。   根据大量测试后看到的性能改进，将 rdma_dim 配置为默认选项
+            cq->device->ops.modify_cq(cq, comps, usec) -> mlx5_ib_modify_cq
+                mlx5_core_modify_cq_moderation
+                    mlx5_core_modify_cq
+                        MLX5_CMD_OP_MODIFY_CQ
+                        return mlx5_cmd_exec(dev, in, inlen, out, sizeof(out))
+
+
+ib_cq_poll_work
+    rdma_dim
+        dim_update_sample_with_comps
+        switch (dim->state)
+        
+        schedule_work(&dim->work)
+
+
+
+net_dim
+    schedule_work(&dim->work)
+
+
+
+
+
+module_init(p9_trans_rdma_init);
+    v9fs_register_trans(&p9_rdma_trans)
+        list_add_tail(&m->list, &v9fs_trans_list)
+static struct p9_trans_module p9_rdma_trans = {
+	.name = "rdma",
+	.maxsize = P9_RDMA_MAXSIZE,
+	.pooled_rbuffers = true,
+	.def = 0,
+	.owner = THIS_MODULE,
+	.create = rdma_create_trans,
+	.close = rdma_close,
+	.request = rdma_request,
+	.cancel = rdma_cancel,
+	.cancelled = rdma_cancelled,
+	.show_options = p9_rdma_show_options,
+};
+rdma_create_trans
+
+
+
+struct file_system_type v9fs_fs_type = {
+	.name = "9p",
+	.mount = v9fs_mount,
+	.kill_sb = v9fs_kill_super,
+	.owner = THIS_MODULE,
+	.fs_flags = FS_RENAME_DOES_D_MOVE,
+};
+
+
+
+module_init(init_v9fs)
+    static int __init init_v9fs(void)
+        v9fs_cache_register
+            v9fs_init_inode_cache
+                v9fs_inode_cache = kmem_cache_create("v9fs_inode_cache"
+        v9fs_sysfs_init
+        register_filesystem(&v9fs_fs_type)
+            v9fs_mount
+                fid = v9fs_session_init(v9ses, dev_name, data)
+                    p9_client_create
+                        err = clnt->trans_mod->create(clnt, dev_name, options)  -> rdma_create_trans -> create rdma transport layer
+                            rdma = alloc_rdma(&opts)
+                            rdma->cm_id = rdma_create_id(&init_net, p9_cm_event_handler, client, RDMA_PS_TCP, IB_QPT_RC)
+                            if (opts.privport) 
+                                p9_rdma_bind_privport
+                                    rdma_bind_addr(rdma->cm_id, (struct sockaddr *)&cl)
+                            err = rdma_resolve_addr(rdma->cm_id, NULL, (struct sockaddr *)&rdma->addr, rdma->timeout)
+                            wait_for_completion_interruptible -> P9_RDMA_ADDR_RESOLVED
+                            err = rdma_resolve_route(rdma->cm_id, rdma->timeout)
+                            P9_RDMA_ROUTE_RESOLVED
+                            rdma->cq = ib_alloc_cq_any(rdma->cm_id->device, client, opts.sq_depth + opts.rq_depth + 1, IB_POLL_SOFTIRQ) -> __ib_alloc_cq_any
+                                if (dev->num_comp_vectors > 1)
+                                    comp_vector = atomic_inc_return(&counter) %	min_t(int, dev->num_comp_vectors, num_online_cpus())
+                                __ib_alloc_cq(dev, private, nr_cqe, comp_vector, poll_ctx, caller)
+                                    cq = rdma_zalloc_drv_obj(dev, ib_cq)
+                                    cq->comp_vector = comp_vector
+                                    cq->wc = kmalloc_array(IB_POLL_BATCH, sizeof(*cq->wc), GFP_KERNEL) -> 16
+                                    ret = dev->ops.create_cq(cq, &cq_attr, NULL) -> 
+                                    rdma_dim_init
+                                    switch (cq->poll_ctx)
+                                    case IB_POLL_DIRECT:
+                                        cq->comp_handler = ib_cq_completion_direct
+                                    case IB_POLL_SOFTIRQ
+                                        cq->comp_handler = ib_cq_completion_softirq
+                                            irq_poll_sched(&cq->iop)
+                                                list_add_tail(&iop->list, this_cpu_ptr(&blk_cpu_iopoll))
+                                                raise_softirq_irqoff(IRQ_POLL_SOFTIRQ)
+                                        irq_poll_init(&cq->iop, IB_POLL_BUDGET_IRQ, ib_poll_handler) -> IB：添加适当的完成队列抽象，这添加了一个抽象，允许 ULP 简单地向每个提交的 WR 传递完成对象和完成回调，并让 RDMA 核心处理如何处理完成中断和轮询 CQ 的具体细节。   详细来说，有一个新的 ib_cqe 结构，它只包含完成回调，并且可用于使用 container_of 获取包含对象。 WR 和 WC 指出它作为 wr_id 字段的替代项，类似于有多少 ULP 已经使用该字段通过强制转换来存储指针。   使用新的完成回调的驱动程序使用新的 ib_create_cq API 分配它的 CQ，除了 CQE 的数量和完成向量之外，它还采用我们如何轮询 CQE 的模式。 提供三种模式：直接用于从不接受 CQ 中断并仅轮询它们的驱动程序，软中断使用重命名的 blk-iopoll 基础设施从软中断上下文进行轮询，该基础设施负责重新配置和预算，或者为想要的消费者提供工作队列 从用户上下文中调用。   非常感谢 Sagi Grimberg，他帮助审查了 API，编写了当前版本的工作队列代码，因为我之前的两次尝试太糟糕了，并将 iSER 启动器转换为新的 API
+                                            iop->poll = ib_poll_handler <- irq_poll_softirq -> poll()
+                                                completed = __ib_process_cq(cq, budget, cq->wc, IB_POLL_BATCH)
+                                                    trace_cq_process(cq)
+                                                    while ((n = __poll_cq(cq, min_t(u32, batch,
+                                                        ib_poll_cq(cq, num_entries, wc)
+                                                            return cq->device->ops.poll_cq(cq, num_entries, wc)
+                                                if (completed < budget)
+                                                    irq_poll_complete(&cq->iop)
+                                                    irq_poll_sched(&cq->iop)
+                                                rdma_dim
+                                        ib_req_notify_cq(cq, IB_CQ_NEXT_COMP)
+                                    case IB_POLL_WORKQUEUE
+                                    case IB_POLL_UNBOUND_WORKQUEUE
+                                        cq->comp_handler = ib_cq_completion_workqueue
+                                        INIT_WORK(&cq->work, ib_cq_poll_work)
+                            rdma->pd = ib_alloc_pd(rdma->cm_id->device, 0)
+                            qp_attr.event_handler = qp_event_handler
+                            qp_attr.cap.max_send_sge = P9_RDMA_SEND_SGE
+                            qp_attr.qp_type = IB_QPT_RC
+                            rdma_create_qp
+                            rdma_connect
+                            wait_for_completion_interruptible P9_RDMA_CONNECTED
+                            client->status = Connected
+                    p9_is_proto_dotl
+                    v9fs_parse_options
+                    p9_client_attach
+                    list_add(&v9ses->slist, &v9fs_sessionlist)
+                v9fs_fill_super
+                inode = v9fs_get_inode(sb, S_IFDIR | mode, 0)
+                root = d_make_root(inode)
+                v9fs_proto_dotl
+                p9_client_stat
+                v9fs_get_acl
+                v9fs_fid_add(root, &fid)
+
+
+/* See IBTA Annex A11, servies ID bytes 4 & 5 */
+enum rdma_ucm_port_space {
+	RDMA_PS_IPOIB = 0x0002,
+	RDMA_PS_IB    = 0x013F,
+	RDMA_PS_TCP   = 0x0106,
+	RDMA_PS_UDP   = 0x0111,
+};
+
