@@ -111,9 +111,6 @@ write(fd, "pilgrimtao is cool", 18)
                                 iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin
 
 
-drivers/infiniband/core/verbs.c
-struct ib_pd *__ib_alloc_pd
-
 
 blk_mq_rdma_map_queues
 
@@ -491,6 +488,8 @@ ice_probe(struct pci_dev *pdev, const struct pci_device_id __always_unused *ent)
         ice_register_netdev
             netif_carrier_off(vsi->netdev)
             netif_tx_stop_all_queues(vsi->netdev) -> Ice：延迟netdev注册，一旦注册了netdev，相应的网络接口就可以立即被用户空间实用程序（例如NetworkManager）使用。 如果驱动程序在技术上尚未完全启动，这可能会出现问题。 将 netdev 注册移动到探测器的末尾，因为此时驱动程序数据结构和设备将按预期初始化。 但是，延迟 netdev 注册会导致 aRFS 流程失败，其中检查 netdev->reg_state == NETREG_REGISTERED 条件。 目前尚不清楚为什么要添加此检查，因此请将其删除。 本地测试并未表明此更改有任何问题。 ice_open 中的状态位检查是作为权宜之计，以防止过早的接口启动操作。 不再需要它，因此将其删除
+                for (i = 0; i < dev->num_tx_queues; i++)
+                    netif_tx_stop_queue(txq)
         ice_tc_indir_block_register -> ice：支持间接通知，实现间接通知机制以支持在隧道设备上卸载TC规则。 将间接阻止列表保留在 netdev priv 中。 通知会调用设置tc cls的花函数。 目前我们只能卸载入口类型。 其他流块活页夹不支持返回
             flow_indr_dev_register(ice_indr_setup_tc_cb, np) -> net: flow_offload：整合间接 flow_block 基础设施，隧道设备不提供 dev->netdev_ops->ndo_setup_tc(...) 接口。 隧道设备和路由控制平面没有提供将隧道和物理设备关联起来的明显方式。 该补丁允许驱动程序通过 flow_indr_dev_register() 和 flow_indr_dev_unregister() 为 tc 和 netfilter 前端注册隧道设备卸载处理程序。 前端调用 flow_indr_dev_setup_offload() 来迭代提供隧道设备硬件卸载支持的驱动程序列表，并为此隧道设备设置流块。 如果删除驱动程序模块，则间接 flow_block 最终会出现陈旧的回调引用。 模块删除路径触发 dev_shutdown() 路径来删除物理设备的 qdisc 和 flow_blocks。 然而，这对于隧道设备来说没有用，因为物理设备和隧道设备之间的关系并不明确。 此补丁引入了一个清理回调，当删除驱动程序模块以清理隧道设备 flow_block 时会调用该回调。 该补丁定义了 struct flow_block_indr 并使用 flow_block_cb 中的它来存储前端在模块删除时执行 flow_block_cb 清理所需的信息
         ice_napi_add
@@ -944,6 +943,10 @@ mlx5_add_device(intf, priv)
         |              |                  |-mlx5e_activate_rq
         |              |                     |-mlx5e_trigger_irq
         |              |-netif_device_attach(netdev);
+                            test_and_set_bit(__LINK_STATE_PRESENT, &dev->state)
+                            netif_running(dev)
+                            netif_tx_wake_all_queues
+                            __netdev_watchdog_up
 
 
 thtool 是一个命令行工具，可以查看和修改网卡配置，常用于收集网卡统计数据。 内核实现了一个通用 ethtool 接口，网卡驱动只要实现这些接口，就可以使用 ethtool 来查看或修改网络配置； 在底层，它是通过 ioctl 和设备驱动通信的
@@ -1585,14 +1588,32 @@ static inline struct sk_buff *dev_alloc_skb(unsigned int length)
 
 
 send complete:
-mlx5e_napi_poll
-    mlx5e_poll_tx_cq
+int mlx5e_napi_poll(struct napi_struct *napi, int budget)
+    struct mlx5e_channel *c = container_of(napi, struct mlx5e_channel, napi)
+    busy |= mlx5e_poll_xdpsq_cq(&c->xdpsq.cq)
         mlx5_cqwq_get_cqe
         ...
         mlx5e_txqsq_wake
             mlx5_cqwq_update_db_record
                 *wq->db = cpu_to_be32(wq->cc & 0xffffff)
             netif_tx_wake_queue
+    mlx5e_poll_ico_cq -> net/mlx5e：允许多个 RQ 使用 ICO SQ，准备创建 XSK RQ，这也需要发布 UMR。 相同的 ICO SQ 将用于两个 RQ，并通过发布 NOP 来触发中断。 UMR WQE 不能再重复使用。 提交 ab966d7e4ff98 中引入的优化（“net/mlx5e：RX，UMR WQE 的回收缓冲区”）已恢复
+    if (busy)
+        mlx5e_channel_no_affinity_change
+    for (i = 0; i < c->num_tc; i++)
+        mlx5e_handle_tx_dim
+            dim_update_sample(sq->cq.event_ctr, stats->packets, stats->bytes, &dim_sample)
+            net_dim(&sq->dim, dim_sample)
+                switch (dim->state)
+                case DIM_MEASURE_IN_PROGRESS
+                    dim_calc_stats
+                    net_dim_decision
+                    schedule_work(&dim->work)
+                case DIM_START_MEASURE
+                    dim_update_sample
+    mlx5e_handle_rx_dim
+    mlx5e_cq_arm
+    
 
 
 
@@ -1813,7 +1834,11 @@ mlx5e_probe -> static int _mlx5e_probe
             mlx5e_update_features(priv->netdev)
                 netdev_update_features(netdev) -> 重新计算设备功能
     register_netdev
-    mlx5e_dcbnl_init_app
+    mlx5e_dcbnl_init_app -> net/mlx5e：将 dcbnl dscp 添加到优先级支持，此补丁实现 dcbnl 挂钩来设置和删除 DCB 子系统定义的优先级映射中的 DSCP。 设备维护内部信任状态，需要将其设置为 DSCP 状态以执行 DSCP 到优先级映射。   当用户添加第一个 dscp topriority APP 条目时，信任状态将更改为 dscp。   当用户删除最后一个 dscp 到优先级 APP 条目时，信任状态更改为 pcp。   如果用户在同一 dscp 上向优先级 APP 条目发送多个 dscp，则最后发送的 dscp 生效。 之前发送的所有内容都将被删除。   使用 dcb_ieee_setapp/getapp 在 net/dcb APP 数据库中添加和删除 dscp 优先级 APP 条目
+        mlx5e_dcbnl_dscp_app
+            dcb_ieee_setapp(priv->netdev, &temp) -> dcb_ieee_setapp - 将 IEEE dcb 应用程序数据添加到应用程序列表，@dev：网络接口 @new：要添加的应用程序数据 这会将应用程序数据添加到列表。 只要优先级不同，同一选择器和协议就可以存在多个应用程序条目。 优先级预计为 3 位无符号整数
+                dcb_app_lookup
+                dcb_app_add
     mlx5_core_uplink_netdev_set -> net/mlx5e：在上行链路 netdev 更改时传播内部事件，每当设置/清除上行链路 netdev 时，传播新引入的事件以通知通知程序块 netdev 已添加/删除。 将 set() 帮助器从标头移至 core.c，引入clear() 和 netdev_added_event_replay() 帮助器。 最后一个将从 rdma 驱动程序调用，因此将其导出
         mlx5_blocking_notifier_call_chain MLX5_DRIVER_EVENT_UPLINK_NETDEV -> net/mlx5：通过阻塞事件通知陷阱操作，为了允许 mlx5 核心驱动程序向其使用者触发同步操作，请添加阻塞事件处理程序。 将包装器添加到blocking_notifier_[call_chain/chain_register/chain_unregister]。 为操作集添加陷阱回调并通知此更改。 该集中的以下补丁添加了此事件的侦听器
             blocking_notifier_call_chain
@@ -5624,8 +5649,74 @@ mlx5r_probe
         profile = &raw_eth_profile;
     else
         profile = &pf_profile;
-    __mlx5_ib_add
+    __mlx5_ib_add(dev, profile)
+        for (i = 0; i < MLX5_IB_STAGE_MAX; i++)
+            err = profile->stage[i].init(dev) -> run every stage's init func -> raw_eth_profile or pf_profile
     auxiliary_set_drvdata
+
+
+
+enum mlx5_ib_stages -> IB/mlx5：创建配置文件基础设施来添加和删除阶段，今天我们有一个函数，在添加 IB 接口时使用，将此函数分解为多个函数。   创建阶段和执行每个阶段的通用机制。 这是为 RDMA/IB 表示器做准备，它们可能不需要所有阶段，或者在某些阶段会以不同的方式执行操作。   此补丁不会改变任何功能
+
+const struct mlx5_ib_profile raw_eth_profile = {
+	STAGE_CREATE(MLX5_IB_STAGE_INIT,
+		     mlx5_ib_stage_init_init,
+		     mlx5_ib_stage_init_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_FS,
+		     mlx5_ib_fs_init,
+		     mlx5_ib_fs_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_CAPS,
+		     mlx5_ib_stage_caps_init,
+		     mlx5_ib_stage_caps_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_NON_DEFAULT_CB,
+		     mlx5_ib_stage_raw_eth_non_default_cb,
+		     NULL),
+	STAGE_CREATE(MLX5_IB_STAGE_ROCE,
+		     mlx5_ib_roce_init,
+		     mlx5_ib_roce_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_QP,
+		     mlx5_init_qp_table,
+		     mlx5_cleanup_qp_table),
+	STAGE_CREATE(MLX5_IB_STAGE_SRQ,
+		     mlx5_init_srq_table,
+		     mlx5_cleanup_srq_table),
+	STAGE_CREATE(MLX5_IB_STAGE_DEVICE_RESOURCES,
+		     mlx5_ib_dev_res_init,
+		     mlx5_ib_dev_res_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_DEVICE_NOTIFIER,
+		     mlx5_ib_stage_dev_notifier_init,
+		     mlx5_ib_stage_dev_notifier_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_COUNTERS,
+		     mlx5_ib_counters_init,
+		     mlx5_ib_counters_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_CONG_DEBUGFS,
+		     mlx5_ib_stage_cong_debugfs_init,
+		     mlx5_ib_stage_cong_debugfs_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_UAR,
+		     mlx5_ib_stage_uar_init,
+		     mlx5_ib_stage_uar_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_BFREG,
+		     mlx5_ib_stage_bfrag_init,
+		     mlx5_ib_stage_bfrag_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_PRE_IB_REG_UMR,
+		     NULL,
+		     mlx5_ib_stage_pre_ib_reg_umr_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_WHITELIST_UID,
+		     mlx5_ib_devx_init,
+		     mlx5_ib_devx_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_IB_REG,
+		     mlx5_ib_stage_ib_reg_init,
+		     mlx5_ib_stage_ib_reg_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_POST_IB_REG_UMR,
+		     mlx5_ib_stage_post_ib_reg_umr_init,
+		     NULL),
+	STAGE_CREATE(MLX5_IB_STAGE_DELAY_DROP,
+		     mlx5_ib_stage_delay_drop_init,
+		     mlx5_ib_stage_delay_drop_cleanup),
+	STAGE_CREATE(MLX5_IB_STAGE_RESTRACK,
+		     mlx5_ib_restrack_init,
+		     NULL),
+};
 
 
 ...
@@ -6067,8 +6158,6 @@ Thread 3 hit Breakpoint 2, ib_uverbs_alloc_pd (attrs=0xffffc900045f3c88) at driv
   8    Thread 1.8 (CPU#7 [running]) 0x00007f99178f6142 in ?? () at drivers/infiniband/core/uverbs_cmd.c:3306
 
 
-ibv_alloc_pd
-
 
 
 ib_uverbs_ex_create_flow
@@ -6467,6 +6556,80 @@ static const struct ib_device_ops rxe_dev_ops = {
 	INIT_RDMA_OBJ_SIZE(ib_srq, rxe_srq, ibsrq),
 	INIT_RDMA_OBJ_SIZE(ib_ucontext, rxe_ucontext, ibuc),
 	INIT_RDMA_OBJ_SIZE(ib_mw, rxe_mw, ibmw),
+};
+
+
+
+mlx5_ib_stage_caps_init
+    ib_set_device_ops(&dev->ib_dev, &mlx5_ib_dev_ops)
+static const struct ib_device_ops mlx5_ib_dev_ops = {
+	.owner = THIS_MODULE,
+	.driver_id = RDMA_DRIVER_MLX5,
+	.uverbs_abi_ver	= MLX5_IB_UVERBS_ABI_VERSION,
+
+	.add_gid = mlx5_ib_add_gid,
+	.alloc_mr = mlx5_ib_alloc_mr,
+	.alloc_mr_integrity = mlx5_ib_alloc_mr_integrity,
+	.alloc_pd = mlx5_ib_alloc_pd,
+	.alloc_ucontext = mlx5_ib_alloc_ucontext,
+	.attach_mcast = mlx5_ib_mcg_attach,
+	.check_mr_status = mlx5_ib_check_mr_status,
+	.create_ah = mlx5_ib_create_ah,
+	.create_cq = mlx5_ib_create_cq,
+	.create_qp = mlx5_ib_create_qp,
+	.create_srq = mlx5_ib_create_srq,
+	.create_user_ah = mlx5_ib_create_ah,
+	.dealloc_pd = mlx5_ib_dealloc_pd,
+	.dealloc_ucontext = mlx5_ib_dealloc_ucontext,
+	.del_gid = mlx5_ib_del_gid,
+	.dereg_mr = mlx5_ib_dereg_mr,
+	.destroy_ah = mlx5_ib_destroy_ah,
+	.destroy_cq = mlx5_ib_destroy_cq,
+	.destroy_qp = mlx5_ib_destroy_qp,
+	.destroy_srq = mlx5_ib_destroy_srq,
+	.detach_mcast = mlx5_ib_mcg_detach,
+	.disassociate_ucontext = mlx5_ib_disassociate_ucontext,
+	.drain_rq = mlx5_ib_drain_rq,
+	.drain_sq = mlx5_ib_drain_sq,
+	.device_group = &mlx5_attr_group,
+	.enable_driver = mlx5_ib_enable_driver,
+	.get_dev_fw_str = get_dev_fw_str,
+	.get_dma_mr = mlx5_ib_get_dma_mr,
+	.get_link_layer = mlx5_ib_port_link_layer,
+	.map_mr_sg = mlx5_ib_map_mr_sg,
+	.map_mr_sg_pi = mlx5_ib_map_mr_sg_pi,
+	.mmap = mlx5_ib_mmap,
+	.mmap_free = mlx5_ib_mmap_free,
+	.modify_cq = mlx5_ib_modify_cq,
+	.modify_device = mlx5_ib_modify_device,
+	.modify_port = mlx5_ib_modify_port,
+	.modify_qp = mlx5_ib_modify_qp,
+	.modify_srq = mlx5_ib_modify_srq,
+	.poll_cq = mlx5_ib_poll_cq,
+	.post_recv = mlx5_ib_post_recv_nodrain,
+	.post_send = mlx5_ib_post_send_nodrain,
+	.post_srq_recv = mlx5_ib_post_srq_recv,
+	.process_mad = mlx5_ib_process_mad,
+	.query_ah = mlx5_ib_query_ah,
+	.query_device = mlx5_ib_query_device,
+	.query_gid = mlx5_ib_query_gid,
+	.query_pkey = mlx5_ib_query_pkey,
+	.query_qp = mlx5_ib_query_qp,
+	.query_srq = mlx5_ib_query_srq,
+	.query_ucontext = mlx5_ib_query_ucontext,
+	.reg_user_mr = mlx5_ib_reg_user_mr,
+	.reg_user_mr_dmabuf = mlx5_ib_reg_user_mr_dmabuf,
+	.req_notify_cq = mlx5_ib_arm_cq,
+	.rereg_user_mr = mlx5_ib_rereg_user_mr,
+	.resize_cq = mlx5_ib_resize_cq,
+
+	INIT_RDMA_OBJ_SIZE(ib_ah, mlx5_ib_ah, ibah),
+	INIT_RDMA_OBJ_SIZE(ib_counters, mlx5_ib_mcounters, ibcntrs),
+	INIT_RDMA_OBJ_SIZE(ib_cq, mlx5_ib_cq, ibcq),
+	INIT_RDMA_OBJ_SIZE(ib_pd, mlx5_ib_pd, ibpd),
+	INIT_RDMA_OBJ_SIZE(ib_qp, mlx5_ib_qp, ibqp),
+	INIT_RDMA_OBJ_SIZE(ib_srq, mlx5_ib_srq, ibsrq),
+	INIT_RDMA_OBJ_SIZE(ib_ucontext, mlx5_ib_ucontext, ibucontext),
 };
 
 
@@ -9833,7 +9996,7 @@ arch/arm64/mm/context.c
 
 
 // 全局变量hugetlb_max_hstate是巨型页池的数量
-int hugetlb_max_hstate __read_mostly;
+int hugetlb_max_hstate __read_mostly; -> 我们可以将经常需要被读取的数据定义为 __read_mostly类型，这样Linux内核被加载时，该数据将自动被存放到Cache中，以提高整个系统的执行效率。另一方面，如果所在的平台没有Cache，或者虽然有Cache，但并不提供存放数据的接口(也就是并不允许人工放置数据在Cache中)，这样定义为 __read_mostly类型的数据将不能存放在Linux内核中，甚至也不能够被加载到系统内存去执行，将造成Linux 内核启动失败
 // 全局变量是默认巨型页池的索引
 unsigned int default_hstate_idx;
 // 全局数组hstates是巨型页池数组
@@ -10564,7 +10727,7 @@ ib_dispatch_event
 
 
 ib_alloc_cq -> __ib_alloc_cq
-    rdma_dim_init -> struct dim - 动态中断调节 (DIM) 的主要结构。用于保存有关特定 DIM 实例的所有信息。 @state：算法状态（见下文） @prev_stats：上一次迭代的测量速率（用于比较） @start_sample：当前迭代开始时的采样数据 @measuring_sample：用于更新当前事件的 &dim_sample @work：要执行的工作 @priv：指向暗淡结构的指针 @profile_ix：当前审核配置文件 @mode：CQ 周期计数模式 @tune_state：算法调整状态（见下文） @steps_right：迈向更高审核的步数 @steps_left ：降低适度程度所采取的步数 @tired：停车深度计数器 */
+    rdma_dim_init -> struct dim - 动态中断调节 (DIM) 的主要结构。用于保存有关特定 DIM 实例的所有信息。 @state：算法状态（见下文） @prev_stats：上一次迭代的测量速率（用于比较） @start_sample：当前迭代开始时的采样数据 @measuring_sample：用于更新当前事件的 &dim_sample @work：要执行的工作 @priv：指向暗淡结构的指针 @profile_ix：当前审核配置文件 @mode：CQ 周期计数模式 @tune_state：算法调整状态（见下文） @steps_right：迈向更高审核的步数 @steps_left ：降低适度程度所采取的步数 @tired：停车深度计数器 -> 内核文档: https://docs.kernel.org/networking/net_dim.html
         dim->state = DIM_START_MEASURE -> enum dim_tune_state - DIM 算法调整状态，这些将确定算法应执行哪个操作。 @DIM_PARKING_ON_TOP：算法找到了一个局部最高点 - 出现显着差异时退出 @DIM_PARKING_TIRED：算法找到了一个深度最高点 - 如果累了 > 0，则不退出 @DIM_GOING_RIGHT：算法当前正在尝试更高的调节级别 @DIM_GOING_LEFT：算法当前正在尝试更低的调节级别 调节级别 */ m dim_tune_state {
         INIT_WORK(&dim->work, ib_cq_rdma_dim_work) -> DMA/核心：为 ULP 提供 RDMA DIM 支持，在 infiniband 驱动程序中添加了应用 rdma_dim 自适应调节的接口。 现在有一个特殊函数用于分配使用 rdma_dim 的 ib_cq。   使用 null_blk 设备在 Mellanox 交换机上的两个具有 56 个内核的同等终端主机之间运行基于 NVMf 的 FIO 基准测试的性能改进（ConnectX-5 100GbE、x86）, rdma_dim 算法旨在以通用方式测量流量调节的有效性，因此应适用于所有 RDMA 存储协议。   根据大量测试后看到的性能改进，将 rdma_dim 配置为默认选项
             cq->device->ops.modify_cq(cq, comps, usec) -> mlx5_ib_modify_cq
@@ -10577,17 +10740,19 @@ ib_alloc_cq -> __ib_alloc_cq
 ib_cq_poll_work
     rdma_dim
         dim_update_sample_with_comps
+            dim_update_sample
         switch (dim->state)
-        
+        case DIM_START_MEASURE
+            dim->state = DIM_MEASURE_IN_PROGRESS;
+            dim_update_sample_with_comps
+        case DIM_MEASURE_IN_PROGRESS:
+            dim_calc_stats -> dim_calc_stats - 计算两个样本之间的差异， @start：开始样本 @end：结束样本 @curr_stats：样本之间的增量 * 计算两个样本之间的增量（以数据速率表示）。   考虑计数器环绕。   返回boolean表示curr_stats是否可靠
+                delta_us = ktime_us_delta -> 可重用的时间差函数
+                npkts = BIT_GAP(BITS_PER_TYPE(u32), end->pkt_ctr, start->pkt_ctr)
+                curr_stats->cpe_ratio = DIV_ROUND_DOWN_ULL(curr_stats->cpms * 100, curr_stats->epms)
+            if (rdma_dim_decision(&curr_stats, dim))
+                schedule_work(&dim->work)
         schedule_work(&dim->work)
-
-
-
-net_dim
-    schedule_work(&dim->work)
-
-
-
 
 
 module_init(p9_trans_rdma_init);
@@ -10673,7 +10838,9 @@ module_init(init_v9fs)
                                     case IB_POLL_UNBOUND_WORKQUEUE
                                         cq->comp_handler = ib_cq_completion_workqueue
                                         INIT_WORK(&cq->work, ib_cq_poll_work)
-                            rdma->pd = ib_alloc_pd(rdma->cm_id->device, 0)
+                            rdma->pd = ib_alloc_pd(rdma->cm_id->device, 0) -> __ib_alloc_pd
+                                device->ops.alloc_pd(pd, NULL)
+                                mr = pd->device->ops.get_dma_mr(pd, mr_access_flags)
                             qp_attr.event_handler = qp_event_handler
                             qp_attr.cap.max_send_sge = P9_RDMA_SEND_SGE
                             qp_attr.qp_type = IB_QPT_RC
@@ -10701,4 +10868,293 @@ enum rdma_ucm_port_space {
 	RDMA_PS_TCP   = 0x0106,
 	RDMA_PS_UDP   = 0x0111,
 };
+
+
+可测量的动态中断调节比率
+struct dim_stats {
+	int ppms; /* packets per msec */
+	int bpms; /* bytes per msec */
+	int epms; /* events per msec */
+	int cpms; /* completions per msec */
+	int cpe_ratio; /* ratio of completions to events */
+};
+
+
+
+#define IS_SIGNIFICANT_DIFF(val, ref) \
+	((ref) && (((100UL * abs((val) - (ref))) / (ref)) > 10)) -> 真实值与参考值之间的差异是否证明采取行动是合理的。 我们认为 10% 的差异是显着的
+
+
+
+rdma_dim - 运行自适应调节。@dim：审核结构。 @completions：本轮收集的完成数。 每次调用 rdma_dim 都会获取已收集的最新完成数量，并将其计为新事件。 一旦收集到足够的事件，算法就会决定新的审核级别
+配置 DIM 参数列表, 动态中断调节（DIM, Dynamic Interrupt Moderation）是一种在 Linux 内核中实现的技术，以 NetDIM 库的形式提供，旨在优化和调整中断频率，以提升网络设备的性能和效率，其被广泛应用于各现代网卡中。  然而，不同的网卡具有多样化的候选中断参数列表需求，尤其是 virtio 网卡的后端可能由不同软件设备或硬件设备实现，所以 DIM 在 virtio-net 上的性能并未符合预期，这在一定程度上正是不当的中断配置列表造成的。同时，其他的现代网卡例如 ICE、IDPF 等也对其 DIM 参数列表进行了自定义配置。  基于此，高性能网络小组正在推动基于用户态工具 ethtool 配置中断列表的方法 [2]，以允许用户针对各自设备的特定需求，灵活地调节 DIM，从而实现最好的网络吞吐和时延。  [2] https://lore.kernel.org/all/1712059988-7705-1-git-send-email-hengqi@linux.alibaba.com/
+NetDIM 库为许多现代网卡提供了出色的加速。 然而，DIM 的默认配置文件限制了其针对不同 NIC 的最大功能，因此有必要提供一种可以自定义配置 NIC 的方法。   目前与驱动程序的交互仍然基于常用的“ethtool -C”。 驱动程序根据.supported_coalesce_params声明其支持的参数，并在.set_coalesce和.get_coalesce中实现驱动程序相关的自定义限制
+
+
+
+
+HTB, 分层 QoS 硬件卸载, https://lore.kernel.org/netdev/FC053E80-74C9-4884-92F1-4DBEB5F0C81A@mellanox.com/
+mlx5 support htb commit: https://github.com/ssbandjl/linux/commit/214baf22870cfa437522f3bd4fbae56338674b04
+发件人：Yossi Kuperman <yossiku@mellanox.com>,收件人：“netdev@vger.kernel.org”<netdev@vger.kernel.org> 抄送：Jamal Hadi Salim <jhs@mojatatu.com>， 	Jiri Pirko <jiri@mellanox.com>、Rony Efraim <ronye@mellanox.com>、 	Maxim Mikityanskiy <maximmi@mellanox.com>， 	约翰·法斯塔本德（John Fastabend）<john.fastabend@gmail.com>， 	Eran Ben Elisha <eranbe@mellanox.com> 主题：[RFC] 分层 QoS 硬件卸载 (HTB) 日期：2020 年 1 月 30 日星期四 16:20:38 +0000	 [线程概述] 消息 ID：<FC053E80-74C9-4884-92F1-4DBEB5F0C81A@mellanox.com>（原始）  下面简要描述了我们卸载 HTB 功能的计划。  HTB qdisc 允许您使用一条物理链路模拟多条较慢的链路。这是通过配置分层 QoS 树来实现的；每个树节点对应一个类。过滤器用于将流分类到不同的类。HTB 非常灵活且用途广泛，但需要付出代价。HTB 无法扩展，并且会消耗大量 CPU 和内存。我们的目标是将 HTB 功能卸载到硬件上，并为用户提供 TC 子系统提供的灵活性和常规工具，同时扩展到数千个流量类别并保持线速性能。   Mellanox 硬件可以支持分层速率限制；速率限制是按硬件队列进行的。在我们提出的解决方案中，流分类是在软件中进行的。通过将分类移至线程安全且不需要锁定的 clsact 出口挂钩，我们避免了由单个 qdisc 锁引起的争用。此外，在选择网络设备的 TX 队列之前执行 clsact 过滤器，使驱动程序有机会将类转换为适当的硬件队列。请注意，用户需要以略有不同的方式配置过滤器；将它们应用于 clsact 而不是 HTB 本身，并将优先级设置为所需的类 ID。  例如，以下两个过滤器是等效的： 	1. tc filter add dev eth0 parent 1:0 protocol ip flower dst_port 80 classid 1:10 	2. tc filter add dev eth0 egress protocol ip flower dst_port 80 action skbedit priority 1:10  注意：为了支持上述过滤器，不需要对上游内核或 iproute2 包进行任何代码更改。  此外，当前 HTB 实现最令人担忧的方面是它缺乏对多队列的支持。所有网络设备的 TX 队列都指向同一个 HTB 实例，导致高自旋锁争用。这种争用（可能）抵消了引入卸载所预期的整体性能提升。我们应该修改 HTB，使其呈现为 mq qdisc。默认情况下，mq qdisc 为每个由下层设备公开的 TX 队列分配一个简单的 fifo qdisc。这仅在配置了硬件卸载时才会发生，否则，HTB 的行为将与往常一样。数据路径上没有 HTB 代码；与常规流量相比，唯一的开销是在 clsact 处进行的分类。请注意，此设计会导致完全卸载——不会回退到软件；无论如何，考虑到兄弟之间的借用，部分卸载分层树并非易事。   总结一下：对于每个 HTB 叶类，驱动程序将分配一个特殊队列并将其与相应的网络设备 TX 队列匹配（增加 real_num_tx_queues）。任何此类 TX 队列都将附加一个唯一的 fifo qdisc。分类仍将在软件中进行，但在 clsact egress 钩子上进行。这样，我们可以扩展到数千个类，同时保持线速性能并减少 CPU 开销。  任何反馈都将非常感谢。  干杯， 库珀曼
+
+
+
+dcb: DCB (Data Center Bridging)
+
+
+
+
+io_uring,
+https://www.scylladb.com/2020/05/05/how-io_uring-and-ebpf-will-revolutionize-programming-in-linux/
+tools/testing/selftests/net/io_uring_zerocopy_tx.c -> main
+    ...
+    io_uring_submit
+
+
+DORMANT: 休眠状态
+
+
+mlx5_ib_stage_init_init
+    dev->ib_dev.node_type = RDMA_NODE_IB_CA
+    dev->ib_dev.lag_flags = RDMA_LAG_FLAGS_HASH_ALL_SLAVES
+    mlx5r_cmd_query_special_mkeys -> MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS
+    mlx5r_macsec_init_gids_and_devlist
+        mlx5_is_macsec_roce_supported
+        dev->port[i].reserved_gids = kcalloc
+        INIT_LIST_HEAD(&dev->macsec.macsec_devices_list)
+    mlx5_ib_init_multiport_master -> {net, IB}/mlx5：管理多端口 RoCE 的端口关联，调用 mlx5_ib_add 时确定要添加的 mlx5 核心设备是否能够进行双端口 RoCE 操作。 如果是，请使用 num_vhca_ports 和affiliate_nic_vport_criteria 功能确定它是主设备还是从设备。   如果该设备是从属设备，请尝试找到与其关联的主设备。 可以关联的设备将共享系统映像 GUID。 如果没有找到，请将其放入非关联端口列表中。 如果找到主设备，则通过在 NIC vport 上下文中配置端口从属关系将端口绑定到它。   同样，当调用 mlx5_ib_remove 时确定端口类型。 如果它是从端口，则将其与主设备取消关联，否则只需将其从非关联端口列表中删除即可。   即使第二个端口不可用于关联，IB 设备也会注册为多端口设备。 当第二个端口稍后附属时，必须刷新 GID 缓存才能获取缓存中第二个端口的默认 GID。 导出roce_rescan_device以提供在绑定新端口后刷新缓存的机制。   在多端口配置中，所有 IB 对象（QP、MR、PD 等）相关命令应流过主站 mlx5_core_dev，其他命令必须发送到从端口 mlx5_core_mdev，提供一个接口来获取非 IB 对象命令的正确 mdev
+        mlx5_core_is_mp_master
+        mlx5_query_nic_vport_system_image_guid
+        mlx5_nic_vport_enable_roce
+        list_add_tail(&dev->ib_dev_list, &mlx5_ib_dev_list)
+    set_has_smi_cap
+    mlx5_query_max_pkeys
+        mlx5_query_mad_ifc_smp_attr_node_info
+            ib_init_query_mad
+                mad->method = IB_MGMT_METHOD_GET
+            MLX5_CMD_OP_MAD_IFC
+    mlx5_use_mad_ifc
+    get_ext_port_caps
+    mlx5_comp_vectors_max
+    INIT_LIST_HEAD(&dev->qp_list)
+
+
+linux rdma or infiniband patch: https://patchwork.kernel.org/project/linux-rdma/list/?submitter=55441&state=*&archive=both&param=4&order=delegate
+
+
+mlx5_ib_fs_init
+    ib_set_device_ops(&dev->ib_dev, &flow_ops)
+static const struct ib_device_ops flow_ops = {
+	.create_flow = mlx5_ib_create_flow,
+	.destroy_flow = mlx5_ib_destroy_flow,
+	.destroy_flow_action = mlx5_ib_destroy_flow_action,
+};
+
+
+
+mlx5_ib_reg_user_mr
+    IB_ACCESS_ON_DEMAND
+        create_user_odp_mr
+            mlx5r_odp_create_eq -> RDMA/mlx5：仅在创建 ODP MR 时创建 ODP EQ，如果用户不使用 ODP MR，则无需创建 ODP EQ。 因此，仅在创建第一个 ODP MR 时创建它。 仅当设备卸载时，该 EQ 才会被破坏。 这将减少每个设备创建的均衡器数量。 例如：如果我们创建 1K 设备（SF/VF/等），那么我们会将 EQ 数量减少 1K
+                INIT_WORK(&eq->work, mlx5_ib_eq_pf_action)
+                    mempool_refill(eq->pool)
+                    mlx5_ib_eq_pf_process
+                        mlx5_eq_get_eqe
+                        INIT_WORK(&pfault->work, mlx5_ib_eqe_pf_action)
+                        mlx5_eq_update_cc
+                        mlx5_eq_update_ci
+                eq->pool = mempool_create_kmalloc_pool
+                eq->wq = alloc_workqueue("mlx5_ib_page_fault",
+                mlx5_eq_create_generic
+                mlx5_eq_enable
+            mlx5_ib_alloc_implicit_mr
+                mlx5_mr_cache_alloc
+                    struct mlx5_cache_ent *ent = mkey_cache_ent_from_rb_key(dev, rb_key)
+                ib_umem_odp_alloc_implicit
+                mlx5r_umr_update_xlt
+                mlx5r_store_odp_mkey
+            mlx5r_umr_can_load_pas
+            ib_umem_odp_get
+            alloc_cacheable_mr
+            xa_init(&mr->implicit_children)
+            mlx5r_store_odp_mkey
+            mlx5_ib_init_odp_mr
+    umem = ib_umem_get
+    create_real_mr
+        mlx5r_umr_can_load_pas
+        alloc_cacheable_mr
+            mlx5_umem_dmabuf_default_pgsz
+            ent = mkey_cache_ent_from_rb_key(dev, rb_key)
+            _mlx5_mr_cache_alloc(dev, ent, access_flags)
+        reg_create
+        mlx5r_umr_update_mr_pas
+
+
+huawei, hisilicon, 
+module_init(hns_roce_hw_v2_init);
+
+
+static const struct ib_device_ops hns_roce_dev_ops = {
+	.owner = THIS_MODULE,
+	.driver_id = RDMA_DRIVER_HNS,
+	.uverbs_abi_ver = 1,
+	.uverbs_no_driver_id_binding = 1,
+
+	.get_dev_fw_str = hns_roce_get_fw_ver,
+	.add_gid = hns_roce_add_gid,
+	.alloc_pd = hns_roce_alloc_pd,
+	.alloc_ucontext = hns_roce_alloc_ucontext,
+	.create_ah = hns_roce_create_ah,
+	.create_user_ah = hns_roce_create_ah,
+	.create_cq = hns_roce_create_cq,
+	.create_qp = hns_roce_create_qp,
+	.dealloc_pd = hns_roce_dealloc_pd,
+	.dealloc_ucontext = hns_roce_dealloc_ucontext,
+	.del_gid = hns_roce_del_gid,
+	.dereg_mr = hns_roce_dereg_mr,
+	.destroy_ah = hns_roce_destroy_ah,
+	.destroy_cq = hns_roce_destroy_cq,
+	.disassociate_ucontext = hns_roce_disassociate_ucontext,
+	.get_dma_mr = hns_roce_get_dma_mr,
+	.get_link_layer = hns_roce_get_link_layer,
+	.get_port_immutable = hns_roce_port_immutable,
+	.mmap = hns_roce_mmap,
+	.mmap_free = hns_roce_free_mmap,
+	.modify_device = hns_roce_modify_device,
+	.modify_qp = hns_roce_modify_qp,
+	.query_ah = hns_roce_query_ah,
+	.query_device = hns_roce_query_device,
+	.query_pkey = hns_roce_query_pkey,
+	.query_port = hns_roce_query_port,
+	.reg_user_mr = hns_roce_reg_user_mr,
+
+	INIT_RDMA_OBJ_SIZE(ib_ah, hns_roce_ah, ibah),
+	INIT_RDMA_OBJ_SIZE(ib_cq, hns_roce_cq, ib_cq),
+	INIT_RDMA_OBJ_SIZE(ib_pd, hns_roce_pd, ibpd),
+	INIT_RDMA_OBJ_SIZE(ib_qp, hns_roce_qp, ibqp),
+	INIT_RDMA_OBJ_SIZE(ib_ucontext, hns_roce_ucontext, ibucontext),
+};
+
+
+dma_buf_export
+drivers/gpu/drm/i915/gem/selftests/mock_dmabuf.c
+
+
+i915_gem_dmabuf_mock_selftests
+    static const struct i915_subtest tests[] = {
+		SUBTEST(igt_dmabuf_export),
+		SUBTEST(igt_dmabuf_import_self),
+		SUBTEST(igt_dmabuf_import),
+		SUBTEST(igt_dmabuf_import_ownership),
+		SUBTEST(igt_dmabuf_export_vmap),
+	};
+    mock_gem_device
+        pdev = kzalloc(sizeof(*pdev), GFP_KERNEL)
+        pdev->class = PCI_BASE_CLASS_DISPLAY << 16
+        dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))
+        devres_open_group
+        devm_drm_dev_alloc
+        i915_params_copy
+        intel_device_info_driver_create
+        intel_display_device_probe
+        ...
+    i915_subtests(tests, i915) -> __i915_subtests
+
+    mock_destroy_device
+
+selftest(dmabuf, i915_gem_dmabuf_mock_selftests)
+
+drivers/gpu/drm/i915/selftests/i915_mock_selftests.h
+
+drivers/gpu/drm/i915/i915_module.c
+module_init(i915_init);
+    for (i = 0; i < ARRAY_SIZE(init_funcs); i++)
+        err = init_funcs[i].init() -> i915_mock_selftests
+static const struct {
+   int (*init)(void);
+   void (*exit)(void);
+} init_funcs[] = {
+	{ .init = i915_check_nomodeset },
+	{ .init = i915_active_module_init,
+	  .exit = i915_active_module_exit },
+	{ .init = i915_context_module_init,
+	  .exit = i915_context_module_exit },
+	{ .init = i915_gem_context_module_init,
+	  .exit = i915_gem_context_module_exit },
+	{ .init = i915_objects_module_init,
+	  .exit = i915_objects_module_exit },
+	{ .init = i915_request_module_init,
+	  .exit = i915_request_module_exit },
+	{ .init = i915_scheduler_module_init,
+	  .exit = i915_scheduler_module_exit },
+	{ .init = i915_vma_module_init,
+	  .exit = i915_vma_module_exit },
+	{ .init = i915_vma_resource_module_init,
+	  .exit = i915_vma_resource_module_exit },
+	{ .init = i915_mock_selftests },
+	{ .init = i915_pmu_init,
+	  .exit = i915_pmu_exit },
+	{ .init = i915_pci_register_driver,
+	  .exit = i915_pci_unregister_driver },
+	{ .init = i915_perf_sysctl_register,
+	  .exit = i915_perf_sysctl_unregister },
+};
+
+int i915_mock_selftests(void)
+    run_selftests(mock, NULL) -> __run_selftests(#x, x##_selftests, ARRAY_SIZE(x##_selftests), data) -> __run_selftests("mock", mock_selftests, ARRAY_SIZE(mock_selftests), ((void *)0))
+
+        i915_selftest.random_seed = get_random_u32()
+        set_default_test_all
+        cond_resched
+        signal_pending
+        st->live(data)
+        else
+            st->mock()
+        
+#define selftest(n, f) [mock_##n] = { .name = #n, { .mock = f } },
+static struct selftest mock_selftests[] = {
+#include "i915_mock_selftests.h"
+};
+#undef selftest
+
+selftest(sanitycheck, i915_mock_sanitycheck) /* keep first (igt selfcheck) */
+selftest(shmem, shmem_utils_mock_selftests)
+selftest(fence, i915_sw_fence_mock_selftests)
+selftest(scatterlist, scatterlist_mock_selftests)
+selftest(syncmap, i915_syncmap_mock_selftests)
+selftest(uncore, intel_uncore_mock_selftests)
+selftest(ring, intel_ring_mock_selftests)
+selftest(engine, intel_engine_cs_mock_selftests)
+selftest(timelines, intel_timeline_mock_selftests)
+selftest(requests, i915_request_mock_selftests)
+selftest(objects, i915_gem_object_mock_selftests)
+selftest(phys, i915_gem_phys_mock_selftests)
+selftest(dmabuf, i915_gem_dmabuf_mock_selftests)
+selftest(vma, i915_vma_mock_selftests)
+selftest(evict, i915_gem_evict_mock_selftests)
+selftest(gtt, i915_gem_gtt_mock_selftests)
+selftest(hugepages, i915_gem_huge_page_mock_selftests)
+selftest(memory_region, intel_memory_region_mock_selftests)
+
+
+igt_dmabuf_export
+    obj = i915_gem_object_create_shmem(i915, PAGE_SIZE)
+    i915_gem_prime_export
+        drm_gem_dmabuf_export
+            dma_buf_export
+            drm_dev_get
+            drm_gem_object_get
+    i915_gem_object_put
+    dma_buf_put(dmabuf)
+
+scatterlist_mock_selftests
+    igt_sg_alloc
+        for_each_prime_number(prime, max_order) -> for_each_prime_number - 迭代每个素数直至达到某个值 @prime：本次迭代中的当前素数 @max：上限 从第一个素数 2 开始迭代每个素数直至达到 @max 值。在每次迭代中，@prime 都设置为当前素数。@max 应小于 ULONG_MAX 以确保终止。若要在第一次迭代中将 @prime 设置为 1，请使用 for_each_prime_number_from()
+            prandom_seed_state
+            alloc_table
+            expect_pfn_sgtable
+                expect_pfn_sg
+                expect_pfn_sg_page_iter
+                expect_pfn_sgtiter
+    igt_sg_trim
 
