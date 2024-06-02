@@ -6773,6 +6773,7 @@ NETLINK_RDMA -> https://github.com/ssbandjl/linux/commit/4fdb3bb723db469717c6d38
 
 
 drivers/infiniband/core/device.c
+IB协议栈初始化, 包含mad, gid等
 fs_initcall(ib_core_init); -> RDMA/core：将 sysfs 条目视图限制为 init_net，这是一个准备补丁，用于在网络命名空间中提供 rdma 设备的隔离。 第一步，使 rdma 设备仅在 init net 命名空间中可见。 后续补丁将使用 compat ib_core_device 设备/sysfs 树在多个网络命名空间中启用 rdma 设备可见性。 由于IB子系统依赖于net stack，因此需要在netdev之后初始化，并且由于它支持设备，因此需要在设备子系统之前初始化； 因此，将 initcall 顺序更改为 fs_initcall，以便在内核映像中编译 ib_core 时遵循正确的 init 顺序
 static int __init ib_core_init(void)
     ib_wq = alloc_workqueue("infiniband", 0, 0)
@@ -6879,10 +6880,50 @@ static struct ib_client mad_client = {
 };
 
 
-ib_mad_init_device
+ib_mad_init_device -> RDMA：调用 add() 时允许 ib_client 失败，添加客户端时不允许失败，但所有客户端在其添加例程中都有各种失败路径。这会产生非常边缘的情况，即添加客户端时失败，并且未设置 client_data。核心代码仍将使用 NULL client_data 调用其他以 client_data 为中心的操作，如 remove()、rename()、get_nl_info() 和 get_net_dev_by_params() - 这令人困惑且出乎意料。如果 add() 回调失败，则不要再为设备调用任何客户端操作，甚至删除。删除操作回调中所有现在多余的 NULL client_data 检查。更新所有 add() 回调以适当返回错误代码。EOPNOTSUPP 用于 ULP 不支持 ib_device 的情况 - 例如因为它仅适用于 IB
     rdma_start_port
-    ib_mad_port_open
-    ib_agent_port_open
+    for (i = start; i <= rdma_end_port(device); i++)
+        rdma_cap_ib_mad
+        ib_mad_port_open
+            char name[sizeof "ib_mad123"]
+            init_mad_qp(port_priv, &port_priv->qp_info[0]);
+                init_mad_queue(qp_info, &qp_info->send_queue)
+                init_mad_queue(qp_info, &qp_info->recv_queue)
+                INIT_LIST_HEAD(&qp_info->overflow_list)
+            init_mad_qp(port_priv, &port_priv->qp_info[1]);
+            rdma_cap_ib_smi
+            port_priv->pd = ib_alloc_pd(device, 0)
+            port_priv->cq = ib_alloc_cq
+            create_mad_qp(&port_priv->qp_info[0], IB_QPT_SMI)
+                qp_info->qp = ib_create_qp
+            create_mad_qp(&port_priv->qp_info[1], IB_QPT_GSI)
+            list_add_tail(&port_priv->port_list, &ib_mad_port_list)
+            ib_mad_port_start
+                ib_find_pkey
+                ib_modify_qp IB_QPS_RTR
+                ib_modify_qp IB_QPS_RTS
+                ib_req_notify_cq
+                for (i = 0; i < IB_MAD_QPS_CORE; i++)
+                    ib_mad_post_receive_mads
+                        sg_list.addr = ib_dma_map_single(qp_info->port_priv->device,
+                        mad_priv->header.mad_list.cqe.done = ib_mad_recv_done
+                        list_add_tail(&mad_priv->header.mad_list.list, &recv_queue->list)
+                        ib_post_recv
+        ib_agent_port_open
+            port_priv->agent[0] = ib_register_mad_agent(device, port_num, IB_QPT_SMI, NULL, 0, &agent_send_handler, NULL, NULL, 0)
+                get_spl_qp_index
+                dev_dbg_ratelimited
+                ib_is_mad_class_rmpp
+                ib_get_mad_port
+                INIT_DELAYED_WORK(&mad_agent_priv->timed_work, timeout_sends)
+                INIT_WORK(&mad_agent_priv->local_work, local_completions)
+                ib_mad_agent_security_setup
+                xa_alloc_cyclic ib_mad_client_next
+                convert_mgmt_class
+                add_nonoui_reg_req
+                add_oui_reg_req
+            port_priv->agent[1] = ib_register_mad_agent
+            list_add_tail(&port_priv->port_list, &ib_agent_port_list)
 
 
 
@@ -11157,4 +11198,495 @@ scatterlist_mock_selftests
                 expect_pfn_sg_page_iter
                 expect_pfn_sgtiter
     igt_sg_trim
+
+
+
+infiniband
+Kconfig
+menuconfig INFINIBAND
+INFINIBAND_ADDR_TRANS_CONFIGFS -> IB/cma：为 rdma_cm 添加 configfs，用户希望控制 rdma_cm 的行为。例如，未设置所需 RoCE gid 类型的旧应用程序可以在 RoCE V2 网络类型上执行。为了支持此配置，我们为 rdma_cm 实现了一个 configfs。为了使用 configfs，需要将其挂载并在 rdma_cm 目录中 mkdir <IB 设备名称>。该补丁增加了对单个配置文件 default_roce_mode 的支持。模式可以是“IB/RoCE v1”​​或“RoCE v2”
+
+
+
+module_init(ib_umad_init)
+    register_chrdev_region(base_umad_dev, IB_UMAD_NUM_FIXED_MINOR * 2, umad_class.name)
+    alloc_chrdev_region(&dynamic_umad_dev, 0, IB_UMAD_NUM_DYNAMIC_MINOR * 2, umad_class.name)
+    class_register(&umad_class)
+    ib_register_client(&umad_client)
+    ib_register_client(&issm_client)
+
+static struct ib_client umad_client = {
+	.name   = "umad",
+	.add    = ib_umad_add_one,
+	.remove = ib_umad_remove_one,
+	.get_nl_info = ib_umad_get_nl_info,
+};
+
+
+
+virtio,
+core_initcall(virtio_init)
+    bus_register(&virtio_bus)
+
+
+
+static struct bus_type virtio_bus = {
+	.name  = "virtio",
+	.match = virtio_dev_match,
+	.dev_groups = virtio_dev_groups,
+	.uevent = virtio_uevent,
+	.probe = virtio_dev_probe,
+	.remove = virtio_dev_remove,
+};
+
+
+struct virtio_pci_common_cfg
+
+VirtIO-PCI初始化 virtio-blk基于virtio-pci，virtio-pci基于pci，所以virtio-blk初始化要从pci设备初始化说起 PCI初始化 PCI驱动框架初始化在内核中有两个入口，分别如下： arch_initcall(pci_arch_init)，体系结构的初始化，包括初始化IO地址0XCF8 subsys_initcall(pci_subsys_init)，PCI子系统初始化，这个过程会完成PIC总线树上设备的枚举，Host bridge会为PCI设备分配地址空间并将其写入BAR寄存器。体系结构初始化不做介绍，这张主要介绍PCI总线树的枚举和配置
+
+arch_initcall(pci_arch_init)
+
+
+
+subsys_initcall(pci_subsys_init);
+	x86_init.pci.init	=>	x86_default_pci_init	
+	pci_legacy_init
+		pcibios_scan_root
+			x86_pci_root_bus_resources	// 为Host bridge分配资源，通常情况下就是64K IO空间地址和内存空间地址就在这里划分
+			pci_scan_root_bus			// 枚举总线树上的设备
+				pci_create_root_bus		// 创建Host bridge
+				pci_scan_child_bus		// 扫描总线树上所有设备，如果有pci桥，递归扫描下去
+					pci_scan_slot
+						pci_scan_single_device	// 扫描设备，读取vendor id和device id
+							pci_scan_device
+								pci_setup_device
+									pci_read_bases
+										__pci_read_base	// 读取bar空间大小
+
+
+resource代表一个资源，可以是一段IO地址区间，或者Mem地址区间，总线树上每枚举一个设备，Host bridge就根据设备的BAR空间大小分配合适的资源给这个PCI设备用，这里的资源就是IO或者内存空间的物理地址。PCI设备BAR寄存器的值就是从这里申请得来的。申请的流程如下
+pci_read_bases
+	/* 遍历每个BAR寄存器，读取其内容，并为其申请物理地址空间 */
+	for (pos = 0; pos < howmany; pos++) {
+        struct resource *res = &dev->resource[pos];	// 申请的地址空间放在这里面
+        reg = PCI_BASE_ADDRESS_0 + (pos << 2);
+        pos += __pci_read_base(dev, pci_bar_unknown, res, reg);
+    }
+    	region.start = l64;	
+    	region.end = l64 + sz64;
+		/* 申请资源，将申请到的资源放在res中， region存放PCI设备BAR空间区间 */
+    	pcibios_bus_to_resource(dev->bus, res, &region);  	
+
+
+
+pci_subsys_init
+	pcibios_resource_survey             
+    	pcibios_allocate_bus_resources(&pci_root_buses);		// 首先将整个资源按照总线再分成一段段空间
+    	pcibios_allocate_resources(0);							// 检查资源是否统一并且不冲突
+    	pcibios_allocate_resources(1);
+    	pcibios_assign_resources();								// 写入地址到BAR寄存器
+    		pci_assign_resource
+    			_pci_assign_resource
+    				__pci_assign_resource
+    					pci_bus_alloc_resource
+    					pci_update_resource
+    						pci_std_update_resource
+    							pci_write_config_dword(dev, reg, new)	// 往BAR寄存器写入起始地址
+
+module_pci_driver(virtio_pci_driver); -> PCI驱动和其它linux驱动一样，需要定义init和exit两个函数作为加载模块的入口点和卸载模块的出口点，可以使用module_pci_driver宏，只要将pci_driver结构体变量作为参数调用这个宏，就会自动定义init和exit这两个函数，好处是代码整洁，缺点就是不够灵活，我这里仍然用传统的方法使用module_init和module_exit两个宏
+static struct pci_driver virtio_pci_driver = {
+	.name		= "virtio-pci",
+	.id_table	= virtio_pci_id_table,
+	.probe		= virtio_pci_probe,
+	.remove		= virtio_pci_remove,
+#ifdef CONFIG_PM_SLEEP
+	.driver.pm	= &virtio_pci_pm_ops,
+#endif
+	.sriov_configure = virtio_pci_sriov_configure,
+};
+
+
+virtio_pci_driver.probe
+	virtio_pci_probe
+		pci_enable_device
+			pci_enable_device
+				pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO)	// 打开内存和IO访问权限
+					do_pci_enable_device
+						pcibios_enable_device
+							pci_enable_resources
+								pci_write_config_word(dev, PCI_COMMAND, cmd)	//向command寄存器字段写1
+            virtio_pci_legacy_probe
+                vp_legacy_probe(ldev)
+                    ...
+                    rc = pci_request_region(pci_dev, 0, "virtio-pci-legacy")
+                    ldev->ioaddr = pci_iomap(pci_dev, 0, 0) -> pci_iomap函数完成PCI BAR的映射，第一个参数是pci设备的指针，第二个参数指定我们要映射的是0号BAR，第三个参数确定要映射的BAR空间多大，当第三个参数为0时，就将整个BAR空间都映射到内存空间上。VirtioPCI设备的0号BAR指向的就是配置空间的寄存器空间，也就是配置空间上用于消息通知的寄存器
+                    ldev->isr = ldev->ioaddr + VIRTIO_PCI_ISR
+                vp_dev->vdev.config = &virtio_pci_config_ops;
+                vp_dev->config_vector = vp_config_vector;
+                vp_dev->setup_vq = setup_vq;
+                vp_dev->del_vq = del_vq;
+                vp_dev->is_legacy = true;
+            virtio_pci_modern_probe -> #对于virtio modern，通过capability方式报告配置数据结构的位置，配置数据结构有5种类型
+                vp_modern_probe -> 现代 PCI 设备实现。此模块实现基于现代 PCI 设备（可能带有供应商特定的扩展）的设备的基本探测和控制。选择此模块的任何模块都必须依赖于 PCI
+                    check_offsets
+                    common = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_COMMON_CFG,
+                    isr = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_ISR_CFG,
+                    VIRTIO_PCI_CAP_NOTIFY_CFG
+                    VIRTIO_PCI_CAP_DEVICE_CFG
+                    pci_request_selected_regions(pci_dev, mdev->modern_bars, "virtio-pci-modern")
+                    mdev->common = vp_modern_map_capability(mdev, common, -> 将配virtio置结构所在的BAR空间MAP到内核地址空间里    
+                    pci_read_config_dword(pci_dev,
+                    mdev->notify_base = vp_modern_map_capability(mdev, notify,
+                vp_dev->vdev.config = &virtio_pci_config_nodev_ops
+            register_virtio_device(&vp_dev->vdev)
+
+
+config VIRTIO_BLK -> Virtio block driver
+module_init(virtio_blk_init);
+    register_virtio_driver(&virtio_blk)
+
+static struct virtio_driver virtio_blk = {
+	.feature_table			= features,
+	.feature_table_size		= ARRAY_SIZE(features),
+	.feature_table_legacy		= features_legacy,
+	.feature_table_size_legacy	= ARRAY_SIZE(features_legacy),
+	.driver.name			= KBUILD_MODNAME,
+	.driver.owner			= THIS_MODULE,
+	.id_table			= id_table,
+	.probe				= virtblk_probe,
+	.remove				= virtblk_remove,
+	.config_changed			= virtblk_config_changed,
+#ifdef CONFIG_PM_SLEEP
+	.freeze				= virtblk_freeze,
+	.restore			= virtblk_restore,
+#endif
+};
+
+static int virtblk_probe(struct virtio_device *vdev)
+    ida_alloc_range(&vd_index_ida, 0,
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_SEG_MAX, struct virtio_blk_config, seg_max, &sg_elems)
+        virtio_has_feature(vdev, fbit)
+        virtio_cread((vdev), structname, member, ptr)
+            vdev->config->get((vdev),
+                static void vm_get
+            or
+            __virtio_cread_many
+    vdev->priv = vblk = kmalloc(sizeof(*vblk), GFP_KERNEL)
+    INIT_WORK(&vblk->config_work, virtblk_config_changed_work)
+        virtblk_update_capacity(vblk, true) -> virtio_blk：探测时打印容量 在探测驱动程序时打印块设备的容量。许多用户都期望这一点，因为 SCSI 磁盘 (sd) 会这样做。此外，内核 dmesg 输出是故障排除信息的主要来源，因此将磁盘大小包含在内会很有帮助。当发生调整大小事件时，virtio_blk 已经打印了容量。提取代码并从 virtblk_probe() 中重用它。此补丁还将块设备名称添加到消息中，以便可以将其与特定设备关联：virtio_blk virtio0：[vda] 20971520 512 字节逻辑块（10.7 GB/10.0 GiB）
+            virtio_cread(vdev, struct virtio_blk_config, capacity, &capacity)
+            nblocks = DIV_ROUND_UP_ULL(capacity, queue_logical_block_size(q) >> 9)
+            dev_notice(&vdev->dev, "[%s] %s%llu %d-byte logical blocks (%s/%s)\n", vblk->disk->disk_name, resize ? "new size: " : "", nblocks, queue_logical_block_size(q), cap_str_10,cap_str_2);
+            set_capacity_and_notify(vblk->disk, capacity)
+    init_vq(vblk)
+        virtio_cread_feature(vdev, VIRTIO_BLK_F_MQ, struct virtio_blk_config, num_queues, &num_vqs) -> /* 读取pci配置空间中的磁盘队列数 */
+        num_vqs = min_t(unsigned int, min_not_zero(num_request_queues, nr_cpu_ids),num_vqs) -> 取配置队列数与CPU总数的最小值，作为队列数
+        vblk->vqs = kmalloc_array(num_vqs, sizeof(*vblk->vqs), GFP_KERNEL)
+        virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &desc)
+    vblk->tag_set.ops = &virtio_mq_ops
+    blk_mq_alloc_tag_set(&vblk->tag_set)
+    vblk->disk = blk_mq_alloc_disk(&vblk->tag_set, vblk)
+    virtblk_name_format("vd", index, vblk->disk->disk_name, DISK_NAME_LEN)
+    vblk->disk->fops = &virtblk_fops
+    virtblk_update_cache_mode
+    blk_queue_max_segments
+    blk_queue_max_hw_sectors
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_SIZE_MAX,
+    blk_queue_max_segment_size
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_BLK_SIZE,
+    queue_logical_block_size
+    virtblk_update_capacity
+    virtio_device_ready
+        dev->config->set_status(dev, status | VIRTIO_CONFIG_S_DRIVER_OK)
+    device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups)
+
+
+
+# 前端驱动写Status位，val & VIRTIO_CONFIG_S_DRIVER_OK, 这时候前端驱动已经ready
+然后QEMU/KVM后端的处理流程如下：
+virtio_pci_config_write  --> virtio_ioport_write --> virtio_pci_start_ioeventfd
+--> virtio_bus_set_host_notifier --> virtio_bus_start_ioeventfd --> virtio_device_start_ioeventfd_impl
+--> virtio_bus_set_host_notifier
+    --> virtio_pci_ioeventfd_assign
+        --> memory_region_add_eventfd
+            --> memory_region_transaction_commit
+              --> address_space_update_ioeventfds
+                --> address_space_add_del_ioeventfds
+                  --> kvm_io_ioeventfd_add/vhost_eventfd_add
+                    --> kvm_set_ioeventfd_pio
+                      --> kvm_vm_ioctl(kvm_state, KVM_IOEVENTFD, &kick)
+
+
+半虚拟化 virtio-blk 设备的使用。此示例显示具有 4 个 I/O 队列的 virtio-blk，后端设备为 disk.qcow2
+qemu sim blk dev:
+qemu-system-x86_64 -machine accel=kvm -vnc :0 -smp 4 -m 4096M \
+    -net nic -net user,hostfwd=tcp::5023-:22 \
+    -hda ol7.qcow2 -serial stdio \
+    -device virtio-blk-pci,drive=drive0,id=virtblk0,num-queues=4 \
+    -drive file=disk.qcow2,if=none,id=drive0
+
+# ls /sys/block/vda/mq/
+0  1  2  3
+
+
+
+
+
+
+setup_vq
+    vring_create_virtqueue
+    q_pfn = virtqueue_get_desc_addr(vq) >> VIRTIO_PCI_QUEUE_ADDR_SHIFT
+    vq->priv = (void __force *)vp_dev->ldev.ioaddr + VIRTIO_PCI_QUEUE_NOTIFY
+
+
+
+virtio_ioport_write
+
+
+#kvm内核代码virt/kvm/eventfd.c中
+kvm_vm_ioctl(KVM_IOEVENTFD)
+  --> kvm_ioeventfd
+    --> kvm_assign_ioeventfd
+      --> kvm_assign_ioeventfd_idx
+
+# MMIO处理流程中（handle_ept_misconfig）最后会调用到ioeventfd_write通知QEMU。
+/* MMIO/PIO writes trigger an event if the addr/val match */
+static int
+ioeventfd_write(struct kvm_vcpu *vcpu, struct kvm_io_device *this, gpa_t addr,
+                int len, const void *val)
+{
+        struct _ioeventfd *p = to_ioeventfd(this);
+
+        if (!ioeventfd_in_range(p, addr, len, val))
+                return -EOPNOTSUPP;
+
+        eventfd_signal(p->eventfd, 1);
+        return 0;
+}
+
+PCI_BASE_ADDRESS_SPACE_IO    
+
+
+static const struct virtio_config_ops virtio_pci_config_ops = {
+	.get		= vp_get,
+	.set		= vp_set,
+	.get_status	= vp_get_status,
+	.set_status	= vp_set_status,
+	.reset		= vp_reset,
+	.find_vqs	= vp_find_vqs,
+	.del_vqs	= vp_del_vqs,
+	.synchronize_cbs = vp_synchronize_vectors,
+	.get_features	= vp_get_features,
+	.finalize_features = vp_finalize_features,
+	.bus_name	= vp_bus_name,
+	.set_vq_affinity = vp_set_vq_affinity,
+	.get_vq_affinity = vp_get_vq_affinity,
+};
+
+
+
+前端驱动通知后端：
+内核流程mark一下，PCI设备驱动流程这个后面可以学习一下，先扫描PCI bus发现是virtio设备再扫描virtio-bus。
+worker_thread --> process_one_work --> pciehp_power_thread --> pciehp_enable_slot --> 
+pciehp_configure_device --> pci_bus_add_devices --> pci_bus_add_device --> device_attach --> 
+__device_attach --> bus_for_each_drv --> __device_attach_driver --> driver_probe_device --> 
+pci_device_probe --> local_pci_probe --> virtio_pci_probe --> register_virtio_device --> 
+device_register --> device_add --> bus_probe_device --> device_initial_probe 
+--> __device_attach --> bus_for_each_drv --> __device_attach_driver -->
+driver_probe_device --> virtio_dev_probe --> virtnet_probe (网卡设备驱动加载的入口)
+
+static int virtio_dev_probe(struct device *_d)
+    virtio_add_status -> ioread8(ldev->ioaddr + VIRTIO_PCI_STATUS)
+    device_features = dev->config->get_features(dev)
+    finalize_features
+    validate
+    virtio_features_ok
+    create_avq
+    get_status
+    virtio_config_enable
+
+3. virtio核心代码分析，以virtio-net为例,这里我们已virtio-net网卡为例，在没有使用vhost的情况下（网卡后端收发包都走QEMU处理）， 后端收发包走vhost的情况下有些不同，后面单独分析。  3.1 前后端握手流程 QEM模拟PCI设备对GuestOS进行呈现，设备驱动加载的时候尝试去初始化设备
+# 先在PCI总线上调用probe设备，调用了virtio_pci_probe，然后再virtio-bus上调用virtio_dev_probe
+# virtio_dev_probe最后调用到virtnet_probe
+pci_device_probe --> local_pci_probe --> virtio_pci_probe --> register_virtio_device --> 
+device_register --> device_add --> bus_probe_device --> device_initial_probe 
+--> __device_attach --> bus_for_each_drv --> __device_attach_driver --> driver_probe_device --> 
+virtio_dev_probe --> virtnet_probe
+
+
+include/uapi/linux/virtio_pci.h
+
+
+
+前端驱动加载(probe)的过程中，会去初始化virtqueue，这个时候会去申请MSIx中断并注册中断处理函数：
+
+virtnet_probe
+  --> init_vqs
+    --> virtnet_find_vqs
+      --> vi->vdev->config->find_vqs [vp_modern_find_vqs]
+        --> vp_find_vqs
+          --> vp_find_vqs_msix // 为每virtqueue申请一个MSIx中断，通常收发各一个队列
+            --> vp_request_msix_vectors // 主要的MSIx中断申请逻辑都在这个函数里面
+              --> pci_alloc_irq_vectors_affinity // 申请MSIx中断描述符(__pci_enable_msix_range)
+                --> request_irq  // 注册中断处理函数
+               
+	       // virtio-net网卡至少申请了3个MSIx中断：
+                // 一个是configuration change中断（配置空间发生变化后，QEMU通知前端）
+                // 发送队列1个MSIx中断，接收队列1MSIx中断
+
+
+
+
+virtio_pci, commit: https://github.com/ssbandjl/linux/commit/3343660d8c62c6b00b2f15324ef3fcb6be207bfa
+
+
+struct virtio_pci_cap {
+
+
+static int virtnet_probe(struct virtio_device *vdev)
+{
+       // check后端是否支持多队列，并按情况创建队列
+       /* Allocate ourselves a network device with room for our info */
+        dev = alloc_etherdev_mq(sizeof(struct virtnet_info), max_queue_pairs);
+        
+        // 定义一个网络设备并配置一些属性，例如MAC地址
+        dev->ethtool_ops = &virtnet_ethtool_ops;
+	       SET_NETDEV_DEV(dev, &vdev->dev);
+ 
+        // 初始化virtqueue
+        err = init_vqs(vi);
+        
+        // 注册一个网络设备
+        err = register_netdev(dev);
+        
+        // 写状态位DRIVER_OK，告诉后端，前端已经ready
+        virtio_device_ready(vdev);
+        
+        // 将网卡up起来
+        netif_carrier_on(dev);
+}
+
+
+其中关键的流程是init_vqs，在vp_find_vqs_msix流程中会尝试去申请MSIx中断，这里前面已经有分析过了。 其中，"configuration changed" 中断服务程序vp_config_changed， virtqueue队列的中断服务程序是 vp_vring_interrupt。
+init_vqs --> virtnet_find_vqs --> vi->vdev->config->find_vqs --> vp_modern_find_vqs
+--> vp_find_vqs --> vp_find_vqs_msix
+static int vp_find_vqs_msix(struct virtio_device *vdev, unsigned nvqs,
+		struct virtqueue *vqs[], vq_callback_t *callbacks[],
+		const char * const names[], bool per_vq_vectors,
+		const bool *ctx,
+		struct irq_affinity *desc)
+{
+        /* 为configuration change申请MSIx中断 */
+	err = vp_request_msix_vectors(vdev, nvectors, per_vq_vectors,
+			      per_vq_vectors ? desc : NULL);
+        for (i = 0; i < nvqs; ++i) {
+		 // 创建队列 --> vring_create_virtqueue --> vring_create_virtqueue_split --> vring_alloc_queue
+	         vqs[i] = vp_setup_vq(vdev, queue_idx++, callbacks[i], names[i],
+                                ctx ? ctx[i] : false,
+                                msix_vec);
+		// 每个队列申请一个MSIx中断
+                err = request_irq(pci_irq_vector(vp_dev->pci_dev, msix_vec),
+                                  vring_interrupt, 0,
+                                  vp_dev->msix_names[msix_vec],
+                                  vqs[i]);
+	}
+vp_setup_vq流程再往下走就开始分配共享内存页，至此建立起共享内存通信通道。 值得注意的是一路传下来的callbacks参数其实传入了发送队列和接收队列的回调处理函数， 好家伙，从virtnet_find_vqs一路传递到了__vring_new_virtqueue中最终赋值给了vq->vq.callback。
+static struct virtqueue *vring_create_virtqueue_split(
+        unsigned int index,
+        unsigned int num,
+        unsigned int vring_align,
+        struct virtio_device *vdev,
+        bool weak_barriers,
+        bool may_reduce_num,
+        bool context,
+        bool (*notify)(struct virtqueue *),
+        void (*callback)(struct virtqueue *),
+        const char *name)
+{
+       /* TODO: allocate each queue chunk individually */
+        for (; num && vring_size(num, vring_align) > PAGE_SIZE; num /= 2) {
+		// 申请物理页，地址赋值给queue
+                queue = vring_alloc_queue(vdev, vring_size(num, vring_align),
+                                          &dma_addr,
+                                          GFP_KERNEL|__GFP_NOWARN|__GFP_ZERO);
+        }
+        queue_size_in_bytes = vring_size(num, vring_align);
+        vring_init(&vring, num, queue, vring_align); // 确定 descriptor table, available ring, used ring的位置。
+}
+我们看下如果virtqueue队列如果收到MSIx中断消息后，会调用哪个hook来处理？
+irqreturn_t vring_interrupt(int irq, void *_vq)
+{
+        struct vring_virtqueue *vq = to_vvq(_vq);
+        if (!more_used(vq)) {
+                pr_debug("virtqueue interrupt with no work for %p\n", vq);
+                return IRQ_NONE;
+        }
+        if (unlikely(vq->broken))
+                return IRQ_HANDLED;
+        pr_debug("virtqueue callback for %p (%p)\n", vq, vq->vq.callback);
+        if (vq->vq.callback)
+                vq->vq.callback(&vq->vq);
+        return IRQ_HANDLED;
+}
+EXPORT_SYMBOL_GPL(vring_interrupt);
+不难想到中断服务程序里面会调用队列上的callback。 我们再回过头来看下virtnet_find_vqs，原来接受队列的回调函数是skb_recv_done，发送队列的回调函数是skb_xmit_done。
+static int virtnet_find_vqs(struct virtnet_info *vi)
+{
+       /* Allocate/initialize parameters for send/receive virtqueues */
+        for (i = 0; i < vi->max_queue_pairs; i++) {
+		callbacks[rxq2vq(i)] = skb_recv_done;
+		callbacks[txq2vq(i)] = skb_xmit_done;
+	}
+}
+OK，这个小节就到这里。Are you clear ?
+3.2 virtio-net网卡收发在virtqueue上的实现
+这里以virtio-net为例（非vhost-net模式）来分析一下网卡收发报文在virtio协议上的具体实现。 virtio-net模式下网卡收发包的流程为：
+收包：Hardware => Host Kernel => Qemu => Guest
+发包：Guest => Host Kernel => Qemu => Host Kernel => Hardware
+3.2.1 virtio-net网卡发包
+前面我们看到virtio-net设备初始化的时候会创建一个net_device设备： virtnet_probe -> alloc_etherdev_mq注册了netdev_ops = &virtnet_netdev， 这里virtnet_netdev是网卡驱动的回调函数集合（收发包和参数设置）。
+static const struct net_device_ops netdev_ops = {
+        .ndo_open               = rio_open,
+        .ndo_start_xmit = start_xmit,
+        .ndo_stop               = rio_close,
+        .ndo_get_stats          = get_stats,
+        .ndo_validate_addr      = eth_validate_addr,
+        .ndo_set_mac_address    = eth_mac_addr,
+        .ndo_set_rx_mode        = set_multicast,
+        .ndo_do_ioctl           = rio_ioctl,
+        .ndo_tx_timeout         = rio_tx_timeout,
+};
+网卡发包的时候调用ndo_start_xmit，将TCP/IP上层协议栈扔下来的数据发送出去。 对应到virtio网卡的回调函数就是start_xmit，从代码看就是将skb发送到virtqueue中， 然后调用virtqueue_kick通知qemu后端将数据包发送出去。
+Guest内核里面的virtio-net驱动发包：
+内核驱动 virtio_net.c
+start_xmit
+	// 将skb放到virtqueue队列中
+ 	-> xmit_skb -> sg_init_table,virtqueue_add_outbuf -> virtqueue_add
+	// kick通知qemu后端去取
+	virtqueue_kick_prepare && virtqueue_notify 
+	// kick次数加1
+	sq->stats.kicks++
+Guest Kick后端从KVM中VMExit出来退出到Qemu用户态（走的是ioeventfd）由Qemu去将数据发送出去。 大致调用的流程是： virtio_queue_host_notifier_read -> virtio_net_handle_tx_bh -> virtio_net_flush_tx -> virtqueue_pop拿到发包(skb) -> qemu_sendv_packet_async
+Qemu代码virtio-net相关代码:
+virtio_queue_host_notifier_read -> virtio_queue_notify_vq
+    -> vq->handle_output -> virtio_net_handle_tx_bh 队列注册的时候，回注册回调函数
+        -> qemu_bh_schedule -> virtio_net_tx_bh
+            -> virtio_net_flush_tx
+	        -> virtqueue_pop
+		-> qemu_sendv_packet_async // 报文放到发送队列上，写tap设备的fd去发包
+		    -> tap_receive_iov -> tap_write_packet
+		    
+// 最后调用 tap_write_packet 把数据包发给tap设备投递出去
+3.2.2 virtio-net网卡收包
+网卡收包的时候，tap设备先收到报文，对应的virtio-net网卡tap设备fd变为可读， Qemu主循环收到POLL_IN事件调用回调函数收包。
+tap_send -> qemu_send_packet_async -> qemu_send_packet_async_with_flags
+    -> qemu_net_queue_send
+        -> qemu_net_queue_deliver
+	    -> qemu_deliver_packet_iov
+	        -> nc_sendv_compat
+		    -> virtio_net_receive
+		        -> virtio_net_receive_rcu
+virtio-net网卡收报最终调用了virtio_net_receive_rcu， 和发包类似都是调用virtqueue_pop从前端获取virtqueue element， 将报文数据填充到vring中然后virtio_notify注入中断通知前端驱动取结果。
+这里不得不吐槽一下，为啥收包函数取名要叫tap_send。
+
 
