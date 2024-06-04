@@ -11230,6 +11230,8 @@ core_initcall(virtio_init)
 
 
 
+
+
 static struct bus_type virtio_bus = {
 	.name  = "virtio",
 	.match = virtio_dev_match,
@@ -11245,6 +11247,14 @@ struct virtio_pci_common_cfg
 VirtIO-PCI初始化 virtio-blk基于virtio-pci，virtio-pci基于pci，所以virtio-blk初始化要从pci设备初始化说起 PCI初始化 PCI驱动框架初始化在内核中有两个入口，分别如下： arch_initcall(pci_arch_init)，体系结构的初始化，包括初始化IO地址0XCF8 subsys_initcall(pci_subsys_init)，PCI子系统初始化，这个过程会完成PIC总线树上设备的枚举，Host bridge会为PCI设备分配地址空间并将其写入BAR寄存器。体系结构初始化不做介绍，这张主要介绍PCI总线树的枚举和配置
 
 arch_initcall(pci_arch_init)
+    type = pci_direct_probe()
+    pci_mmcfg_early_init
+    pcbios = x86_init.pci.arch_init()
+    x86_create_pci_msi_domain
+    pci_pcbios_init
+    pci_direct_init
+    dmi_check_pciprobe
+    dmi_check_skip_isa_align
 
 
 
@@ -11308,42 +11318,62 @@ static struct pci_driver virtio_pci_driver = {
 
 virtio_pci_driver.probe
 	virtio_pci_probe
-		pci_enable_device
-			pci_enable_device
-				pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO)	// 打开内存和IO访问权限
-					do_pci_enable_device
-						pcibios_enable_device
-							pci_enable_resources
-								pci_write_config_word(dev, PCI_COMMAND, cmd)	//向command寄存器字段写1
-            virtio_pci_legacy_probe
-                vp_legacy_probe(ldev)
-                    ...
-                    rc = pci_request_region(pci_dev, 0, "virtio-pci-legacy")
-                    ldev->ioaddr = pci_iomap(pci_dev, 0, 0) -> pci_iomap函数完成PCI BAR的映射，第一个参数是pci设备的指针，第二个参数指定我们要映射的是0号BAR，第三个参数确定要映射的BAR空间多大，当第三个参数为0时，就将整个BAR空间都映射到内存空间上。VirtioPCI设备的0号BAR指向的就是配置空间的寄存器空间，也就是配置空间上用于消息通知的寄存器
-                    ldev->isr = ldev->ioaddr + VIRTIO_PCI_ISR
-                vp_dev->vdev.config = &virtio_pci_config_ops;
-                vp_dev->config_vector = vp_config_vector;
-                vp_dev->setup_vq = setup_vq;
-                vp_dev->del_vq = del_vq;
-                vp_dev->is_legacy = true;
-            virtio_pci_modern_probe -> #对于virtio modern，通过capability方式报告配置数据结构的位置，配置数据结构有5种类型
-                vp_modern_probe -> 现代 PCI 设备实现。此模块实现基于现代 PCI 设备（可能带有供应商特定的扩展）的设备的基本探测和控制。选择此模块的任何模块都必须依赖于 PCI
-                    check_offsets
-                    common = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_COMMON_CFG,
-                    isr = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_ISR_CFG,
-                    VIRTIO_PCI_CAP_NOTIFY_CFG
-                    VIRTIO_PCI_CAP_DEVICE_CFG
-                    pci_request_selected_regions(pci_dev, mdev->modern_bars, "virtio-pci-modern")
-                    mdev->common = vp_modern_map_capability(mdev, common, -> 将配virtio置结构所在的BAR空间MAP到内核地址空间里    
-                    pci_read_config_dword(pci_dev,
-                    mdev->notify_base = vp_modern_map_capability(mdev, notify,
-                vp_dev->vdev.config = &virtio_pci_config_nodev_ops
-            register_virtio_device(&vp_dev->vdev)
+        vp_dev->vdev.dev.parent = &pci_dev->dev
+        vp_dev->vdev.dev.release = virtio_pci_release_dev
+        INIT_LIST_HEAD(&vp_dev->virtqueues)
+        pci_enable_device
+            pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO)	// 打开内存和IO访问权限
+                do_pci_enable_device
+                    pcibios_enable_device
+                        pci_enable_resources
+                            pci_write_config_word(dev, PCI_COMMAND, cmd)	//向command寄存器字段写1
+        virtio_pci_legacy_probe
+            vp_legacy_probe(ldev)
+                ...
+                rc = pci_request_region(pci_dev, 0, "virtio-pci-legacy")
+                ldev->ioaddr = pci_iomap(pci_dev, 0, 0) -> pci_iomap函数完成PCI BAR的映射，第一个参数是pci设备的指针，第二个参数指定我们要映射的是0号BAR，第三个参数确定要映射的BAR空间多大，当第三个参数为0时，就将整个BAR空间都映射到内存空间上。VirtioPCI设备的0号BAR指向的就是配置空间的寄存器空间，也就是配置空间上用于消息通知的寄存器
+                ldev->isr = ldev->ioaddr + VIRTIO_PCI_ISR
+            vp_dev->vdev.config = &virtio_pci_config_ops;
+            vp_dev->config_vector = vp_config_vector;
+            vp_dev->setup_vq = setup_vq;
+            vp_dev->del_vq = del_vq;
+            vp_dev->is_legacy = true;
+        virtio_pci_modern_probe -> #对于virtio modern，通过capability方式报告配置数据结构的位置，配置数据结构有5种类型
+            vp_modern_probe -> 现代 PCI 设备实现。此模块实现基于现代 PCI 设备（可能带有供应商特定的扩展）的设备的基本探测和控制。选择此模块的任何模块都必须依赖于 PCI
+                check_offsets
+                common = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_COMMON_CFG, IORESOURCE_IO | IORESOURCE_MEM, &mdev->modern_bars)
+                isr = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_ISR_CFG,
+                VIRTIO_PCI_CAP_NOTIFY_CFG
+                VIRTIO_PCI_CAP_DEVICE_CFG
+                pci_request_selected_regions(pci_dev, mdev->modern_bars, "virtio-pci-modern")
+                mdev->common = vp_modern_map_capability(mdev, common, sizeof(struct virtio_pci_common_cfg), 4, 0, offsetofend(struct virtio_pci_modern_common_cfg, admin_queue_num) -> 将virtio配置结构所在的BAR空间MAP到内核地址空间
+                    pci_read_config_byte(dev, off + offsetof(struct virtio_pci_cap,bar), &bar)
+                    pci_read_config_dword(dev, off + offsetof(struct virtio_pci_cap, offset), &offset)
+                    p = pci_iomap_range(dev, bar, offset, length)
+                    *pa = pci_resource_start(dev, bar) + offset
+                pci_read_config_dword(pci_dev,
+                mdev->notify_base = vp_modern_map_capability(mdev, notify,
+            vp_dev->vdev.config = &virtio_pci_config_ops
+            or vp_dev->vdev.config = &virtio_pci_config_nodev_ops -> virtio-pci-modern：分解出现代设备初始化逻辑，此补丁将现代设备初始化逻辑分解为辅助程序。请注意，它仍然依赖于调用者来启用 pci 设备，这允许调用者使用例如 devres
+        register_virtio_device(&vp_dev->vdev)
+            dev->dev.bus = &virtio_bus
+            device_initialize(&dev->dev)
+            dev_set_name(&dev->dev, "virtio%u", dev->index)
+            virtio_device_of_init(dev)
+            INIT_LIST_HEAD(&dev->vqs)
+            virtio_reset_device(dev)
+            virtio_add_status(dev, VIRTIO_CONFIG_S_ACKNOWLEDGE)
+            device_add(&dev->dev) -> match driver
+
+
 
 
 config VIRTIO_BLK -> Virtio block driver
 module_init(virtio_blk_init);
+    major = register_blkdev(0, "virtblk")
     register_virtio_driver(&virtio_blk)
+        driver->driver.bus = &virtio_bus
+        return driver_register(&driver->driver)
 
 static struct virtio_driver virtio_blk = {
 	.feature_table			= features,
@@ -11429,17 +11459,6 @@ qemu-system-x86_64 -machine accel=kvm -vnc :0 -smp 4 -m 4096M \
 0  1  2  3
 
 
-
-
-
-
-setup_vq
-    vring_create_virtqueue
-    q_pfn = virtqueue_get_desc_addr(vq) >> VIRTIO_PCI_QUEUE_ADDR_SHIFT
-    vq->priv = (void __force *)vp_dev->ldev.ioaddr + VIRTIO_PCI_QUEUE_NOTIFY
-
-
-
 virtio_ioport_write
 
 
@@ -11466,7 +11485,7 @@ ioeventfd_write(struct kvm_vcpu *vcpu, struct kvm_io_device *this, gpa_t addr,
 
 PCI_BASE_ADDRESS_SPACE_IO    
 
-
+virtio_pci_legacy.c
 static const struct virtio_config_ops virtio_pci_config_ops = {
 	.get		= vp_get,
 	.set		= vp_set,
@@ -11484,6 +11503,29 @@ static const struct virtio_config_ops virtio_pci_config_ops = {
 };
 
 
+virtio_pci_modern.c
+static const struct virtio_config_ops virtio_pci_config_ops = {
+	.get		= vp_get,
+	.set		= vp_set,
+	.generation	= vp_generation,
+	.get_status	= vp_get_status,
+	.set_status	= vp_set_status,
+	.reset		= vp_reset,
+	.find_vqs	= vp_modern_find_vqs,
+	.del_vqs	= vp_del_vqs,
+	.synchronize_cbs = vp_synchronize_vectors,
+	.get_features	= vp_get_features,
+	.finalize_features = vp_finalize_features,
+	.bus_name	= vp_bus_name,
+	.set_vq_affinity = vp_set_vq_affinity,
+	.get_vq_affinity = vp_get_vq_affinity,
+	.get_shm_region  = vp_get_shm_region,
+	.disable_vq_and_reset = vp_modern_disable_vq_and_reset,
+	.enable_vq_after_reset = vp_modern_enable_vq_after_reset,
+	.create_avq = vp_modern_create_avq,
+	.destroy_avq = vp_modern_destroy_avq,
+};
+
 
 前端驱动通知后端：
 内核流程mark一下，PCI设备驱动流程这个后面可以学习一下，先扫描PCI bus发现是virtio设备再扫描virtio-bus。
@@ -11496,14 +11538,47 @@ device_register --> device_add --> bus_probe_device --> device_initial_probe
 driver_probe_device --> virtio_dev_probe --> virtnet_probe (网卡设备驱动加载的入口)
 
 static int virtio_dev_probe(struct device *_d)
-    virtio_add_status -> ioread8(ldev->ioaddr + VIRTIO_PCI_STATUS)
+    virtio_add_status(dev, VIRTIO_CONFIG_S_DRIVER) -> ioread8(ldev->ioaddr + VIRTIO_PCI_STATUS)
+        set_status
     device_features = dev->config->get_features(dev)
-    finalize_features
+    finalize_features -> vp_finalize_features
+        vring_transport_features(vdev)
+            __virtio_clear_bit(vdev, i)
+                vdev->features &= ~BIT_ULL(fbit)
+        vp_transport_features(vdev, features)
+            __virtio_set_bit(vdev, VIRTIO_F_SR_IOV)
+            __virtio_set_bit(vdev, VIRTIO_F_RING_RESET)
+            __virtio_set_bit(vdev, VIRTIO_F_ADMIN_VQ)
+        vp_check_common_size
+        vp_modern_set_features(&vp_dev->mdev, vdev->features)
+            vp_iowrite32(0, &cfg->guest_feature_select)
+                iowrite32(value, addr)
     validate
     virtio_features_ok
-    create_avq
+        virtio_add_status(dev, VIRTIO_CONFIG_S_FEATURES_OK)
+            vp_modern_set_status
+                vp_iowrite8(status, &cfg->device_status)
+        status = dev->config->get_status(dev)
+    create_avq -> vp_modern_create_avq -> virtio-pci：引入管理 virtqueue 引入对管理 virtqueue 的支持。通过协商 VIRTIO_F_ADMIN_VQ 功能，驱动程序检测功能并创建一个管理 virtqueue。virtio pci 通用层中的管理 virtqueue 实现使多种类型的上层驱动程序（如 vfio、net、blk）能够利用它
+        admin_q_num = vp_modern_avq_num(&vp_dev->mdev)
+        vq = vp_dev->setup_vq(vp_dev, &vp_dev->admin_vq.info, avq->vq_index, NULL, avq->name, NULL, VIRTIO_MSI_NO_VECTOR)
+            notify = vp_notify_with_data
+                vring_notification_data
+                    iowrite32(data, (void __iomem *)vq->priv)
+            or notify = vp_notify -> iowrite16(vq->index, (void __iomem *)vq->priv)
+            vq = vring_create_virtqueue(index, num, SMP_CACHE_BYTES, &vp_dev->vdev, true, true, ctx, notify, callback, name)
+            vp_active_vq
+                vp_modern_set_queue_size
+                vp_modern_queue_address
+                vp_modern_queue_vector
+            vq->priv = (void __force *)vp_modern_map_vq_notify(mdev, index, NULL)
+        vp_modern_set_queue_enable(&vp_dev->mdev, avq->info.vq->index, true)
+    err = drv->probe(dev) -> virtblk_probe
     get_status
     virtio_config_enable
+        dev->config_enabled = true
+        __virtio_config_changed(dev) -> config_changed
+
 
 3. virtio核心代码分析，以virtio-net为例,这里我们已virtio-net网卡为例，在没有使用vhost的情况下（网卡后端收发包都走QEMU处理）， 后端收发包走vhost的情况下有些不同，后面单独分析。  3.1 前后端握手流程 QEM模拟PCI设备对GuestOS进行呈现，设备驱动加载的时候尝试去初始化设备
 # 先在PCI总线上调用probe设备，调用了virtio_pci_probe，然后再virtio-bus上调用virtio_dev_probe
@@ -11548,20 +11623,15 @@ static int virtnet_probe(struct virtio_device *vdev)
        // check后端是否支持多队列，并按情况创建队列
        /* Allocate ourselves a network device with room for our info */
         dev = alloc_etherdev_mq(sizeof(struct virtnet_info), max_queue_pairs);
-        
         // 定义一个网络设备并配置一些属性，例如MAC地址
         dev->ethtool_ops = &virtnet_ethtool_ops;
 	       SET_NETDEV_DEV(dev, &vdev->dev);
- 
         // 初始化virtqueue
         err = init_vqs(vi);
-        
         // 注册一个网络设备
         err = register_netdev(dev);
-        
         // 写状态位DRIVER_OK，告诉后端，前端已经ready
         virtio_device_ready(vdev);
-        
         // 将网卡up起来
         netif_carrier_on(dev);
 }
@@ -11659,9 +11729,13 @@ static const struct net_device_ops netdev_ops = {
 网卡发包的时候调用ndo_start_xmit，将TCP/IP上层协议栈扔下来的数据发送出去。 对应到virtio网卡的回调函数就是start_xmit，从代码看就是将skb发送到virtqueue中， 然后调用virtqueue_kick通知qemu后端将数据包发送出去。
 Guest内核里面的virtio-net驱动发包：
 内核驱动 virtio_net.c
-start_xmit
+static netdev_tx_t start_xmit
+    skb_tx_timestamp(skb)
 	// 将skb放到virtqueue队列中
- 	-> xmit_skb -> sg_init_table,virtqueue_add_outbuf -> virtqueue_add
+ 	-> xmit_skb(sq, skb) -> sg_init_table,virtqueue_add_outbuf -> virtqueue_add
+        virtqueue_add_packed(_vq, sgs, total_sg,
+        or virtqueue_add_split(_vq, sgs, total_sg,
+            virtqueue_kick
 	// kick通知qemu后端去取
 	virtqueue_kick_prepare && virtqueue_notify 
 	// kick次数加1
@@ -11689,4 +11763,172 @@ tap_send -> qemu_send_packet_async -> qemu_send_packet_async_with_flags
 virtio-net网卡收报最终调用了virtio_net_receive_rcu， 和发包类似都是调用virtqueue_pop从前端获取virtqueue element， 将报文数据填充到vring中然后virtio_notify注入中断通知前端驱动取结果。
 这里不得不吐槽一下，为啥收包函数取名要叫tap_send。
 
+
+
+
+
+Thread 3 hit Breakpoint 3, virtblk_probe (vdev=0xffff88811a36e400) at drivers/block/virtio_blk.c:693
+693     {
+(gdb) bt
+#0  virtblk_probe (vdev=0xffff88811a36e400) at drivers/block/virtio_blk.c:693
+#1  0xffffffff81765deb in virtio_dev_probe (_d=0xffff88811a36e410) at drivers/virtio/virtio.c:273
+#2  0xffffffff8181a721 in call_driver_probe (drv=0xffffffffc000d0a0 <virtio_blk>, drv=0xffffffffc000d0a0 <virtio_blk>, dev=0xffff88811a36e410) at drivers/base/dd.c:517
+#3  really_probe (drv=0xffffffffc000d0a0 <virtio_blk>, dev=0xffff88811a36e410) at drivers/base/dd.c:596
+#4  really_probe (dev=0xffff88811a36e410, drv=0xffffffffc000d0a0 <virtio_blk>) at drivers/base/dd.c:541
+#5  0xffffffff8181aa45 in __driver_probe_device (drv=drv@entry=0xffffffffc000d0a0 <virtio_blk>, dev=dev@entry=0xffff88811a36e410) at drivers/base/dd.c:751
+#6  0xffffffff8181aae3 in driver_probe_device (drv=drv@entry=0xffffffffc000d0a0 <virtio_blk>, dev=dev@entry=0xffff88811a36e410) at drivers/base/dd.c:781
+#7  0xffffffff8181aece in __device_attach_driver (drv=0xffffffffc000d0a0 <virtio_blk>, _data=<optimized out>) at drivers/base/dd.c:898
+#8  0xffffffff81818462 in bus_for_each_drv (bus=<optimized out>, start=start@entry=0x0 <fixed_percpu_data>, data=data@entry=0xffffc90001cdf930, fn=fn@entry=0xffffffff8181ae20 <__device_attach_driver>)
+    at drivers/base/bus.c:427
+#9  0xffffffff8181a48d in __device_attach (dev=dev@entry=0xffff88811a36e410, allow_async=allow_async@entry=true) at drivers/base/dd.c:969
+#10 0xffffffff8181b0a3 in device_initial_probe (dev=dev@entry=0xffff88811a36e410) at drivers/base/dd.c:1016
+#11 0xffffffff8181947f in bus_probe_device (dev=dev@entry=0xffff88811a36e410) at drivers/base/bus.c:487
+#12 0xffffffff81816b2a in device_add (dev=dev@entry=0xffff88811a36e410) at drivers/base/core.c:3396
+#13 0xffffffff81765939 in register_virtio_device (dev=dev@entry=0xffff88811a36e400) at drivers/virtio/virtio.c:423
+#14 0xffffffff8176d74f in virtio_pci_probe (pci_dev=0xffff8881302f0000, id=<optimized out>) at drivers/virtio/virtio_pci_common.c:552
+#15 0xffffffff81688068 in local_pci_probe (_ddi=_ddi@entry=0xffffc90001cdfab8) at drivers/pci/pci-driver.c:323 -> pci_drv->probe(pci_dev, ddi->id)
+#16 0xffffffff81689ba2 in pci_call_probe (id=<optimized out>, dev=0xffff8881302f0000, drv=0xffffffff830f0ee0 <virtio_pci_driver>) at drivers/pci/pci-driver.c:380
+#17 __pci_device_probe (pci_dev=0xffff8881302f0000, drv=0xffffffff830f0ee0 <virtio_pci_driver>) at drivers/pci/pci-driver.c:405
+#18 pci_device_probe (dev=0xffff8881302f00d0) at drivers/pci/pci-driver.c:448
+#19 0xffffffff8181a721 in call_driver_probe (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, drv=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=0xffff8881302f00d0) at drivers/base/dd.c:517
+#20 really_probe (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=0xffff8881302f00d0) at drivers/base/dd.c:596
+#21 really_probe (dev=0xffff8881302f00d0, drv=0xffffffff830f0f58 <virtio_pci_driver+120>) at drivers/base/dd.c:541
+#22 0xffffffff8181aa45 in __driver_probe_device (drv=drv@entry=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=dev@entry=0xffff8881302f00d0) at drivers/base/dd.c:751
+#23 0xffffffff8181aae3 in driver_probe_device (drv=drv@entry=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=dev@entry=0xffff8881302f00d0) at drivers/base/dd.c:781
+#24 0xffffffff8181aece in __device_attach_driver (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, _data=<optimized out>) at drivers/base/dd.c:898
+#25 0xffffffff81818462 in bus_for_each_drv (bus=<optimized out>, start=start@entry=0x0 <fixed_percpu_data>, data=data@entry=0xffffc90001cdfc00, fn=fn@entry=0xffffffff8181ae20 <__device_attach_driver>)
+    at drivers/base/bus.c:427
+#26 0xffffffff8181a48d in __device_attach (dev=dev@entry=0xffff8881302f00d0, allow_async=allow_async@entry=false) at drivers/base/dd.c:969
+#27 0xffffffff8181a530 in device_attach (dev=dev@entry=0xffff8881302f00d0) at drivers/base/dd.c:1010
+#28 0xffffffff8167c26f in pci_bus_add_device (dev=dev@entry=0xffff8881302f0000) at drivers/pci/bus.c:324
+#29 0xffffffff8167c2c1 in pci_bus_add_devices (bus=bus@entry=0xffff888100dcf800) at drivers/pci/bus.c:347
+#30 0xffffffff8167f4ca in pci_rescan_bus (bus=bus@entry=0xffff888100dcf800) at drivers/pci/probe.c:3249
+#31 0xffffffff8168a458 in rescan_store (bus=<optimized out>, buf=<optimized out>, count=2) at drivers/pci/pci-sysfs.c:421
+#32 0xffffffff81817fc4 in bus_attr_store (kobj=<optimized out>, attr=0xffffc90000031014, buf=0xffffc90000031014 "\v", count=4294967296) at drivers/base/bus.c:122
+#33 0xffffffff8142c9ab in sysfs_kf_write (of=<optimized out>, buf=0x100000000 <error: Cannot access memory at address 0x100000000>, count=38, pos=<optimized out>) at fs/sysfs/file.c:139
+#34 0xffffffff8142ba78 in kernfs_fop_write_iter (iocb=0xffffc90001cdfd88, iter=<optimized out>) at fs/kernfs/file.c:296
+#35 0xffffffff8136441a in call_write_iter (file=0xffff888116e53300, iter=0xffffc90001cdfd60, kio=0xffffc90001cdfd88) at ./include/linux/fs.h:2163
+#36 new_sync_write (filp=filp@entry=0xffff888116e53300, buf=buf@entry=0x5567d57f2080 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc000a000 -s .data 0xffffffffc000d000 -s .bss 0xffffffffc000d700\n", 
+    len=len@entry=2, ppos=ppos@entry=0xffffc90001cdfe18) at fs/read_write.c:507
+#37 0xffffffff81366c85 in vfs_write (pos=0xffffc90001cdfe18, count=2, buf=0x5567d57f2080 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc000a000 -s .data 0xffffffffc000d000 -s .bss 0xffffffffc000d700\n", 
+    file=0xffff888116e53300) at fs/read_write.c:594
+#38 vfs_write (file=0xffff888116e53300, buf=0x5567d57f2080 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc000a000 -s .data 0xffffffffc000d000 -s .bss 0xffffffffc000d700\n", count=<optimized out>, 
+    pos=0xffffc90001cdfe18) at fs/read_write.c:574
+#39 0xffffffff81366ee7 in ksys_write (fd=<optimized out>, buf=0x5567d57f2080 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc000a000 -s .data 0xffffffffc000d000 -s .bss 0xffffffffc000d700\n", count=2)
+    at fs/read_write.c:647
+#40 0xffffffff81366f7a in __do_sys_write (count=<optimized out>, buf=<optimized out>, fd=<optimized out>) at fs/read_write.c:659
+#41 __se_sys_write (count=<optimized out>, buf=<optimized out>, fd=<optimized out>) at fs/read_write.c:656
+#42 __x64_sys_write (regs=<optimized out>) at fs/read_write.c:656
+#43 0xffffffff81cff979 in do_syscall_x64 (nr=<optimized out>, regs=0xffffc90001cdff58) at arch/x86/entry/common.c:50
+#44 do_syscall_64 (regs=0xffffc90001cdff58, nr=<optimized out>) at arch/x86/entry/common.c:80
+#45 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+#48 0x00007f41692506a0 in ?? () at drivers/block/virtio_blk.c:1027
+#49 0x0000000000000002 in fixed_percpu_data ()
+Backtrace stopped: Cannot access memory at address 0xffffc90001ce0000
+(gdb) 
+
+
+modern
+static const struct virtio_config_ops virtio_pci_config_nodev_ops = {
+	.get		= NULL,
+	.set		= NULL,
+	.generation	= vp_generation,
+	.get_status	= vp_get_status,
+	.set_status	= vp_set_status,
+	.reset		= vp_reset,
+	.find_vqs	= vp_modern_find_vqs,
+	.del_vqs	= vp_del_vqs,
+	.get_features	= vp_get_features,
+	.finalize_features = vp_finalize_features,
+	.bus_name	= vp_bus_name,
+	.set_vq_affinity = vp_set_vq_affinity,
+	.get_vq_affinity = vp_get_vq_affinity,
+	.get_shm_region  = vp_get_shm_region,
+};
+
+virtblk_probe
+    virtio_cread_feature
+        static void vp_get
+            switch (len)
+            case 2:
+                w = cpu_to_le16(ioread16(device + offset))
+                memcpy(buf, &w, sizeof w)
+    num_vqs = min_t(unsigned int, nr_cpu_ids, num_vqs) -> 8
+    for (i = 0; i < num_vqs; i++)
+        callbacks[i] = virtblk_done
+    virtio_find_vqs
+        vdev->config->find_vqs -> static int vp_modern_find_vqs
+            vp_find_vqs
+                vp_find_vqs_msix true
+                    vp_request_msix_vectors
+                        pci_alloc_irq_vectors_affinity(vp_dev->pci_dev, nvectors, nvectors, flags, desc)
+                        request_irq(pci_irq_vector(vp_dev->pci_dev, v), vp_config_changed, 0, vp_dev->msix_names[v], vp_dev)
+                        vp_dev->config_vector(vp_dev, v)
+                        request_irq(pci_irq_vector(vp_dev->pci_dev, v), vp_vring_interrupt, 0, vp_dev->msix_names[v], vp_dev)
+                    vp_setup_vq -> static struct virtqueue *setup_vq
+                        vring_create_virtqueue -> create the vring
+                            vring_create_virtqueue_split
+                                vring_init
+                                __vring_new_virtqueue
+                        vp_modern_set_queue_size
+                        vp_modern_queue_address
+                        vp_modern_map_vq_notify
+                            vp_iowrite16(index, &cfg->queue_select)
+                            vp_iowrite16(vector, &cfg->queue_msix_vector)
+                        vp_modern_queue_vector
+                    request_irq(pci_irq_vector(vp_dev->pci_dev, msix_vec), vring_interrupt, 0, vp_dev->msix_names[msix_vec], vqs[i])
+                vp_find_vqs_msix false
+                vp_find_vqs_intx
+            list_for_each_entry(vq, &vdev->vqs, list)
+                vp_modern_set_queue_enable(&vp_dev->mdev, vq->index, true)
+                    vp_iowrite16(enable, &mdev->common->queue_enable)
+
+
+
+static const struct sysfs_ops bus_sysfs_ops = {
+	.show	= bus_attr_show,
+	.store	= bus_attr_store,
+        bus_attr->store(subsys_priv->bus, buf, count) -> rescan_store
+};
+
+
+static void vp_reset(struct virtio_device *vdev)
+    vp_modern_set_status
+    vp_modern_get_status
+    vp_modern_avq_deactivate -> virtio-pci：引入管理命令发送功能，添加通过管理 virtqueue 接口发送管理命令的支持。设备重置完成后，中止任何正在进行的管理命令。设备准备就绪时激活管理队列；设备重置时停用。为了符合以下规范声明 [1]，仅在设置 DRIVER_OK 状态后，管理 virtqueue 才会为上层用户激活。[1] 在设置 DRIVER_OK 之前，驱动程序不得向设备发送任何缓冲区可用通知
+        __virtqueue_break(admin_vq->info.vq)
+            WRITE_ONCE(vq->broken, true) -> 用于描述符环形缓冲区实现的 Virtio 辅助例程，这些辅助例程为想要使用 virtio 环形的虚拟机管理程序提供大部分 virtqueue_ops。与之前的 lguest 实现不同：1) 环形大小可变（2^n-1 个元素）。2) 它们每个 sg 元素的上限为 65535 字节。3) 页码始终为 64 位（PAE 有人知道吗？）4) 它们不再将 used[] 放在单独的页面上，而只是单独的缓存行。5) 我们对变量进行取模。如果我们在意的话，我们可能会很棘手。6) 使用环形内的标志抑制中断和通知。用户只需获取环形页面并提供通知挂钩（KVM 希望客户分配环形，lguest 可以明智地完成此操作）
+	vp_synchronize_vectors(vdev) -> wait for pending irq handlers
+        synchronize_irq(vp_dev->pci_dev->irq) -> 对 virtqueues 使用共享中断 -> 用于等待PENDING状态的中断处理函数结束（中断处理包括硬中断的处理以及中断线程的处理）
+        or synchronize_irq(pci_irq_vector(vp_dev->pci_dev, i))
+
+
+static const struct blk_mq_ops virtio_mq_ops = {
+	.queue_rq	= virtio_queue_rq,
+	.queue_rqs	= virtio_queue_rqs,
+	.commit_rqs	= virtio_commit_rqs,
+	.complete	= virtblk_request_done,
+	.map_queues	= virtblk_map_queues,
+	.poll		= virtblk_poll,
+};
+virtio_queue_rq
+    virtblk_prep_rq(hctx, vblk, req, vbr)
+        virtblk_setup_cmd(vblk->vdev, req, vbr)
+            case REQ_OP_WRITE
+                type = VIRTIO_BLK_T_OUT
+                sector = blk_rq_pos(req)
+        num = virtblk_map_data(hctx, req, vbr)
+            sg_alloc_table_chained(&vbr->sg_table, blk_rq_nr_phys_segments(req), vbr->sg_table.sgl, VIRTIO_BLK_INLINE_SG_CNT) -> 分配内存以保存数据 SG 的信息，并调用 blk_rq_map_sg 映射数据 SG
+            blk_rq_map_sg(hctx->queue, req, vbr->sg_table.sgl)
+        blk_mq_start_request(req)
+    virtblk_add_req(vblk->vqs[qid].vq, vbr)
+        sg_init_one(&out_hdr, &vbr->out_hdr, sizeof(vbr->out_hdr))
+        virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC)
+            virtqueue_add(_vq, sgs, total_sg, out_sgs, in_sgs, data, NULL, gfp)
+    virtqueue_kick_prepare(vblk->vqs[qid].vq)
+        virtqueue_kick_prepare_packed
+        or virtqueue_kick_prepare_split
+    virtqueue_notify(vblk->vqs[qid].vq)
+        vq->notify(_vq))
+        vq->broken = true
 
