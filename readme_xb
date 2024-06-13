@@ -6271,8 +6271,13 @@ bool timerqueue_add
     rb_link_node(&node->node, parent, p)
 
 
-
-virtqueue_add_split
+在 virtqueue_add 函数中，能看到free_head指向整个内存块空闲链表的起始位置，用head变量记住这个起始位置。接下来，i也指向这个起始位置，然后是一个for循环，将数据放到内存块里面，放的过程中next不断指向下一个空闲位置，这样空闲的内存块被不断的占用。等所有的写入都结束了，i就会指向这次存放的内存块的下一个空闲位置，然后free_head就指向i，因为前面的都填满了。, 至此，从head到i之间的内存块，就是这次写入的全部数据。于是，在vring的avail变量中，在ring[]数组中分配新的一项，在avail的位置，avail的计算是avail_idx_shadow & (vq->vring.num - 1)，其中avail_idx_shadow是上一次的avail的位置，这里如果超过了ring[]数组的下标，则重新跳到起始位置，就说明是一个环，这次分配的新的avail的位置就存放新写入的从head到i之间的内存块。然后是avail_idx_shadow++，这说明这一块内存可以被接收方读取了
+static inline int virtqueue_add_split
+    head = vq->free_head
+    i = head
+    for (n = 0; n < out_sgs; n++)
+        for (sg = sgs[n]; sg; sg = sg_next(sg))
+            i = virtqueue_add_desc_split(_vq, desc, i, addr, sg->length, VRING_DESC_F_NEXT, indirect)
     static dma_addr_t vring_map_single
 
 
@@ -11303,7 +11308,8 @@ pci_subsys_init
     						pci_std_update_resource
     							pci_write_config_dword(dev, reg, new)	// 往BAR寄存器写入起始地址
 
-module_pci_driver(virtio_pci_driver); -> PCI驱动和其它linux驱动一样，需要定义init和exit两个函数作为加载模块的入口点和卸载模块的出口点，可以使用module_pci_driver宏，只要将pci_driver结构体变量作为参数调用这个宏，就会自动定义init和exit这两个函数，好处是代码整洁，缺点就是不够灵活，我这里仍然用传统的方法使用module_init和module_exit两个宏
+#############################################
+module_pci_driver(virtio_pci_driver); -> PCI驱动和其它linux驱动一样，需要定义init和exit两个函数作为加载模块的入口点和卸载模块的出口点，可以使用 module_pci_driver 宏，只要将pci_driver结构体变量作为参数调用这个宏，就会自动定义init和exit这两个函数，好处是代码整洁，缺点就是不够灵活，我这里仍然用传统的方法使用 module_init 和 module_exit 两个宏
 static struct pci_driver virtio_pci_driver = {
 	.name		= "virtio-pci",
 	.id_table	= virtio_pci_id_table,
@@ -11316,54 +11322,64 @@ static struct pci_driver virtio_pci_driver = {
 };
 
 
-virtio_pci_driver.probe
-	virtio_pci_probe
-        vp_dev->vdev.dev.parent = &pci_dev->dev
-        vp_dev->vdev.dev.release = virtio_pci_release_dev
-        INIT_LIST_HEAD(&vp_dev->virtqueues)
-        pci_enable_device
-            pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO)	// 打开内存和IO访问权限
-                do_pci_enable_device
-                    pcibios_enable_device
-                        pci_enable_resources
-                            pci_write_config_word(dev, PCI_COMMAND, cmd)	//向command寄存器字段写1
-        virtio_pci_legacy_probe
-            vp_legacy_probe(ldev)
-                ...
-                rc = pci_request_region(pci_dev, 0, "virtio-pci-legacy")
-                ldev->ioaddr = pci_iomap(pci_dev, 0, 0) -> pci_iomap函数完成PCI BAR的映射，第一个参数是pci设备的指针，第二个参数指定我们要映射的是0号BAR，第三个参数确定要映射的BAR空间多大，当第三个参数为0时，就将整个BAR空间都映射到内存空间上。VirtioPCI设备的0号BAR指向的就是配置空间的寄存器空间，也就是配置空间上用于消息通知的寄存器
-                ldev->isr = ldev->ioaddr + VIRTIO_PCI_ISR
-            vp_dev->vdev.config = &virtio_pci_config_ops;
-            vp_dev->config_vector = vp_config_vector;
-            vp_dev->setup_vq = setup_vq;
-            vp_dev->del_vq = del_vq;
-            vp_dev->is_legacy = true;
-        virtio_pci_modern_probe -> #对于virtio modern，通过capability方式报告配置数据结构的位置，配置数据结构有5种类型
-            vp_modern_probe -> 现代 PCI 设备实现。此模块实现基于现代 PCI 设备（可能带有供应商特定的扩展）的设备的基本探测和控制。选择此模块的任何模块都必须依赖于 PCI
-                check_offsets
-                common = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_COMMON_CFG, IORESOURCE_IO | IORESOURCE_MEM, &mdev->modern_bars)
-                isr = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_ISR_CFG,
-                VIRTIO_PCI_CAP_NOTIFY_CFG
-                VIRTIO_PCI_CAP_DEVICE_CFG
-                pci_request_selected_regions(pci_dev, mdev->modern_bars, "virtio-pci-modern")
-                mdev->common = vp_modern_map_capability(mdev, common, sizeof(struct virtio_pci_common_cfg), 4, 0, offsetofend(struct virtio_pci_modern_common_cfg, admin_queue_num) -> 将virtio配置结构所在的BAR空间MAP到内核地址空间
-                    pci_read_config_byte(dev, off + offsetof(struct virtio_pci_cap,bar), &bar)
-                    pci_read_config_dword(dev, off + offsetof(struct virtio_pci_cap, offset), &offset)
-                    p = pci_iomap_range(dev, bar, offset, length)
-                    *pa = pci_resource_start(dev, bar) + offset
-                pci_read_config_dword(pci_dev,
-                mdev->notify_base = vp_modern_map_capability(mdev, notify,
+static int virtio_pci_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
+    vp_dev = kzalloc
+    vp_dev->vdev.dev.parent = &pci_dev->dev
+    vp_dev->vdev.dev.release = virtio_pci_release_dev
+    INIT_LIST_HEAD(&vp_dev->virtqueues)
+    pci_enable_device
+        pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO)	// 打开内存和IO访问权限
+            do_pci_enable_device
+                pcibios_enable_device
+                    pci_enable_resources
+                        pci_write_config_word(dev, PCI_COMMAND, cmd)	// 向command寄存器字段写1
+    virtio_pci_legacy_probe -> virtio spec 0.95
+        vp_legacy_probe(ldev)
+            ...
+            rc = pci_request_region(pci_dev, 0, "virtio-pci-legacy")
+            ldev->ioaddr = pci_iomap(pci_dev, 0, 0) -> pci_iomap函数完成PCI BAR的映射，第一个参数是pci设备的指针，第二个参数指定我们要映射的是0号BAR，第三个参数确定要映射的BAR空间多大，当第三个参数为0时，就将整个BAR空间都映射到内存空间上。VirtioPCI设备的0号BAR指向的就是配置空间的寄存器空间，也就是配置空间上用于消息通知的寄存器
+            ldev->isr = ldev->ioaddr + VIRTIO_PCI_ISR
+        vp_dev->vdev.config = &virtio_pci_config_ops;
+        vp_dev->config_vector = vp_config_vector;
+        vp_dev->setup_vq = setup_vq;
+        vp_dev->del_vq = del_vq;
+        vp_dev->is_legacy = true;
+    virtio_pci_modern_probe -> #对于virtio modern，通过capability方式报告配置数据结构的位置，配置数据结构有5种类型
+        vp_modern_probe(mdev) -> 现代 PCI 设备实现。此模块实现基于现代 PCI 设备（可能带有供应商特定的扩展）的设备的基本探测和控制。选择此模块的任何模块都必须依赖于 PCI
+            check_offsets()
+            devid = mdev->device_id_check(pci_dev)
+            common = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_COMMON_CFG, IORESOURCE_IO | IORESOURCE_MEM, &mdev->modern_bars)
+                for (pos = pci_find_capability(dev, PCI_CAP_ID_VNDR)
+                    pci_find_next_capability
+                    pci_read_config_byte(dev, pos + offsetof(struct virtio_pci_cap, cfg_type), &type)
+                    pci_read_config_byte(dev, pos + offsetof(struct virtio_pci_cap, bar), &bar)
+                    *bars |= (1 << bar)
+            isr = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_ISR_CFG,
+            VIRTIO_PCI_CAP_NOTIFY_CFG
+            VIRTIO_PCI_CAP_DEVICE_CFG
+            pci_request_selected_regions(pci_dev, mdev->modern_bars, "virtio-pci-modern")
+            mdev->common = vp_modern_map_capability(mdev, common, sizeof(struct virtio_pci_common_cfg), 4, 0, offsetofend(struct virtio_pci_modern_common_cfg, admin_queue_num) -> 将virtio配置结构所在的BAR空间MAP到内核地址空间
+                pci_read_config_byte(dev, off + offsetof(struct virtio_pci_cap,bar), &bar)
+                pci_read_config_dword(dev, off + offsetof(struct virtio_pci_cap, offset), &offset)
+                p = pci_iomap_range(dev, bar, offset, length)
+                *pa = pci_resource_start(dev, bar) + offset
+            pci_read_config_dword(pci_dev,
+            mdev->notify_base = vp_modern_map_capability(mdev, notify,
+        if (mdev->device)
             vp_dev->vdev.config = &virtio_pci_config_ops
-            or vp_dev->vdev.config = &virtio_pci_config_nodev_ops -> virtio-pci-modern：分解出现代设备初始化逻辑，此补丁将现代设备初始化逻辑分解为辅助程序。请注意，它仍然依赖于调用者来启用 pci 设备，这允许调用者使用例如 devres
-        register_virtio_device(&vp_dev->vdev)
-            dev->dev.bus = &virtio_bus
-            device_initialize(&dev->dev)
-            dev_set_name(&dev->dev, "virtio%u", dev->index)
-            virtio_device_of_init(dev)
-            INIT_LIST_HEAD(&dev->vqs)
-            virtio_reset_device(dev)
-            virtio_add_status(dev, VIRTIO_CONFIG_S_ACKNOWLEDGE)
-            device_add(&dev->dev) -> match driver
+        else 
+            vp_dev->vdev.config = &virtio_pci_config_nodev_ops -> virtio-pci-modern：分解出现代设备初始化逻辑，此补丁将现代设备初始化逻辑分解为辅助程序。请注意，它仍然依赖于调用者来启用 pci 设备，这允许调用者使用例如 devres
+        vp_dev->setup_vq = setup_vq
+        vp_dev->del_vq = del_vq
+    register_virtio_device(&vp_dev->vdev)
+        dev->dev.bus = &virtio_bus
+        device_initialize(&dev->dev)
+        dev_set_name(&dev->dev, "virtio%u", dev->index)
+        virtio_device_of_init(dev)
+        INIT_LIST_HEAD(&dev->vqs)
+        virtio_reset_device(dev)
+        virtio_add_status(dev, VIRTIO_CONFIG_S_ACKNOWLEDGE)
+        device_add(&dev->dev) -> match net/fs/block... driver
 
 
 
@@ -11394,11 +11410,11 @@ static struct virtio_driver virtio_blk = {
 
 static int virtblk_probe(struct virtio_device *vdev)
     ida_alloc_range(&vd_index_ida, 0,
-    virtio_cread_feature(vdev, VIRTIO_BLK_F_SEG_MAX, struct virtio_blk_config, seg_max, &sg_elems)
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_SEG_MAX, struct virtio_blk_config, seg_max, &sg_elems) -> #define virtio_cread_feature(vdev, fbit, structname, member, ptr)
         virtio_has_feature(vdev, fbit)
         virtio_cread((vdev), structname, member, ptr)
             vdev->config->get((vdev),
-                static void vm_get
+                static void vp_get
             or
             __virtio_cread_many
     vdev->priv = vblk = kmalloc(sizeof(*vblk), GFP_KERNEL)
@@ -11527,15 +11543,33 @@ static const struct virtio_config_ops virtio_pci_config_ops = {
 };
 
 
-前端驱动通知后端：
-内核流程mark一下，PCI设备驱动流程这个后面可以学习一下，先扫描PCI bus发现是virtio设备再扫描virtio-bus。
-worker_thread --> process_one_work --> pciehp_power_thread --> pciehp_enable_slot --> 
-pciehp_configure_device --> pci_bus_add_devices --> pci_bus_add_device --> device_attach --> 
-__device_attach --> bus_for_each_drv --> __device_attach_driver --> driver_probe_device --> 
-pci_device_probe --> local_pci_probe --> virtio_pci_probe --> register_virtio_device --> 
-device_register --> device_add --> bus_probe_device --> device_initial_probe 
---> __device_attach --> bus_for_each_drv --> __device_attach_driver -->
-driver_probe_device --> virtio_dev_probe --> virtnet_probe (网卡设备驱动加载的入口)
+前端驱动通知后端：内核流程mark一下，PCI设备驱动流程这个后面可以学习一下，先扫描PCI bus发现是virtio设备再扫描virtio-bus
+worker_thread 
+    --> process_one_work 
+    --> pciehp_power_thread 
+    --> pciehp_enable_slot 
+    --> pciehp_configure_device 
+    --> pci_bus_add_devices 
+    --> pci_bus_add_device 
+    --> device_attach 
+    --> __device_attach 
+    --> bus_for_each_drv 
+    --> __device_attach_driver 
+    --> driver_probe_device 
+    --> pci_device_probe 
+    --> local_pci_probe 
+    --> virtio_pci_probe 
+    --> register_virtio_device 
+    --> device_register 
+    --> device_add 
+    --> bus_probe_device 
+    --> device_initial_probe 
+    --> __device_attach 
+    --> bus_for_each_drv 
+    --> __device_attach_driver 
+    --> driver_probe_device 
+    --> virtio_dev_probe 
+    --> virtnet_probe (网卡设备驱动加载的入口)
 
 static int virtio_dev_probe(struct device *_d)
     virtio_add_status(dev, VIRTIO_CONFIG_S_DRIVER) -> ioread8(ldev->ioaddr + VIRTIO_PCI_STATUS)
@@ -11593,8 +11627,7 @@ include/uapi/linux/virtio_pci.h
 
 
 
-前端驱动加载(probe)的过程中，会去初始化virtqueue，这个时候会去申请MSIx中断并注册中断处理函数：
-
+前端驱动加载(probe)的过程中，会去初始化 virtqueue，这个时候会去申请MSIx中断并注册中断处理函数：
 virtnet_probe
   --> init_vqs
     --> virtnet_find_vqs
@@ -11604,8 +11637,7 @@ virtnet_probe
             --> vp_request_msix_vectors // 主要的MSIx中断申请逻辑都在这个函数里面
               --> pci_alloc_irq_vectors_affinity // 申请MSIx中断描述符(__pci_enable_msix_range)
                 --> request_irq  // 注册中断处理函数
-               
-	       // virtio-net网卡至少申请了3个MSIx中断：
+	            // virtio-net网卡至少申请了3个MSIx中断：
                 // 一个是configuration change中断（配置空间发生变化后，QEMU通知前端）
                 // 发送队列1个MSIx中断，接收队列1MSIx中断
 
@@ -11650,7 +11682,7 @@ static int vp_find_vqs_msix(struct virtio_device *vdev, unsigned nvqs,
 	err = vp_request_msix_vectors(vdev, nvectors, per_vq_vectors,
 			      per_vq_vectors ? desc : NULL);
         for (i = 0; i < nvqs; ++i) {
-		 // 创建队列 --> vring_create_virtqueue --> vring_create_virtqueue_split --> vring_alloc_queue
+		 // 创建队列 --> vring_create_virtqueue --> vring_create_virtqueue_split --> vring_alloc_queue -> qemu初始化时，virtio的后端有数据结构VirtIODevice、VirtQueue和vring一模一样，前端和后端对应起来，都应该指向刚才创建的那一段内存。现在的问题是，刚才分配的内存在客户机的内核里面，如何告知qemu来访问这段内存呢？qemu模拟出来的virtio block device只是一个PCI设备，对于客户机来讲这是一个外部设备，可以通过给外部设备发送指令的方式告知外部设备，这就是代码中vp_iowrite16的作用，它会调用专门给外部设备发送指令的函数iowrite，告诉外部的PCI设备, 告知的有三个地址virtqueue_get_desc_addr、virtqueue_get_avail_addr、virtqueue_get_used_addr。从客户机角度来看，这里面的地址都是物理地址即GPA（Guest Physical Address），因为只有物理地址才是客户机和qemu程序都认可的地址，本来客户机的物理内存也是qemu模拟出来的。在qemu中，对PCI总线添加一个设备的时候，会调用virtio_pci_device_plugged
 	         vqs[i] = vp_setup_vq(vdev, queue_idx++, callbacks[i], names[i],
                                 ctx ? ctx[i] : false,
                                 msix_vec);
@@ -11856,9 +11888,9 @@ virtblk_probe
     num_vqs = min_t(unsigned int, nr_cpu_ids, num_vqs) -> 8
     for (i = 0; i < num_vqs; i++)
         callbacks[i] = virtblk_done
-    virtio_find_vqs
-        vdev->config->find_vqs -> static int vp_modern_find_vqs
-            vp_find_vqs
+    int virtio_find_vqs -> virtqueue 是客户机前端对于队列管理的数据结构，在客户机的linux内核中通过kmalloc_array进行分配。而队列的实体需要通过函数 virtio_find_vqs 查找或者生成，所以这里还把callback函数指定为virtblk_done，当buffer使用发生变化的时候，需要调用这个callback函数进行通知
+        vdev->config->find_vqs(vdev, nvqs, vqs, callbacks, names, NULL, desc) -> static int vp_modern_find_vqs
+            vp_find_vqs(vdev, nvqs, vqs, callbacks, names, ctx, desc)
                 vp_find_vqs_msix true
                     vp_request_msix_vectors
                         pci_alloc_irq_vectors_affinity(vp_dev->pci_dev, nvectors, nvectors, flags, desc)
@@ -11871,15 +11903,28 @@ virtblk_probe
                                 vring_init
                                 __vring_new_virtqueue
                         vp_modern_set_queue_size
-                        vp_modern_queue_address
+                        vp_modern_queue_address -> 写qemu中的pci设备配置空间, 告知qemu, 然后qemu和虚机共用这段内存空间 -> virtio的后端有数据结构VirtIODevice、VirtQueue和vring一模一样，前端和后端对应起来，都应该指向刚才创建的那一段内存。现在的问题是，刚才分配的内存在客户机的内核里面，如何告知qemu来访问这段内存呢？qemu模拟出来的virtio block device只是一个PCI设备，对于客户机来讲这是一个外部设备，可以通过给外部设备发送指令的方式告知外部设备，这就是代码中vp_iowrite16的作用，它会调用专门给外部设备发送指令的函数iowrite，告诉外部的PCI设备
+                            vp_iowrite16(index, &cfg->queue_select)
+                            vp_iowrite64_twopart(desc_addr, &cfg->queue_desc_lo, &cfg->queue_desc_hi)
+                            vp_iowrite64_twopart(driver_addr, &cfg->queue_avail_lo, &cfg->queue_avail_hi)
+                            vp_iowrite64_twopart(device_addr, &cfg->queue_used_lo, &cfg->queue_used_hi)
                         vp_modern_map_vq_notify
                             vp_iowrite16(index, &cfg->queue_select)
                             vp_iowrite16(vector, &cfg->queue_msix_vector)
                         vp_modern_queue_vector
                     request_irq(pci_irq_vector(vp_dev->pci_dev, msix_vec), vring_interrupt, 0, vp_dev->msix_names[msix_vec], vqs[i])
                 vp_find_vqs_msix false
-                vp_find_vqs_intx
-            list_for_each_entry(vq, &vdev->vqs, list)
+                vp_find_vqs_intx(vdev, nvqs, vqs, callbacks, names, ctx) -> 通过request_irq注册一个中断处理函数vp_interrupt，当设备的配置信息发生改变会产生一个中断，当设备向队列中写入信息时也会产生一个中断，称为vq中断，中断处理函数需要调用相应的队列的回调函数。然后，根据队列的数目依次调用vp_setup_vq，完成virtqueue、vring的分配和初始化
+                    request_irq(vp_dev->pci_dev->irq, vp_interrupt, IRQF_SHARED, dev_name(&vdev->dev), vp_dev) -> virtio_pci：将 vp_try_to_find_vqs 拆分为 INTx 和 MSI-X 变体，vp_try_to_find_vqs 中的 INTx 和 MSI-X 情况之间基本上没有共享逻辑，因此将函数拆分为两个并稍微清理一下。同时删除相当无意义的 vp_request_intx 包装器
+                        isr = ioread8(vp_dev->isr)
+                        vp_config_changed(irq, opaque)
+                            drv->config_changed(dev) -> virtblk_config_changed
+                                queue_work(virtblk_wq, &vblk->config_work)
+                        vp_vring_interrupt(irq, opaque)
+                            list_for_each_entry(info, &vp_dev->virtqueues, node)
+                                vring_interrupt(irq, info->vq)
+                    vqs[i] = vp_setup_vq(vdev, queue_idx++, callbacks[i], names[i], ctx ? ctx[i] : false, VIRTIO_MSI_NO_VECTOR)
+            list_for_each_entry(vq, &vdev->vqs, list) -> 选择并激活所有队列。必须最后完成：一旦我们这样做，除了重置外没有其他办法可以返回。
                 vp_modern_set_queue_enable(&vp_dev->mdev, vq->index, true)
                     vp_iowrite16(enable, &mdev->common->queue_enable)
 
@@ -11919,16 +11964,101 @@ virtio_queue_rq
                 sector = blk_rq_pos(req)
         num = virtblk_map_data(hctx, req, vbr)
             sg_alloc_table_chained(&vbr->sg_table, blk_rq_nr_phys_segments(req), vbr->sg_table.sgl, VIRTIO_BLK_INLINE_SG_CNT) -> 分配内存以保存数据 SG 的信息，并调用 blk_rq_map_sg 映射数据 SG
-            blk_rq_map_sg(hctx->queue, req, vbr->sg_table.sgl)
+            blk_rq_map_sg(hctx->queue, req, vbr->sg_table.sgl) -> request映射, 使用blk_rq_map_sg把request映射到一个scatterlist，在__blk_segment_map_sg中，BIOVEC_PHYS_MERGEABLE检测相邻bio_vec是否可以合并，BIOVEC_SEG_BOUNDARY用于检测是否超过边界，比如某些硬件不能跨64MB边界传输，其单次发起DMA的最大大小就是64MB，可以通过queue_max_segment_size来控制scatterlist的表项
+                //block\blk-merge.c
+                __blk_bios_map_sg
+                    __blk_segment_map_sg
         blk_mq_start_request(req)
-    virtblk_add_req(vblk->vqs[qid].vq, vbr)
+            WRITE_ONCE(rq->state, MQ_RQ_IN_FLIGHT)
+            rq->mq_hctx->tags->rqs[rq->tag] = rq
+    virtblk_add_req(vblk->vqs[qid].vq, vbr) -> virtio-blk：支持 mq_ops->queue_rqs()，此补丁支持 mq_ops->queue_rqs() 钩子。它具有批量提交给 virtio-blk 驱动程序的优势。它还有助于轮询 I/O，因为轮询使用块层的批量完成。queue_rqs() 中的批量提交可以提高轮询性能。在queue_rqs()中，它迭代 plug->mq_list，收集属于同一 HW 队列的请求，直到遇到来自其他 HW 队列的请求或看到列表末尾。然后，virtio-blk 将请求添加到 virtqueue 并踢出 virtqueue 提交请求。如果有错误，它会将错误请求插入 requeue_list 并将其传递给普通块层路径。为了验证，我做了 fio 测试
         sg_init_one(&out_hdr, &vbr->out_hdr, sizeof(vbr->out_hdr))
-        virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC)
+        virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC) -> scatter-list成员入virtqueue的vring
             virtqueue_add(_vq, sgs, total_sg, out_sgs, in_sgs, data, NULL, gfp)
     virtqueue_kick_prepare(vblk->vqs[qid].vq)
         virtqueue_kick_prepare_packed
         or virtqueue_kick_prepare_split
     virtqueue_notify(vblk->vqs[qid].vq)
-        vq->notify(_vq))
+        vq->notify(_vq)) -> vp_notify
+            iowrite16(vq->index, (void __iomem *)vq->priv) -> 虚机VM 写入一个I/O会触发VM exit(KVM_EXIT_IO)，在解析CPU虚拟化的时候看到过这个逻辑, 这次写入的也是一个I/O的内存空间，同样会触发virtio_ioport_write，这次会调用 virtio_queue_notify
         vq->broken = true
+
+
+int kvm_cpu_exec(CPUState *cpu)
+{
+    struct kvm_run *run = cpu->kvm_run;
+    int ret, run_ret;
+......
+    run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
+......
+    switch (run->exit_reason) {
+        case KVM_EXIT_IO:
+            DPRINTF("handle_io\n");
+            /* Called outside BQL */
+            kvm_handle_io(run->io.port, attrs,
+                          (uint8_t *)run + run->io.data_offset,
+                          run->io.direction,
+                          run->io.size,
+                          run->io.count);
+            ret = 0;
+            break;
+    }
+......
+}
+
+
+
+mailbox
+drivers/mailbox/mailbox-test.c
+mbox_create(&mbox, 32)
+mbox_send_message(&mbox, "Hello World!", sizeof("Hello World!"))
+static const struct file_operations mbox_test_message_ops = {
+	.write	= mbox_test_message_write,
+	.read	= mbox_test_message_read,
+	.fasync	= mbox_test_message_fasync,
+	.poll	= mbox_test_message_poll,
+	.open	= simple_open,
+	.llseek	= generic_file_llseek,
+};
+
+
+int vp_set_vq_affinity(struct virtqueue *vq, const struct cpumask *cpu_mask)
+    irq = pci_irq_vector(vp_dev->pci_dev, info->msix_vector)
+    cpumask_copy(mask, cpu_mask)
+    irq_set_affinity_and_hint(irq, mask)
+
+
+
+vp_legacy_set_queue_address
+    iowrite32(queue_pfn, ldev->ioaddr + VIRTIO_PCI_QUEUE_PFN)
+
+
+总结一下存储虚拟化的场景下，整个写入的过程，如下图所示：
+（1）在虚拟机里面，应用层调用write系统调用写入文件。
+（2）write系统调用进入虚拟机里面的内核，经过VFS、通用块设备层、I/O调度层，到达块设备驱动。
+（3）虚拟机里面的块设备驱动是virtio_blk，它和通用的块设备驱动一样有一个request queue，另外有一个函数make_request_fn会被设置为blk_mq_make_request，这个函数用于将请求放入队列。
+（4）虚拟机里面的块设备驱动是virtio_blk，会注册一个中断处理函数vp_interrupt。当qemu写入完成之后，它会通知虚拟机里面的块设备驱动。
+（5）blk_mq_make_request最终调用virtqueue_add，将请求添加到传输队列virtqueue中，然后调用virtqueue_notify通知qemu。
+（6）在qemu中，本来虚拟机正处于KVM_RUN的状态即处于客户机状态。
+（7）qemu收到通知后，通过VM exit指令退出客户机状态进入宿主机状态，根据退出原因得知有I/O需要处理。
+（8）qemu调用virtio_blk_handle_output，最终调用virtio_blk_handle_vq。
+（9）virtio_blk_handle_vq里面有一个循环，在循环中virtio_blk_get_request函数从传输队列中拿出请求，然后调用virtio_blk_handle_request处理请求。
+（10）virtio_blk_handle_request会调用blk_aio_pwritev，通过BlockBackend驱动写入qcow2文件。
+（11）写入完毕之后，virtio_blk_req_complete会调用virtio_notify通知虚拟机里面的驱动，数据写入完成，刚才注册的中断处理函数vp_interrupt会收到这个通知
+
+
+
+网络虚拟化场景下网络包的发送过程总结一下，如下图所示：
+（1）在虚拟机里面的用户态，应用程序通过write系统调用写入socket。
+（2）写入的内容经过VFS层、内核协议栈，到达虚拟机里面内核的网络设备驱动即virtio_net。
+（3）virtio_net网络设备有一个操作结构struct net_device_ops，里面定义了发送一个网络包调用的函数为start_xmit。
+（4）在virtio_net的前端驱动和qemu中的后端驱动之间，有两个队列virtqueue，一个用于发送一个用于接收。然后，需要在start_xmit中调用virtqueue_add，将网络包放入发送队列，然后调用virtqueue_notify通知qemu。
+（5）qemu本来处于KVM_RUN的状态，收到通知后通过VM exit指令退出客户机模式，进入宿主机模式。发送网络包的时候，virtio_net_handle_tx_bh函数会被调用。
+（6）接下来是一个for循环，需要在循环中调用virtqueue_pop，从传输队列中获取要发送的数据，然后调用qemu_sendv_packet_async进行发送。
+（7）qemu会调用writev向字符设备文件写入，进入宿主机的内核。
+（8）在宿主机内核中字符设备文件的file_operations里面的write_iter会被调用，即会调用tun_chr_write_iter。
+（9）在tun_chr_write_iter函数中，tun_get_user将要发送的网络包从qemu拷贝到宿主机内核里面来，然后调用netif_rx_ni开始调用宿主机内核协议栈进行处理。
+（10）宿主机内核协议栈处理完毕之后，会发送给tap虚拟网卡，完成从虚拟机里面到宿主机的整个发送过程。
+简化的数据流转流程为：客户机用户态{write 数据} -> 客户机内核态{协议栈处理为网络包} -> qemu{循环从队列中获取网络包，再向字符设备写入数据流} -> 宿主机用户态{dev/net/tun字符设备接收数据流} -> 宿主机内核态{将网络包拷贝到宿主机内核里面来，协议栈处理} -> 宿主机用户态{虚拟网卡发送}。
+
 
