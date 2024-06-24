@@ -1,0 +1,189 @@
+echo "add-symbol-file ./drivers/block/virtio_blk.ko `cat /sys/module/virtio_blk/sections/.text` -s .data `cat /sys/module/virtio_blk/sections/.data` -s .bss `cat /sys/module/virtio_blk/sections/.bss`"
+
+#echo 1 > /sys/bus/pci/devices/0000\:00\:05.0/remove 
+#lsblk
+#echo 1 > /sys/bus/pci/rescan
+
+
+static int virtblk_probe
+    if (!vdev->config->get)
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_SEG_MAX, struct virtio_blk_config, seg_max, &sg_elems)
+        virtio_has_feature(vdev, fbit)
+        virtio_cread((vdev), structname, member, ptr)
+        static void vp_get
+            switch (len)
+            case 1:
+                b = ioread8(device + offset);
+                memcpy(buf, &b, sizeof b)
+            case 2:
+                w = cpu_to_le16(ioread16(device + offset))
+                memcpy(buf, &w, sizeof w)
+    num_vqs = min_t(unsigned int, nr_cpu_ids, num_vqs) -> 8, sg_elems = 256
+    for (i = 0; i < num_vqs; i++)
+        callbacks[i] = virtblk_done
+        vblk->vqs[i].name -> req.0\000\000\000\000\000\000\000\000\000\000
+    init_vq -> virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &desc)
+        vdev->config->find_vqs -> static int vp_modern_find_vqs
+            vp_find_vqs
+                vp_find_vqs_msix true
+                    vp_request_msix_vectors
+                        pci_alloc_irq_vectors_affinity(vp_dev->pci_dev, nvectors, nvectors, flags, desc)
+                        request_irq(pci_irq_vector(vp_dev->pci_dev, v), vp_config_changed, 0, vp_dev->msix_names[v], vp_dev)
+                        vp_dev->config_vector(vp_dev, v)
+                        request_irq(pci_irq_vector(vp_dev->pci_dev, v), vp_vring_interrupt, 0, vp_dev->msix_names[v], vp_dev)
+                    vp_setup_vq -> static struct virtqueue *setup_vq
+                        vring_create_virtqueue -> create the vring
+                            vring_create_virtqueue_split
+                                vring_init
+                                __vring_new_virtqueue
+                        vp_modern_set_queue_size
+                        vp_modern_queue_address
+                        vp_modern_map_vq_notify
+                        vp_modern_queue_vector
+                    request_irq(pci_irq_vector(vp_dev->pci_dev, msix_vec), vring_interrupt, 0, vp_dev->msix_names[msix_vec], vqs[i])
+                vp_find_vqs_msix false
+                vp_find_vqs_intx
+            list_for_each_entry(vq, &vdev->vqs, list)
+                vp_modern_set_queue_enable(&vp_dev->mdev, vq->index, true)
+    vblk->tag_set.ops = &virtio_mq_ops
+    max_size = virtio_max_dma_size(vdev) -> 4294967295
+    blk_queue_max_segment_size(q, max_size)
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_BLK_SIZE, struct virtio_blk_config, blk_size, &blk_size) -> 512
+    virtio_has_feature(vdev, VIRTIO_BLK_F_DISCARD)
+    blk_queue_flag_set(QUEUE_FLAG_DISCARD, q)
+    virtio_has_feature(vdev, VIRTIO_BLK_F_WRITE_ZEROES)
+    virtblk_update_capacity(vblk, false)
+        set_capacity_and_notify(vblk->disk, capacity)
+    vblk->disk->fops = &virtblk_fops;
+    virtio_device_ready(vdev)
+    device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups)
+
+
+
+echo "1" > /sys/bus/pci/rescan
+
+
+static const struct blk_mq_ops virtio_mq_ops = {
+	.queue_rq	= virtio_queue_rq, <- q->mq_ops->queue_rq(hctx, &bd)
+        switch (req_op(req))
+        case REQ_OP_READ
+        case REQ_OP_WRITE
+        type = 0
+        blk_mq_start_request(req)
+            rq->io_start_time_ns = ktime_get_ns()
+            rq->stats_sectors = blk_rq_sectors(rq) -> 8
+            rq_qos_issue(q, rq)
+            blk_add_timer(rq)
+        blk_rq_map_sg(hctx->queue, req, vbr->sg)
+        virtblk_add_req(vblk->vqs[qid].vq, vbr, vbr->sg, num)
+            sg_init_one(&hdr, &vbr->out_hdr, sizeof(vbr->out_hdr))
+                sg_init_table(sg, 1)
+                sg_set_buf(sg, buf, buflen)
+                    sg_set_page(sg, virt_to_page(buf), buflen, offset_in_page(buf))
+                        pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
+            sgs[num_out + num_in++] = data_sg
+            sg_init_one(&status, &vbr->status, sizeof(vbr->status))
+            virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC)
+                for (sg = sgs[i]; sg; sg = sg_next(sg))
+                virtqueue_add(_vq, sgs, total_sg, out_sgs, in_sgs, data, NULL, gfp)
+                    vq->packed_ring ? virtqueue_add_packed(_vq, sgs, total_sg, out_sgs, in_sgs, data, ctx, gfp) : virtqueue_add_split(_vq, sgs, total_sg, out_sgs, in_sgs, data, ctx, gfp) -> static inline int virtqueue_add_split
+                        if (virtqueue_use_indirect(_vq, total_sg))
+                            desc = alloc_indirect_split(_vq, total_sg, gfp)
+                                desc = kmalloc_array(total_sg, sizeof(struct vring_desc), gfp)
+                                desc[i].next = cpu_to_virtio16(_vq->vdev, i + 1)
+        virtqueue_kick_prepare(vblk->vqs[qid].vq) -> virtqueue_kick_prepare_split
+            old = vq->split.avail_idx_shadow - vq->num_added
+        virtqueue_notify(vblk->vqs[qid].vq)
+	.commit_rqs	= virtio_commit_rqs,
+	.complete	= virtblk_request_done,
+	.init_request	= virtblk_init_request,
+	.map_queues	= virtblk_map_queues,
+};
+
+
+Thread 1 hit Breakpoint 11, virtio_queue_rq (hctx=0xffff88810ee3c400, bd=0xffffc900030271a8) at drivers/block/virtio_blk.c:219
+219     {
+(gdb) bt
+#0  virtio_queue_rq (hctx=0xffff88810ee3c400, bd=0xffffc900030271a8) at drivers/block/virtio_blk.c:219
+#1  0xffffffff815bf8e4 in __blk_mq_issue_directly (last=true, cookie=0xffffc90003027244, rq=0xffff88810d860000, hctx=0xffff88810ee3c400) at block/blk-mq.c:1990
+#2  __blk_mq_try_issue_directly (hctx=hctx@entry=0xffff88810ee3c400, rq=rq@entry=0xffff88810d860000, cookie=cookie@entry=0xffffc90003027244, bypass_insert=bypass_insert@entry=false, last=last@entry=true) at block/blk-mq.c:2046
+#3  0xffffffff815c033c in blk_mq_try_issue_directly (hctx=0xffff88810ee3c400, rq=rq@entry=0xffff88810d860000, cookie=cookie@entry=0xffffc90003027244) at block/blk-mq.c:2077
+#4  0xffffffff815c0eb6 in blk_mq_submit_bio (bio=<optimized out>) at block/blk-mq.c:2297
+#5  0xffffffff815b2331 in __submit_bio (bio=<optimized out>) at block/blk-core.c:929
+#6  0xffffffff815b25c3 in __submit_bio_noacct_mq (bio=<optimized out>) at block/blk-core.c:1009
+#7  submit_bio_noacct (bio=<optimized out>) at block/blk-core.c:1039
+#8  0xffffffff815b2668 in submit_bio (bio=bio@entry=0xffff88813094f700) at block/blk-core.c:1101
+#9  0xffffffff813aeefa in submit_bh_wbc (op=op@entry=0, op_flags=op_flags@entry=0, bh=0xffff888124b7c1a0, write_hint=write_hint@entry=WRITE_LIFE_NOT_SET, wbc=wbc@entry=0x0 <fixed_percpu_data>) at fs/buffer.c:3054
+#10 0xffffffff813b24e0 in submit_bh (bh=<optimized out>, op_flags=0, op=0) at fs/buffer.c:3060
+#11 block_read_full_page (page=0xffffea0004bb5e40, get_block=get_block@entry=0xffffffff815ab6c0 <blkdev_get_block>) at fs/buffer.c:2339
+#12 0xffffffff815aa988 in blkdev_readpage (file=<optimized out>, page=<optimized out>) at block/fops.c:342
+#13 0xffffffff81292458 in do_read_cache_page (mapping=0xffff8881004830c0, index=index@entry=0, filler=filler@entry=0x0 <fixed_percpu_data>, data=data@entry=0x0 <fixed_percpu_data>, gfp=1051840) at mm/filemap.c:3458
+#14 0xffffffff81292612 in read_cache_page (mapping=<optimized out>, index=index@entry=0, filler=filler@entry=0x0 <fixed_percpu_data>, data=data@entry=0x0 <fixed_percpu_data>) at ./include/linux/pagemap.h:110
+#15 0xffffffff815cc1fb in read_mapping_page (data=0x0 <fixed_percpu_data>, index=0, mapping=<optimized out>) at ./include/linux/pagemap.h:515
+#16 read_part_sector (state=state@entry=0xffff888110904cc0, n=n@entry=0, p=p@entry=0xffffc90003027558) at block/partitions/core.c:726
+#17 0xffffffff815d204a in read_lba (state=state@entry=0xffff888110904cc0, lba=lba@entry=0, buffer=buffer@entry=0xffff8880370d6000 "", count=count@entry=512) at block/partitions/efi.c:248
+#18 0xffffffff815d2670 in find_valid_gpt (state=state@entry=0xffff888110904cc0, gpt=gpt@entry=0xffffc90003027680, ptes=ptes@entry=0xffffc90003027688) at block/partitions/efi.c:603
+#19 0xffffffff815d2cda in efi_partition (state=0xffff888110904cc0) at block/partitions/efi.c:720
+#20 0xffffffff815cbee0 in check_partition (hd=0xffff8880370d7c00) at block/partitions/core.c:147
+#21 blk_add_partitions (disk=0xffff8880370d7c00) at block/partitions/core.c:611
+#22 bdev_disk_changed (invalidate=<optimized out>, disk=<optimized out>) at block/partitions/core.c:697
+#23 bdev_disk_changed (disk=disk@entry=0xffff8880370d7c00, invalidate=invalidate@entry=false) at block/partitions/core.c:664
+#24 0xffffffff815a9447 in blkdev_get_whole (bdev=bdev@entry=0xffff888100482bc0, mode=mode@entry=1) at block/bdev.c:681
+#25 0xffffffff815aa172 in blkdev_get_by_dev (holder=<optimized out>, mode=1, dev=<optimized out>) at block/bdev.c:823
+#26 blkdev_get_by_dev (dev=<optimized out>, mode=mode@entry=1, holder=holder@entry=0x0 <fixed_percpu_data>) at block/bdev.c:789
+#27 0xffffffff815c7d30 in disk_scan_partitions (disk=0xffff8880370d7c00) at ./include/linux/genhd.h:212
+#28 device_add_disk (parent=parent@entry=0xffff8881009e2010, disk=0xffff8880370d7c00, groups=groups@entry=0xffffffffc007f240 <virtblk_attr_groups>) at block/genhd.c:503
+#29 0xffffffffc007d89a in virtblk_probe (vdev=0xffff8881009e2000) at drivers/block/virtio_blk.c:878
+#30 0xffffffff81765deb in virtio_dev_probe (_d=0xffff8881009e2010) at drivers/virtio/virtio.c:273
+#31 0xffffffff8181a721 in call_driver_probe (drv=0xffffffffc007f0a0 <virtio_blk>, drv=0xffffffffc007f0a0 <virtio_blk>, dev=0xffff8881009e2010) at drivers/base/dd.c:517
+#32 really_probe (drv=0xffffffffc007f0a0 <virtio_blk>, dev=0xffff8881009e2010) at drivers/base/dd.c:596
+#33 really_probe (dev=0xffff8881009e2010, drv=0xffffffffc007f0a0 <virtio_blk>) at drivers/base/dd.c:541
+#34 0xffffffff8181aa45 in __driver_probe_device (drv=drv@entry=0xffffffffc007f0a0 <virtio_blk>, dev=dev@entry=0xffff8881009e2010) at drivers/base/dd.c:751
+#35 0xffffffff8181aae3 in driver_probe_device (drv=drv@entry=0xffffffffc007f0a0 <virtio_blk>, dev=dev@entry=0xffff8881009e2010) at drivers/base/dd.c:781
+#36 0xffffffff8181aece in __device_attach_driver (drv=0xffffffffc007f0a0 <virtio_blk>, _data=<optimized out>) at drivers/base/dd.c:898
+#37 0xffffffff81818462 in bus_for_each_drv (bus=<optimized out>, start=start@entry=0x0 <fixed_percpu_data>, data=data@entry=0xffffc900030279b0, fn=fn@entry=0xffffffff8181ae20 <__device_attach_driver>) at drivers/base/bus.c:427
+#38 0xffffffff8181a48d in __device_attach (dev=dev@entry=0xffff8881009e2010, allow_async=allow_async@entry=true) at drivers/base/dd.c:969
+#39 0xffffffff8181b0a3 in device_initial_probe (dev=dev@entry=0xffff8881009e2010) at drivers/base/dd.c:1016
+#40 0xffffffff8181947f in bus_probe_device (dev=dev@entry=0xffff8881009e2010) at drivers/base/bus.c:487
+#41 0xffffffff81816b2a in device_add (dev=dev@entry=0xffff8881009e2010) at drivers/base/core.c:3396
+#42 0xffffffff81765939 in register_virtio_device (dev=dev@entry=0xffff8881009e2000) at drivers/virtio/virtio.c:423
+#43 0xffffffff8176d74f in virtio_pci_probe (pci_dev=0xffff888102322000, id=<optimized out>) at drivers/virtio/virtio_pci_common.c:552
+#44 0xffffffff81688068 in local_pci_probe (_ddi=_ddi@entry=0xffffc90003027b38) at drivers/pci/pci-driver.c:323
+#45 0xffffffff81689ba2 in pci_call_probe (id=<optimized out>, dev=0xffff888102322000, drv=0xffffffff830f0ee0 <virtio_pci_driver>) at drivers/pci/pci-driver.c:380
+#46 __pci_device_probe (pci_dev=0xffff888102322000, drv=0xffffffff830f0ee0 <virtio_pci_driver>) at drivers/pci/pci-driver.c:405
+#47 pci_device_probe (dev=0xffff8881023220d0) at drivers/pci/pci-driver.c:448
+#48 0xffffffff8181a721 in call_driver_probe (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, drv=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=0xffff8881023220d0) at drivers/base/dd.c:517
+#49 really_probe (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=0xffff8881023220d0) at drivers/base/dd.c:596
+#50 really_probe (dev=0xffff8881023220d0, drv=0xffffffff830f0f58 <virtio_pci_driver+120>) at drivers/base/dd.c:541
+#51 0xffffffff8181aa45 in __driver_probe_device (drv=drv@entry=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=dev@entry=0xffff8881023220d0) at drivers/base/dd.c:751
+#52 0xffffffff8181aae3 in driver_probe_device (drv=drv@entry=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=dev@entry=0xffff8881023220d0) at drivers/base/dd.c:781
+#53 0xffffffff8181aece in __device_attach_driver (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, _data=<optimized out>) at drivers/base/dd.c:898
+#54 0xffffffff81818462 in bus_for_each_drv (bus=<optimized out>, start=start@entry=0x0 <fixed_percpu_data>, data=data@entry=0xffffc90003027c80, fn=fn@entry=0xffffffff8181ae20 <__device_attach_driver>) at drivers/base/bus.c:427
+#55 0xffffffff8181a48d in __device_attach (dev=dev@entry=0xffff8881023220d0, allow_async=allow_async@entry=false) at drivers/base/dd.c:969
+#56 0xffffffff8181a530 in device_attach (dev=dev@entry=0xffff8881023220d0) at drivers/base/dd.c:1010
+#57 0xffffffff8167c26f in pci_bus_add_device (dev=dev@entry=0xffff888102322000) at drivers/pci/bus.c:324
+#58 0xffffffff8167c2c1 in pci_bus_add_devices (bus=bus@entry=0xffff888100e81000) at drivers/pci/bus.c:347
+#59 0xffffffff8167f4ca in pci_rescan_bus (bus=bus@entry=0xffff888100e81000) at drivers/pci/probe.c:3249
+#60 0xffffffff8168a458 in rescan_store (bus=<optimized out>, buf=<optimized out>, count=2) at drivers/pci/pci-sysfs.c:421
+#61 0xffffffff81817fc4 in bus_attr_store (kobj=<optimized out>, attr=0x1 <fixed_percpu_data+1>, buf=0xffffc900030271a8 "", count=18446612686459292368) at drivers/base/bus.c:122
+#62 0xffffffff8142c9ab in sysfs_kf_write (of=<optimized out>, buf=0xffff8881059ecad0 "", count=0, pos=<optimized out>) at fs/sysfs/file.c:139
+#63 0xffffffff8142ba78 in kernfs_fop_write_iter (iocb=0xffffc90003027e08, iter=<optimized out>) at fs/kernfs/file.c:296
+#64 0xffffffff8136441a in call_write_iter (file=0xffff888102cdff00, iter=0xffffc90003027de0, kio=0xffffc90003027e08) at ./include/linux/fs.h:2163
+#65 new_sync_write (filp=filp@entry=0xffff888102cdff00, buf=buf@entry=0x560f1209e980 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc007c000 -s .data 0xffffffffc007f000 -s .bss 0xffffffffc007f700\n", len=len@entry=2, 
+    ppos=ppos@entry=0xffffc90003027e98) at fs/read_write.c:507
+#66 0xffffffff81366c85 in vfs_write (pos=0xffffc90003027e98, count=2, buf=0x560f1209e980 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc007c000 -s .data 0xffffffffc007f000 -s .bss 0xffffffffc007f700\n", 
+    file=0xffff888102cdff00) at fs/read_write.c:594
+#67 vfs_write (file=0xffff888102cdff00, buf=0x560f1209e980 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc007c000 -s .data 0xffffffffc007f000 -s .bss 0xffffffffc007f700\n", count=<optimized out>, 
+    pos=0xffffc90003027e98) at fs/read_write.c:574
+#68 0xffffffff81366ee7 in ksys_write (fd=<optimized out>, buf=0x560f1209e980 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc007c000 -s .data 0xffffffffc007f000 -s .bss 0xffffffffc007f700\n", count=2)
+    at fs/read_write.c:647
+#69 0xffffffff81366f7a in __do_sys_write (count=<optimized out>, buf=<optimized out>, fd=<optimized out>) at fs/read_write.c:659
+#70 __se_sys_write (count=<optimized out>, buf=<optimized out>, fd=<optimized out>) at fs/read_write.c:656
+#71 __x64_sys_write (regs=<optimized out>) at fs/read_write.c:656
+#72 0xffffffff81cff979 in do_syscall_x64 (nr=<optimized out>, regs=0xffffc90003027f58) at arch/x86/entry/common.c:50
+#73 do_syscall_64 (regs=0xffffc90003027f58, nr=<optimized out>) at arch/x86/entry/common.c:80
+#74 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+#75 0x00007f9f448048a0 in ?? () at drivers/block/virtio_blk.c:1027
+#76 0x00007f9f448054a0 in ?? () at drivers/block/virtio_blk.c:1027
+#77 0x00007f9f448096a0 in ?? () at drivers/block/virtio_blk.c:1027
+#78 0x0000000000000002 in fixed_percpu_data ()
