@@ -489,14 +489,17 @@ static int virtscsi_add_cmd(struct virtio_scsi_vq *vq,
 	bool needs_kick = false;
 
 	spin_lock_irqsave(&vq->vq_lock, flags);
+	pr_info("__virtscsi_add_cmd %s:%d\n", __FILE__, __LINE__);
 	err = __virtscsi_add_cmd(vq->vq, cmd, req_size, resp_size);
 	if (!err && kick)
 		needs_kick = virtqueue_kick_prepare(vq->vq);
 
 	spin_unlock_irqrestore(&vq->vq_lock, flags);
 
-	if (needs_kick)
+	if (needs_kick) {
+		pr_info("virtqueue_notify %s:%d\n", __FILE__, __LINE__);
 		virtqueue_notify(vq->vq);
+	}
 	return err;
 }
 
