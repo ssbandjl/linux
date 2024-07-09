@@ -602,6 +602,7 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
         ida_alloc_range -> struct ida sw_vhca_ida
     mlx5_pci_init
         pci_set_drvdata
+        dev->bar_addr = pci_resource_start(pdev, 0)
         mlx5_pci_enable_device
         request_bar
             pci_request_regions
@@ -1679,6 +1680,36 @@ e1000
 e1000_hw.h
 static int __init e1000_init_module(void)
 drivers/net/ethernet/intel/e1000/e1000_main.c
+e1000_probe
+    
+static const struct net_device_ops e1000_netdev_ops = {
+	.ndo_open		= e1000_open,
+	.ndo_stop		= e1000_close,
+	.ndo_start_xmit		= e1000_xmit_frame,
+	.ndo_set_rx_mode	= e1000_set_rx_mode,
+	.ndo_set_mac_address	= e1000_set_mac,
+	.ndo_tx_timeout		= e1000_tx_timeout,
+	.ndo_change_mtu		= e1000_change_mtu,
+	.ndo_eth_ioctl		= e1000_ioctl,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_vlan_rx_add_vid	= e1000_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid	= e1000_vlan_rx_kill_vid,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	= e1000_netpoll,
+#endif
+	.ndo_fix_features	= e1000_fix_features,
+	.ndo_set_features	= e1000_set_features,
+};
+
+e1000_open
+    e1000_configure
+        e1000_configure_rx
+
+
+e1000_clean_rx_ring
+    e1000_clean_rx_irq
+        e1000_receive_skb
+
 
 struct net_device_ops e1000_netdev_ops 
 
@@ -2582,81 +2613,8 @@ static const struct irdma_irq_ops icrdma_irq_ops = {
 
 
 
-drivers/net/ethernet/hisilicon/Makefile
-net：添加海思网络子系统hnae框架支持，HNAE（海思网络加速引擎）是为海思网络加速引擎提供统一环形缓冲区接口的框架。 通过该接口，上层可以有意地充当以太网驱动程序、ODP驱动程序或其他服务驱动程序
-
-
-capability:
-pci_find_capability
-
-read pcie config space of device:
-u32 read_pci_config
-    outl(0x80000000 | (bus<<16) | (slot<<11) | (func<<8) | offset, 0xcf8);
-
-
-
 drivers/dma/dmatest.c
 late_initcall(dmatest_init);
-
-
-三星:
-drivers/dma/pl330.c
-pd->device_issue_pending = pl330_issue_pending;
-dma_async_issue_pending
-    device_issue_pending
-xdev->common.device_issue_pending = xilinx_dma_issue_pending;
-chan->start_transfer = xilinx_dma_start_transfer
-
-struct dma_device
-
-desc->txd.tx_submit = pl330_tx_submit;
-
-
-module_amba_driver(pl330_driver);
-dma_async_device_register
-
-
-Xilinx media platform drivers
-drivers/media/platform/xilinx/xilinx-dma.c
-dmaengine_prep_interleaved_dma
-
-
-dmaengine_prep_interleaved_dma
-dmaengine_submit
-
-
-https://www.kernel.org/doc/html/v4.9/media/kapi/v4l2-videobuf2.html
-static const struct vb2_ops xvip_dma_queue_qops = {
-    .queue_setup = xvip_dma_queue_setup,
-    .buf_prepare = xvip_dma_buffer_prepare,
-    .buf_queue = xvip_dma_buffer_queue,
-    .wait_prepare = vb2_ops_wait_prepare,
-    .wait_finish = vb2_ops_wait_finish,
-    .start_streaming = xvip_dma_start_streaming,
-    .stop_streaming = xvip_dma_stop_streaming,
-};
-
-xvip_dma_buffer_queue
-
-
-static struct platform_driver xvip_composite_driver = {
-    .driver = {
-        .name = "xilinx-video",
-        .of_match_table = xvip_composite_of_id_table,
-    },
-    .probe = xvip_composite_probe,
-    .remove_new = xvip_composite_remove,
-};
-
-module_platform_driver(xvip_composite_driver);
-xvip_graph_init
-xvip_graph_dma_init
-xvip_graph_dma_init_one
-    xvip_dma_init
-        ...
-        dma->queue.ops = &xvip_dma_queue_qops;
-        dma->dma = dma_request_chan(dma->xdev->dev, name);
-
 
 
 
@@ -4506,8 +4464,6 @@ u32 read_pci_config
 
 
 
-drivers/dma/dmatest.c
-late_initcall(dmatest_init);
 
 
 三星:
@@ -4665,7 +4621,7 @@ UCMA_CMD_CONNECT -> static ssize_t (*ucma_cmd_table[]) -> static ssize_t ucma_co
                                     rdma_set_src_addr_rcu
                                         rdma_ah_set_grh(attr, dgid, flow_label, sgid_attr->index, hop_limit, traffic_class)
                                             grh->flow_label = flow_label
-                                            grh->sgid_index = sgid_index
+                                            grh->sgid_index = sgid_index -> grh.sgid_index 源端口 GID 表中的索引，用于识别数据包的发起者
                                             grh->hop_limit = hop_limit
                                             grh->traffic_class = traffic_class
                                     addr_resolve_neigh -> arp
@@ -6271,8 +6227,13 @@ bool timerqueue_add
     rb_link_node(&node->node, parent, p)
 
 
-
-virtqueue_add_split
+在 virtqueue_add 函数中，能看到free_head指向整个内存块空闲链表的起始位置，用head变量记住这个起始位置。接下来，i也指向这个起始位置，然后是一个for循环，将数据放到内存块里面，放的过程中next不断指向下一个空闲位置，这样空闲的内存块被不断的占用。等所有的写入都结束了，i就会指向这次存放的内存块的下一个空闲位置，然后free_head就指向i，因为前面的都填满了。, 至此，从head到i之间的内存块，就是这次写入的全部数据。于是，在vring的avail变量中，在ring[]数组中分配新的一项，在avail的位置，avail的计算是avail_idx_shadow & (vq->vring.num - 1)，其中avail_idx_shadow是上一次的avail的位置，这里如果超过了ring[]数组的下标，则重新跳到起始位置，就说明是一个环，这次分配的新的avail的位置就存放新写入的从head到i之间的内存块。然后是avail_idx_shadow++，这说明这一块内存可以被接收方读取了
+static inline int virtqueue_add_split
+    head = vq->free_head
+    i = head
+    for (n = 0; n < out_sgs; n++)
+        for (sg = sgs[n]; sg; sg = sg_next(sg))
+            i = virtqueue_add_desc_split(_vq, desc, i, addr, sg->length, VRING_DESC_F_NEXT, indirect)
     static dma_addr_t vring_map_single
 
 
@@ -6773,6 +6734,7 @@ NETLINK_RDMA -> https://github.com/ssbandjl/linux/commit/4fdb3bb723db469717c6d38
 
 
 drivers/infiniband/core/device.c
+IB协议栈初始化, 包含mad, gid等
 fs_initcall(ib_core_init); -> RDMA/core：将 sysfs 条目视图限制为 init_net，这是一个准备补丁，用于在网络命名空间中提供 rdma 设备的隔离。 第一步，使 rdma 设备仅在 init net 命名空间中可见。 后续补丁将使用 compat ib_core_device 设备/sysfs 树在多个网络命名空间中启用 rdma 设备可见性。 由于IB子系统依赖于net stack，因此需要在netdev之后初始化，并且由于它支持设备，因此需要在设备子系统之前初始化； 因此，将 initcall 顺序更改为 fs_initcall，以便在内核映像中编译 ib_core 时遵循正确的 init 顺序
 static int __init ib_core_init(void)
     ib_wq = alloc_workqueue("infiniband", 0, 0)
@@ -6879,10 +6841,50 @@ static struct ib_client mad_client = {
 };
 
 
-ib_mad_init_device
+ib_mad_init_device -> RDMA：调用 add() 时允许 ib_client 失败，添加客户端时不允许失败，但所有客户端在其添加例程中都有各种失败路径。这会产生非常边缘的情况，即添加客户端时失败，并且未设置 client_data。核心代码仍将使用 NULL client_data 调用其他以 client_data 为中心的操作，如 remove()、rename()、get_nl_info() 和 get_net_dev_by_params() - 这令人困惑且出乎意料。如果 add() 回调失败，则不要再为设备调用任何客户端操作，甚至删除。删除操作回调中所有现在多余的 NULL client_data 检查。更新所有 add() 回调以适当返回错误代码。EOPNOTSUPP 用于 ULP 不支持 ib_device 的情况 - 例如因为它仅适用于 IB
     rdma_start_port
-    ib_mad_port_open
-    ib_agent_port_open
+    for (i = start; i <= rdma_end_port(device); i++)
+        rdma_cap_ib_mad
+        ib_mad_port_open
+            char name[sizeof "ib_mad123"]
+            init_mad_qp(port_priv, &port_priv->qp_info[0]);
+                init_mad_queue(qp_info, &qp_info->send_queue)
+                init_mad_queue(qp_info, &qp_info->recv_queue)
+                INIT_LIST_HEAD(&qp_info->overflow_list)
+            init_mad_qp(port_priv, &port_priv->qp_info[1]);
+            rdma_cap_ib_smi
+            port_priv->pd = ib_alloc_pd(device, 0)
+            port_priv->cq = ib_alloc_cq
+            create_mad_qp(&port_priv->qp_info[0], IB_QPT_SMI)
+                qp_info->qp = ib_create_qp
+            create_mad_qp(&port_priv->qp_info[1], IB_QPT_GSI)
+            list_add_tail(&port_priv->port_list, &ib_mad_port_list)
+            ib_mad_port_start
+                ib_find_pkey
+                ib_modify_qp IB_QPS_RTR
+                ib_modify_qp IB_QPS_RTS
+                ib_req_notify_cq
+                for (i = 0; i < IB_MAD_QPS_CORE; i++)
+                    ib_mad_post_receive_mads
+                        sg_list.addr = ib_dma_map_single(qp_info->port_priv->device,
+                        mad_priv->header.mad_list.cqe.done = ib_mad_recv_done
+                        list_add_tail(&mad_priv->header.mad_list.list, &recv_queue->list)
+                        ib_post_recv
+        ib_agent_port_open
+            port_priv->agent[0] = ib_register_mad_agent(device, port_num, IB_QPT_SMI, NULL, 0, &agent_send_handler, NULL, NULL, 0)
+                get_spl_qp_index
+                dev_dbg_ratelimited
+                ib_is_mad_class_rmpp
+                ib_get_mad_port
+                INIT_DELAYED_WORK(&mad_agent_priv->timed_work, timeout_sends)
+                INIT_WORK(&mad_agent_priv->local_work, local_completions)
+                ib_mad_agent_security_setup
+                xa_alloc_cyclic ib_mad_client_next
+                convert_mgmt_class
+                add_nonoui_reg_req
+                add_oui_reg_req
+            port_priv->agent[1] = ib_register_mad_agent
+            list_add_tail(&port_priv->port_list, &ib_agent_port_list)
 
 
 
@@ -9004,6 +9006,11 @@ static const struct vfio_device_ops vfio_pci_ops = {
 	.open_device	= vfio_pci_open_device,
 	.close_device	= vfio_pci_core_close_device,
 	.ioctl		= vfio_pci_core_ioctl,
+        case VFIO_DEVICE_IOEVENTFD
+            vfio_pci_ioctl_ioeventfd
+                vfio_pci_ioeventfd
+                    vfio_virqfd_enable(ioeventfd, vfio_pci_ioeventfd_handler, vfio_pci_ioeventfd_thread, NULL,&ioeventfd->virqfd, fd)
+                    list_add(&ioeventfd->next, &vdev->ioeventfds_list)
 	.device_feature = vfio_pci_core_ioctl_feature,
 	.read		= vfio_pci_core_read,
 	.write		= vfio_pci_core_write,
@@ -9464,8 +9471,8 @@ UVERBS_METHOD_ASYNC_EVENT_ALLOC
 
 
 
-MMIO空间的大小是在ACPI子系统初始化时确定的。具体的函数调用过程是：acpi_init()---->acpi_scan_init()---->acpi_bus_scan()---->acpi_bus_attach()---->acpi_scan_attach_handler()---->acpi_pci_root_add()---->pci_acpi_scan_root()---->pci_scan_child_bus()---->pci_scan_slot()---->pci_scan_single_device()---->pci_scan_device()---->pci_setup_device()---->pci_read_bases()---->__pci_read_base()。在__pci_read_base()中计算MMIO空间的大小。其计算方法可以归结为：以2为底，以BAR寄存器中read only的bit位的个数为幂的对数值就是MMIO空间大小，单位是Byte
-err = pci_request_selected_regions(pdev, bars, e1000_driver_name) -> 为设备内存分配物理地址空间, 保留选定的 PCI I/O 和内存资源, 标记MMIO所需要的内存空间，实际上最终调用的是__pci_request_region()
+MMIO空间的大小是在ACPI子系统初始化时确定的。具体的函数调用过程是：acpi_init()---->acpi_scan_init()---->acpi_bus_scan()---->acpi_bus_attach()---->acpi_scan_attach_handler()---->acpi_pci_root_add()---->pci_acpi_scan_root()---->pci_scan_child_bus()---->pci_scan_slot()---->pci_scan_single_device()---->pci_scan_device()---->pci_setup_device()---->pci_read_bases()---->__pci_read_base()。在__pci_read_base()中计算MMIO空间的大小。其计算方法可以归结为：以2为底，以BAR寄存器中read only的bit位的个数为幂的对数值就是MMIO空间大小，单位是Byte,
+err = pci_request_selected_regions(pdev, bars, e1000_driver_name) -> 为设备内存分配物理地址空间, 保留选定的 PCI I/O 和内存资源, 标记MMIO所需要的内存空间，实际上最终调用的是 __pci_request_region()
 
 
 hwmon子系统作为Linux内核中的一个子系统，用于监控硬件传感器的状态和提供对硬件传感器的访问接口, hwmon_device_register_with_groups 注册一个硬件监控设备。,这个函数的第一个参数是一个指向父设备的指针。 name 参数是指向 hwmon 设备名称的指针。 注册函数将创建一个指向该名称的 sysfs 名称属性。 drvdata参数是指向本地驱动数据的指针
@@ -9889,6 +9896,7 @@ sriov_enable(struct pci_dev *dev, int nr_virtfn)
 					pci_setup_device(virtfn); //这两个函数就是按照capability初始化设备
 					中间省掉获取bar空间的代码，从PF上的SR-IVO的bar空间获取
 					pci_device_add(virtfn, virtfn->bus);
+                        list_add_tail(&dev->bus_list, &bus->devices)
 					sprintf(buf, "virtfn%u", id);
 					rc = sysfs_create_link(&dev->dev.kobj, &virtfn->dev.kobj, buf);
 					rc = sysfs_create_link(&virtfn->dev.kobj, &dev->dev.kobj, "physfn");					
@@ -11158,3 +11166,3202 @@ scatterlist_mock_selftests
                 expect_pfn_sgtiter
     igt_sg_trim
 
+
+
+infiniband
+Kconfig
+menuconfig INFINIBAND
+INFINIBAND_ADDR_TRANS_CONFIGFS -> IB/cma：为 rdma_cm 添加 configfs，用户希望控制 rdma_cm 的行为。例如，未设置所需 RoCE gid 类型的旧应用程序可以在 RoCE V2 网络类型上执行。为了支持此配置，我们为 rdma_cm 实现了一个 configfs。为了使用 configfs，需要将其挂载并在 rdma_cm 目录中 mkdir <IB 设备名称>。该补丁增加了对单个配置文件 default_roce_mode 的支持。模式可以是“IB/RoCE v1”​​或“RoCE v2”
+
+
+
+module_init(ib_umad_init)
+    register_chrdev_region(base_umad_dev, IB_UMAD_NUM_FIXED_MINOR * 2, umad_class.name)
+    alloc_chrdev_region(&dynamic_umad_dev, 0, IB_UMAD_NUM_DYNAMIC_MINOR * 2, umad_class.name)
+    class_register(&umad_class)
+    ib_register_client(&umad_client)
+    ib_register_client(&issm_client)
+
+static struct ib_client umad_client = {
+	.name   = "umad",
+	.add    = ib_umad_add_one,
+	.remove = ib_umad_remove_one,
+	.get_nl_info = ib_umad_get_nl_info,
+};
+
+
+
+virtio,
+core_initcall(virtio_init)
+    bus_register(&virtio_bus)
+static struct bus_type virtio_bus = {
+	.name  = "virtio",
+	.match = virtio_dev_match,
+	.dev_groups = virtio_dev_groups,
+	.uevent = virtio_uevent,
+	.probe = virtio_dev_probe,
+	.remove = virtio_dev_remove,
+};
+
+
+struct virtio_pci_common_cfg
+
+VirtIO-PCI初始化 virtio-blk基于virtio-pci，virtio-pci基于pci，所以virtio-blk初始化要从pci设备初始化说起 PCI初始化 PCI驱动框架初始化在内核中有两个入口，分别如下： arch_initcall(pci_arch_init)，体系结构的初始化，包括初始化IO地址0XCF8 subsys_initcall(pci_subsys_init)，PCI子系统初始化，这个过程会完成PIC总线树上设备的枚举，Host bridge会为PCI设备分配地址空间并将其写入BAR寄存器。体系结构初始化不做介绍，这张主要介绍PCI总线树的枚举和配置
+
+arch_initcall(pci_arch_init)
+    type = pci_direct_probe()
+    pci_mmcfg_early_init
+    pcbios = x86_init.pci.arch_init()
+    x86_create_pci_msi_domain
+    pci_pcbios_init
+    pci_direct_init
+    dmi_check_pciprobe
+    dmi_check_skip_isa_align
+
+
+
+subsys_initcall(pci_subsys_init);
+	x86_init.pci.init	=>	x86_default_pci_init	
+	pci_legacy_init
+		pcibios_scan_root
+			x86_pci_root_bus_resources	// 为Host bridge分配资源，通常情况下就是64K IO空间地址和内存空间地址就在这里划分
+			pci_scan_root_bus			// 枚举总线树上的设备
+				pci_create_root_bus		// 创建Host bridge
+				pci_scan_child_bus		// 扫描总线树上所有设备，如果有pci桥，递归扫描下去
+					pci_scan_slot
+						pci_scan_single_device	// 扫描设备，读取vendor id和device id
+							pci_scan_device
+								pci_setup_device
+									pci_read_bases
+										__pci_read_base	// 读取bar空间大小
+
+
+resource代表一个资源，可以是一段IO地址区间，或者Mem地址区间，总线树上每枚举一个设备，Host bridge就根据设备的BAR空间大小分配合适的资源给这个PCI设备用，这里的资源就是IO或者内存空间的物理地址。PCI设备BAR寄存器的值就是从这里申请得来的。申请的流程如下
+pci_read_bases
+	/* 遍历每个BAR寄存器，读取其内容，并为其申请物理地址空间 */
+	for (pos = 0; pos < howmany; pos++) {
+        struct resource *res = &dev->resource[pos];	// 申请的地址空间放在这里面
+        reg = PCI_BASE_ADDRESS_0 + (pos << 2);
+        pos += __pci_read_base(dev, pci_bar_unknown, res, reg);
+    }
+    	region.start = l64;	
+    	region.end = l64 + sz64;
+		/* 申请资源，将申请到的资源放在res中， region存放PCI设备BAR空间区间 */
+    	pcibios_bus_to_resource(dev->bus, res, &region);  	
+
+
+
+pci_subsys_init
+	pcibios_resource_survey             
+    	pcibios_allocate_bus_resources(&pci_root_buses);		// 首先将整个资源按照总线再分成一段段空间
+    	pcibios_allocate_resources(0);							// 检查资源是否统一并且不冲突
+    	pcibios_allocate_resources(1);
+    	pcibios_assign_resources();								// 写入地址到BAR寄存器
+    		pci_assign_resource
+    			_pci_assign_resource
+    				__pci_assign_resource
+    					pci_bus_alloc_resource
+    					pci_update_resource
+    						pci_std_update_resource
+    							pci_write_config_dword(dev, reg, new)	// 往BAR寄存器写入起始地址
+
+#############################################
+PCI driver for virtio devices
+modulename: virtio_pci.ko
+configname: CONFIG_VIRTIO_PCI
+Linux Kernel Configuration
+└─>Device Drivers
+    └─>Virtio drivers
+        └─>PCI support
+            └─>PCI driver for virtio devices
+drivers/virtio/virtio_pci_common.c -> module_pci_driver(virtio_pci_driver); -> PCI驱动和其它linux驱动一样，需要定义init和exit两个函数作为加载模块的入口点和卸载模块的出口点，可以使用 module_pci_driver 宏，只要将pci_driver结构体变量作为参数调用这个宏，就会自动定义init和exit这两个函数，好处是代码整洁，缺点就是不够灵活，我这里仍然用传统的方法使用 module_init 和 module_exit 两个宏
+static struct pci_driver virtio_pci_driver = {
+	.name		= "virtio-pci",
+	.id_table	= virtio_pci_id_table, -> { PCI_DEVICE(PCI_VENDOR_ID_REDHAT_QUMRANET, PCI_ANY_ID) } -> 0x1af4
+	.probe		= virtio_pci_probe,
+	.remove		= virtio_pci_remove,
+#ifdef CONFIG_PM_SLEEP
+	.driver.pm	= &virtio_pci_pm_ops,
+#endif
+	.sriov_configure = virtio_pci_sriov_configure,
+};
+
+
+static int virtio_pci_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
+    vp_dev = kzalloc
+    vp_dev->vdev.dev.parent = &pci_dev->dev
+    vp_dev->vdev.dev.release = virtio_pci_release_dev
+    INIT_LIST_HEAD(&vp_dev->virtqueues)
+    pci_enable_device
+        pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO)	// 打开内存和IO访问权限
+            do_pci_enable_device
+                pcibios_enable_device
+                    pci_enable_resources
+                        pci_write_config_word(dev, PCI_COMMAND, cmd)	// 向command寄存器字段写1
+    virtio_pci_legacy_probe -> virtio spec 0.95
+        vp_legacy_probe(ldev)
+            ...
+            rc = pci_request_region(pci_dev, 0, "virtio-pci-legacy")
+            ldev->ioaddr = pci_iomap(pci_dev, 0, 0) -> pci_iomap函数完成PCI BAR的映射，第一个参数是pci设备的指针，第二个参数指定我们要映射的是0号BAR，第三个参数确定要映射的BAR空间多大，当第三个参数为0时，就将整个BAR空间都映射到内存空间上。VirtioPCI设备的0号BAR指向的就是配置空间的寄存器空间，也就是配置空间上用于消息通知的寄存器
+            ldev->isr = ldev->ioaddr + VIRTIO_PCI_ISR
+        vp_dev->vdev.config = &virtio_pci_config_ops;
+        vp_dev->config_vector = vp_config_vector;
+        vp_dev->setup_vq = setup_vq;
+        vp_dev->del_vq = del_vq;
+        vp_dev->is_legacy = true;
+    virtio_pci_modern_probe -> #对于virtio modern，通过capability方式报告配置数据结构的位置，配置数据结构有5种类型
+        vp_modern_probe(mdev) -> 现代 PCI 设备实现。此模块实现基于现代 PCI 设备（可能带有供应商特定的扩展）的设备的基本探测和控制。选择此模块的任何模块都必须依赖于 PCI
+            check_offsets()
+            devid = mdev->device_id_check(pci_dev)
+            common = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_COMMON_CFG, IORESOURCE_IO | IORESOURCE_MEM, &mdev->modern_bars)
+                for (pos = pci_find_capability(dev, PCI_CAP_ID_VNDR)
+                    pci_find_next_capability
+                    pci_read_config_byte(dev, pos + offsetof(struct virtio_pci_cap, cfg_type), &type)
+                    pci_read_config_byte(dev, pos + offsetof(struct virtio_pci_cap, bar), &bar)
+                    *bars |= (1 << bar)
+            isr = virtio_pci_find_capability(pci_dev, VIRTIO_PCI_CAP_ISR_CFG,
+            VIRTIO_PCI_CAP_NOTIFY_CFG
+            VIRTIO_PCI_CAP_DEVICE_CFG
+            pci_request_selected_regions(pci_dev, mdev->modern_bars, "virtio-pci-modern") -> 为设备内存分配物理地址空间, 保留选定的 PCI I/O 和内存资源, 标记MMIO所需要的内存空间，实际上最终调用的是 __pci_request_region()
+            mdev->common = vp_modern_map_capability(mdev, common, sizeof(struct virtio_pci_common_cfg), 4, 0, offsetofend(struct virtio_pci_modern_common_cfg, admin_queue_num) -> 将virtio配置结构(公共common部分)所在的BAR空间MAP到内核地址空间
+                pci_read_config_byte(dev, off + offsetof(struct virtio_pci_cap,bar), &bar) -> 读取PCIE配置空间的值到bar变量中
+                pci_read_config_dword(dev, off + offsetof(struct virtio_pci_cap, offset), &offset)
+                p = pci_iomap_range(dev, bar, offset, length) -> 为PCI BAR创建一个虚拟映射
+                *pa = pci_resource_start(dev, bar) + offset -> kick_addr? set common config addr
+            mdev->isr = vp_modern_map_capability(mdev, isr, sizeof(u8), 1, 0, 1, NULL, NULL)
+            pci_read_config_dword(pci_dev, notify + offsetof(struct virtio_pci_notify_cap, notify_off_multiplier), &mdev->notify_offset_multiplier)
+            mdev->notify_base = vp_modern_map_capability(mdev, notify, 2, 2, 0, notify_length, &mdev->notify_len, &mdev->notify_pa) -> 我们事先不知道要映射多少个 VQ。如果通知长度较小，则现在映射所有 VQ。否则，稍后单独映射每个 VQ -> 将pci总线域 notify 地址通过 ioremap 映射到存储器域
+            mdev->device = vp_modern_map_capability(mdev, device, 0, 4, 0, PAGE_SIZE, &mdev->device_len, NULL)
+        if (mdev->device)
+            vp_dev->vdev.config = &virtio_pci_config_ops
+        else 
+            vp_dev->vdev.config = &virtio_pci_config_nodev_ops -> virtio-pci-modern：分解出现代设备初始化逻辑，此补丁将现代设备初始化逻辑分解为辅助程序。请注意，它仍然依赖于调用者来启用 pci 设备，这允许调用者使用例如 devres
+        vp_dev->setup_vq = setup_vq
+        vp_dev->del_vq = del_vq
+    register_virtio_device(&vp_dev->vdev)
+        dev->dev.bus = &virtio_bus
+        device_initialize(&dev->dev)
+        dev_set_name(&dev->dev, "virtio%u", dev->index)
+        virtio_device_of_init(dev) -> open firmware device tree
+            char compat[] = "virtio,deviceXXXXXXXX"
+            count = of_get_available_child_count(pnode) -> 查看节点的 compatible 属性是否有包含 compat 指定的字符串，也就是检查设备节点的兼容性
+            of_get_next_available_child
+        INIT_LIST_HEAD(&dev->vqs)
+        virtio_reset_device(dev) -> dev->config->reset(dev)
+        virtio_add_status(dev, VIRTIO_CONFIG_S_ACKNOWLEDGE)
+        device_add(&dev->dev) -> match net/fs/block... driver
+
+
+
+
+config VIRTIO_BLK -> Virtio block driver
+module_init(virtio_blk_init);
+    major = register_blkdev(0, "virtblk")
+    register_virtio_driver(&virtio_blk)
+        driver->driver.bus = &virtio_bus
+        return driver_register(&driver->driver)
+
+static struct virtio_driver virtio_blk = {
+	.feature_table			= features,
+	.feature_table_size		= ARRAY_SIZE(features),
+	.feature_table_legacy		= features_legacy,
+	.feature_table_size_legacy	= ARRAY_SIZE(features_legacy),
+	.driver.name			= KBUILD_MODNAME,
+	.driver.owner			= THIS_MODULE,
+	.id_table			= id_table,
+	.probe				= virtblk_probe,
+	.remove				= virtblk_remove,
+	.config_changed			= virtblk_config_changed,
+#ifdef CONFIG_PM_SLEEP
+	.freeze				= virtblk_freeze,
+	.restore			= virtblk_restore,
+#endif
+};
+
+static int virtblk_probe(struct virtio_device *vdev)
+    ida_alloc_range(&vd_index_ida, 0,
+    查询BLK设备支持的分段数量
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_SEG_MAX, struct virtio_blk_config, seg_max, &sg_elems) -> #define virtio_cread_feature(vdev, fbit, structname, member, ptr)
+        virtio_has_feature(vdev, fbit)
+        virtio_cread((vdev), structname, member, ptr)
+            vdev->config->get((vdev),
+                static void vp_get
+            or
+            __virtio_cread_many
+    vdev->priv = vblk = kmalloc(sizeof(*vblk), GFP_KERNEL)
+    INIT_WORK(&vblk->config_work, virtblk_config_changed_work) -> virtio_blk：允许在运行时重新读取配置空间，连接 virtio_driver config_changed 方法以获取有关主机引发的配置更改的通知。目前，我们只是重新读取设备大小以支持设备在线调整大小，但一旦我们添加更多可能更改的属性，它们也可以添加。请注意，config_changed 方法是从 irq 上下文调用的，因此我们必须使用工作队列基础结构为我们的更改提供适当的用户上下文
+        virtblk_update_capacity(vblk, true) -> virtio_blk：探测时打印容量 在探测驱动程序时打印块设备的容量。许多用户都期望这一点，因为 SCSI 磁盘 (sd) 会这样做。此外，内核 dmesg 输出是故障排除信息的主要来源，因此将磁盘大小包含在内会很有帮助。当发生调整大小事件时，virtio_blk 已经打印了容量。提取代码并从 virtblk_probe() 中重用它。此补丁还将块设备名称添加到消息中，以便可以将其与特定设备关联：virtio_blk virtio0：[vda] 20971520 512 字节逻辑块（10.7 GB/10.0 GiB）
+            virtio_cread(vdev, struct virtio_blk_config, capacity, &capacity)
+            nblocks = DIV_ROUND_UP_ULL(capacity, queue_logical_block_size(q) >> 9)
+            dev_notice(&vdev->dev, "[%s] %s%llu %d-byte logical blocks (%s/%s)\n", vblk->disk->disk_name, resize ? "new size: " : "", nblocks, queue_logical_block_size(q), cap_str_10,cap_str_2);
+            set_capacity_and_notify(vblk->disk, capacity)
+    init_vq(vblk)
+        virtio_cread_feature(vdev, VIRTIO_BLK_F_MQ, struct virtio_blk_config, num_queues, &num_vqs) -> /* 读取pci配置空间中的磁盘队列数 */
+        num_vqs = min_t(unsigned int, min_not_zero(num_request_queues, nr_cpu_ids),num_vqs) -> 取配置队列数与CPU总数的最小值，作为队列数
+        vblk->vqs = kmalloc_array(num_vqs, sizeof(*vblk->vqs), GFP_KERNEL)
+        virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &desc)
+    vblk->tag_set.ops = &virtio_mq_ops
+    blk_mq_alloc_tag_set(&vblk->tag_set)
+    vblk->disk = blk_mq_alloc_disk(&vblk->tag_set, vblk)
+    virtblk_name_format("vd", index, vblk->disk->disk_name, DISK_NAME_LEN)
+    vblk->disk->fops = &virtblk_fops
+    virtblk_update_cache_mode -> virtio-blk：允许在写回和写通之间切换主机缓存，此补丁增加了对新 VIRTIO_BLK_F_CONFIG_WCE 功能的支持，该功能在配置空间中公开缓存模式并允许驱动程序对其进行修改。缓存模式通过 sysfs 公开。即使主机不支持新功能，缓存模式也是可见的（得益于现有的 VIRTIO_BLK_F_WCE），但不可修改
+        blk_queue_write_cache(vblk->disk->queue, writeback, false) -> 强制单元访问(FUA)
+    set_disk_ro(vblk->disk, 1)?
+    blk_queue_max_segments
+    blk_queue_max_hw_sectors
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_SIZE_MAX,
+    blk_queue_max_segment_size
+    virtio_cread_feature(vdev, VIRTIO_BLK_F_BLK_SIZE,
+    queue_logical_block_size
+    virtblk_update_capacity
+    virtio_device_ready
+        dev->config->set_status(dev, status | VIRTIO_CONFIG_S_DRIVER_OK)
+    device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups)
+
+
+
+# 前端驱动写Status位，val & VIRTIO_CONFIG_S_DRIVER_OK, 这时候前端驱动已经ready
+然后QEMU/KVM后端的处理流程如下：
+virtio_pci_config_write  --> virtio_ioport_write --> virtio_pci_start_ioeventfd
+--> virtio_bus_set_host_notifier --> virtio_bus_start_ioeventfd --> virtio_device_start_ioeventfd_impl
+--> virtio_bus_set_host_notifier
+    --> virtio_pci_ioeventfd_assign
+        --> memory_region_add_eventfd
+            --> memory_region_transaction_commit
+              --> address_space_update_ioeventfds
+                --> address_space_add_del_ioeventfds
+                  --> kvm_io_ioeventfd_add/vhost_eventfd_add
+                    --> kvm_set_ioeventfd_pio
+                      --> kvm_vm_ioctl(kvm_state, KVM_IOEVENTFD, &kick)
+
+
+半虚拟化 virtio-blk 设备的使用。此示例显示具有 4 个 I/O 队列的 virtio-blk，后端设备为 disk.qcow2
+qemu sim blk dev:
+qemu-system-x86_64 -machine accel=kvm -vnc :0 -smp 4 -m 4096M \
+    -net nic -net user,hostfwd=tcp::5023-:22 \
+    -hda ol7.qcow2 -serial stdio \
+    -device virtio-blk-pci,drive=drive0,id=virtblk0,num-queues=4 \
+    -drive file=disk.qcow2,if=none,id=drive0
+
+# ls /sys/block/vda/mq/
+0  1  2  3
+
+
+virtio_ioport_write
+
+
+#kvm内核代码virt/kvm/eventfd.c中
+kvm_vm_ioctl(KVM_IOEVENTFD)
+  --> kvm_ioeventfd
+    --> kvm_assign_ioeventfd
+      --> kvm_assign_ioeventfd_idx
+    case KVM_SET_USER_MEMORY_REGION
+        SANITY_CHECK_MEM_REGION_FIELD(guest_phys_addr)
+        SANITY_CHECK_MEM_REGION_FIELD(memory_size)
+        SANITY_CHECK_MEM_REGION_FIELD(userspace_addr)
+        kvm_vm_ioctl_set_memory_region(kvm, &mem)
+            kvm_set_memory_region(kvm, mem) -> __kvm_set_memory_region(kvm, mem)
+                check_memory_region_flags(kvm, mem)
+                slots = __kvm_memslots(kvm, as_id)
+                old = id_to_memslot(slots, id)
+                kvm_set_memslot(kvm, old, NULL, KVM_MR_DELETE)
+
+
+# MMIO处理流程中（handle_ept_misconfig）最后会调用到ioeventfd_write通知QEMU。
+/* MMIO/PIO writes trigger an event if the addr/val match */
+static int
+ioeventfd_write(struct kvm_vcpu *vcpu, struct kvm_io_device *this, gpa_t addr,
+                int len, const void *val)
+{
+        struct _ioeventfd *p = to_ioeventfd(this);
+
+        if (!ioeventfd_in_range(p, addr, len, val))
+                return -EOPNOTSUPP;
+
+        eventfd_signal(p->eventfd, 1);
+        return 0;
+}
+
+PCI_BASE_ADDRESS_SPACE_IO    
+
+virtio_pci_legacy.c
+static const struct virtio_config_ops virtio_pci_config_ops = {
+	.get		= vp_get,
+	.set		= vp_set,
+	.get_status	= vp_get_status,
+	.set_status	= vp_set_status,
+	.reset		= vp_reset,
+	.find_vqs	= vp_find_vqs,
+	.del_vqs	= vp_del_vqs,
+	.synchronize_cbs = vp_synchronize_vectors,
+	.get_features	= vp_get_features,
+	.finalize_features = vp_finalize_features,
+	.bus_name	= vp_bus_name,
+	.set_vq_affinity = vp_set_vq_affinity,
+	.get_vq_affinity = vp_get_vq_affinity,
+};
+
+
+virtio_pci_modern.c
+static const struct virtio_config_ops virtio_pci_config_ops = {
+	.get		= vp_get,
+	.set		= vp_set,
+	.generation	= vp_generation, -> vp_modern_generation(&vp_dev->mdev)
+        struct virtio_pci_common_cfg __iomem *cfg = mdev->common
+        vp_ioread8(&cfg->config_generation) -> 当外设IO寄存器通过ioport_map()函数映射后，Linux内核如何要读写这些IO寄存器就必须通过 ioread8()、ioread16()、ioread32()等这类函数读写
+	.get_status	= vp_get_status,
+	.set_status	= vp_set_status,
+	.reset		= vp_reset,
+	.find_vqs	= vp_modern_find_vqs,
+	.del_vqs	= vp_del_vqs,
+	.synchronize_cbs = vp_synchronize_vectors,
+	.get_features	= vp_get_features, -> vp_modern_get_features -> 驱动先写 device_feature_select 为0/1，然后再读取device_feature字段，来读取设备特性的低/高32位信息 -> vp_legacy_get_features -> ioread32(读寄存器 VIRTIO_PCI_HOST_FEATURES )
+        vp_iowrite32(0, &cfg->device_feature_select)
+        features = vp_ioread32(&cfg->device_feature)
+        vp_iowrite32(1, &cfg->device_feature_select)
+        features |= ((u64)vp_ioread32(&cfg->device_feature) << 32)
+	.finalize_features = vp_finalize_features,
+	.bus_name	= vp_bus_name,
+	.set_vq_affinity = vp_set_vq_affinity,
+	.get_vq_affinity = vp_get_vq_affinity,
+	.get_shm_region  = vp_get_shm_region,
+        virtio_pci_find_shm_cap(pci_dev, id, &bar, &offset, &len) -> get share mem cap off
+        phys_addr = pci_resource_start(pci_dev, bar) -> 得到某段寄存器映射到内存的地址(获取PCI设备资源起始地址)
+        region->addr = (u64) phys_addr + offset -> set shm region addr
+	.disable_vq_and_reset = vp_modern_disable_vq_and_reset, -> support VIRTIO_F_RING_RESET -> 步骤: 1. 通知设备重置队列，2. 回收已提交的缓冲区 3. 重置 vring（可能重新分配） 4. 将 vring mmap 到设备，并启用队列
+        vp_modern_set_queue_reset(mdev, vq->index)
+            vp_iowrite16(index, &cfg->cfg.queue_select)
+            vp_iowrite16(1, &cfg->queue_reset)
+            while (vp_ioread16(&cfg->cfg.queue_enable))
+        list_del(&info->node) -> delete vq from irq handler
+        INIT_LIST_HEAD(&info->node)
+        __virtqueue_break(vq)
+            WRITE_ONCE(vq->broken, true)
+        synchronize_irq(pci_irq_vector(vp_dev->pci_dev, info->msix_vector))
+	.enable_vq_after_reset = vp_modern_enable_vq_after_reset,
+        vp_modern_get_queue_reset
+        vp_modern_get_queue_enable
+        vp_active_vq(vq, info->msix_vector)
+        list_add(&info->node, &vp_dev->virtqueues)
+        else
+            INIT_LIST_HEAD(&info->node)
+        __virtqueue_unbreak(vq)
+        vp_modern_set_queue_enable(&vp_dev->mdev, index, true)
+	.create_avq = vp_modern_create_avq,
+	.destroy_avq = vp_modern_destroy_avq,
+};
+
+
+前端驱动通知后端：内核流程mark一下，PCI设备驱动流程这个后面可以学习一下，先扫描PCI bus发现是virtio设备再扫描virtio-bus
+worker_thread 
+    --> process_one_work 
+    --> pciehp_power_thread 
+    --> pciehp_enable_slot 
+    --> pciehp_configure_device 
+    --> pci_bus_add_devices 
+    --> pci_bus_add_device 
+    --> device_attach 
+    --> __device_attach 
+    --> bus_for_each_drv 
+    --> __device_attach_driver 
+    --> driver_probe_device 
+    --> pci_device_probe 
+    --> local_pci_probe 
+    --> virtio_pci_probe 
+    --> register_virtio_device 
+    --> device_register 
+    --> device_add 
+    --> bus_probe_device 
+    --> device_initial_probe 
+    --> __device_attach 
+    --> bus_for_each_drv 
+    --> __device_attach_driver 
+    --> driver_probe_device 
+    --> virtio_dev_probe 
+    --> virtnet_probe (网卡设备驱动加载的入口)
+
+pci扫描执行完成后，在/sys/devices/pci0000:00目录下，创建virtio pci设备。并且在/sys/bus/pci/devices/目录下，创建相应对于pci设备的符号连接，同时在/sys/bus/pci/drivers/目录下，创建virtio-pci目录，目录下存在支持设备符号连接文件
+static int virtio_dev_probe(struct device *_d) -> 上述注册函数调用执行完成，在/sys/bus/目录下，创建了一个新的目录virtio，在该目录下同时创建了两个文件夹为devices和drivers。表示创建virtio总线，总线支持设备与驱动devices和drivers目录下
+    virtio_add_status(dev, VIRTIO_CONFIG_S_DRIVER) -> ioread8(ldev->ioaddr + VIRTIO_PCI_STATUS)
+        dev->config->set_status(dev, dev->config->get_status(dev) | status)
+    device_features = dev->config->get_features(dev) -> vp_get_features
+    for (i = 0; i < drv->feature_table_size; i++) -> Figure out what features the driver supports
+    为 virtio_ring, virtio_pci 保留标志位
+    dev->config->finalize_features(dev) -> virtio：访问前确认所有功能(先清空,再设置)，功能协商的设计方式使得设备能够知道驱动程序将访问哪些配置字段 -> static int vp_finalize_features -> 客户机不应在未确认功能的情况下访问配置空间
+        vring_transport_features(vdev)
+            __virtio_clear_bit(vdev, i)
+                vdev->features &= ~BIT_ULL(fbit)
+        vp_transport_features(vdev, features)
+            __virtio_set_bit(vdev, VIRTIO_F_SR_IOV)
+            __virtio_set_bit(vdev, VIRTIO_F_RING_RESET)
+            __virtio_set_bit(vdev, VIRTIO_F_ADMIN_VQ)
+        vp_check_common_size
+        vp_modern_set_features(&vp_dev->mdev, vdev->features)
+            vp_iowrite32(0, &cfg->guest_feature_select)
+                iowrite32(value, addr)
+            ...
+            vp_iowrite32(features >> 32, &cfg->guest_feature) -> ignore low 32 bit
+    drv->validate(dev) -> allow drivers to validate features
+    virtio_features_ok
+        virtio_add_status(dev, VIRTIO_CONFIG_S_FEATURES_OK)
+            vp_modern_set_status
+                struct virtio_pci_common_cfg __iomem *cfg = mdev->common
+                vp_iowrite8(status, &cfg->device_status)
+        status = dev->config->get_status(dev)
+    create_avq -> vp_modern_create_avq -> virtio-pci：引入管理 virtqueue 引入对管理 virtqueue 的支持。通过协商 VIRTIO_F_ADMIN_VQ 功能，驱动程序检测功能并创建一个管理 virtqueue。virtio pci 通用层中的管理 virtqueue 实现使多种类型的上层驱动程序（如 vfio、net、blk）能够利用它
+        admin_q_num = vp_modern_avq_num(&vp_dev->mdev)
+        vq = vp_dev->setup_vq(vp_dev, &vp_dev->admin_vq.info, avq->vq_index, NULL, avq->name, NULL, VIRTIO_MSI_NO_VECTOR)
+            notify = vp_notify_with_data
+                vring_notification_data
+                    iowrite32(data, (void __iomem *)vq->priv)
+            or notify = vp_notify -> iowrite16(vq->index, (void __iomem *)vq->priv)
+            vq = vring_create_virtqueue(index, num, SMP_CACHE_BYTES, &vp_dev->vdev, true, true, ctx, notify, callback, name)
+            vp_active_vq
+                vp_modern_set_queue_size
+                vp_modern_queue_address
+                vp_modern_queue_vector
+            vq->priv = (void __force *)vp_modern_map_vq_notify(mdev, index, NULL)
+        vp_modern_set_queue_enable(&vp_dev->mdev, avq->info.vq->index, true)
+    err = drv->probe(dev) -> virtblk_probe
+    virtio_device_ready(dev)
+        在设置 DRIVER_OK 之前，传输应确保 vq->broken 的可见性。请参阅传输特定的 set_status() 方法的注释。行为良好的设备将仅在 DRIVER_OK 之后通知 virtqueue，这意味着设备应该“看到”将 vq->broken 设置为 false 的一致内存写入，这是驱动程序在看到 DRIVER_OK 时完成的，然后以下驱动程序的 vring_interrupt() 将看到 vq->broken 为 false，因此我们不会丢失任何通知
+        dev->config->set_status(dev, status | VIRTIO_CONFIG_S_DRIVER_OK)
+    drv->scan(dev)
+    virtio_config_enable
+        dev->config_enabled = true
+        __virtio_config_changed(dev) -> drv->config_changed(dev) -> virtblk_config_changed
+
+
+3. virtio核心代码分析，以virtio-net为例,这里我们已virtio-net网卡为例，在没有使用vhost的情况下（网卡后端收发包都走QEMU处理）， 后端收发包走vhost的情况下有些不同，后面单独分析。  3.1 前后端握手流程 QEM模拟PCI设备对GuestOS进行呈现，设备驱动加载的时候尝试去初始化设备
+# 先在PCI总线上调用probe设备，调用了virtio_pci_probe，然后再virtio-bus上调用virtio_dev_probe
+# virtio_dev_probe最后调用到virtnet_probe
+pci_device_probe --> local_pci_probe --> virtio_pci_probe --> register_virtio_device --> 
+device_register --> device_add --> bus_probe_device --> device_initial_probe 
+--> __device_attach --> bus_for_each_drv --> __device_attach_driver --> driver_probe_device --> 
+virtio_dev_probe --> virtnet_probe
+
+
+include/uapi/linux/virtio_pci.h
+
+
+
+前端驱动加载(probe)的过程中，会去初始化 virtqueue，这个时候会去申请MSIx中断并注册中断处理函数：
+virtnet_probe
+  --> init_vqs
+    --> virtnet_find_vqs
+      --> vi->vdev->config->find_vqs [vp_modern_find_vqs]
+        --> vp_find_vqs
+          --> vp_find_vqs_msix // 为每virtqueue申请一个MSIx中断，通常收发各一个队列
+            --> vp_request_msix_vectors // 主要的MSIx中断申请逻辑都在这个函数里面
+              --> pci_alloc_irq_vectors_affinity // 申请MSIx中断描述符(__pci_enable_msix_range)
+                --> request_irq  // 注册中断处理函数
+	            // virtio-net网卡至少申请了3个MSIx中断：
+                // 一个是configuration change中断（配置空间发生变化后，QEMU通知前端）
+                // 发送队列1个MSIx中断，接收队列1MSIx中断
+
+
+
+
+virtio_pci, commit: https://github.com/ssbandjl/linux/commit/3343660d8c62c6b00b2f15324ef3fcb6be207bfa
+
+
+struct virtio_pci_cap {
+
+
+static int virtnet_probe(struct virtio_device *vdev)
+{
+       // check后端是否支持多队列，并按情况创建队列
+       /* Allocate ourselves a network device with room for our info */
+        dev = alloc_etherdev_mq(sizeof(struct virtnet_info), max_queue_pairs);
+        // 定义一个网络设备并配置一些属性，例如MAC地址
+        dev->ethtool_ops = &virtnet_ethtool_ops;
+	       SET_NETDEV_DEV(dev, &vdev->dev);
+        // 初始化virtqueue
+        err = init_vqs(vi);
+        // 注册一个网络设备
+        err = register_netdev(dev);
+        // 写状态位DRIVER_OK，告诉后端，前端已经ready
+        virtio_device_ready(vdev);
+        // 将网卡up起来
+        netif_carrier_on(dev);
+}
+
+
+其中关键的流程是init_vqs，在vp_find_vqs_msix流程中会尝试去申请MSIx中断，这里前面已经有分析过了。 其中，"configuration changed" 中断服务程序vp_config_changed， virtqueue队列的中断服务程序是 vp_vring_interrupt。
+init_vqs --> virtnet_find_vqs --> vi->vdev->config->find_vqs --> vp_modern_find_vqs
+--> vp_find_vqs --> vp_find_vqs_msix
+static int vp_find_vqs_msix(struct virtio_device *vdev, unsigned nvqs,
+		struct virtqueue *vqs[], vq_callback_t *callbacks[],
+		const char * const names[], bool per_vq_vectors,
+		const bool *ctx,
+		struct irq_affinity *desc)
+{
+        /* 为configuration change申请MSIx中断 */
+	err = vp_request_msix_vectors(vdev, nvectors, per_vq_vectors,
+			      per_vq_vectors ? desc : NULL);
+        for (i = 0; i < nvqs; ++i) {
+		 // 创建队列 --> vring_create_virtqueue --> vring_create_virtqueue_split --> vring_alloc_queue -> qemu初始化时，virtio的后端有数据结构VirtIODevice、VirtQueue和vring一模一样，前端和后端对应起来，都应该指向刚才创建的那一段内存。现在的问题是，刚才分配的内存在客户机的内核里面，如何告知qemu来访问这段内存呢？qemu模拟出来的virtio block device只是一个PCI设备，对于客户机来讲这是一个外部设备，可以通过给外部设备发送指令的方式告知外部设备，这就是代码中vp_iowrite16的作用，它会调用专门给外部设备发送指令的函数iowrite，告诉外部的PCI设备, 告知的有三个地址virtqueue_get_desc_addr、virtqueue_get_avail_addr、virtqueue_get_used_addr。从客户机角度来看，这里面的地址都是物理地址即GPA（Guest Physical Address），因为只有物理地址才是客户机和qemu程序都认可的地址，本来客户机的物理内存也是qemu模拟出来的。在qemu中，对PCI总线添加一个设备的时候，会调用virtio_pci_device_plugged
+	         vqs[i] = vp_setup_vq(vdev, queue_idx++, callbacks[i], names[i],
+                                ctx ? ctx[i] : false,
+                                msix_vec);
+		// 每个队列申请一个MSIx中断
+                err = request_irq(pci_irq_vector(vp_dev->pci_dev, msix_vec),
+                                  vring_interrupt, 0,
+                                  vp_dev->msix_names[msix_vec],
+                                  vqs[i]);
+	}
+vp_setup_vq流程再往下走就开始分配共享内存页，至此建立起共享内存通信通道。 值得注意的是一路传下来的callbacks参数其实传入了发送队列和接收队列的回调处理函数， 好家伙，从virtnet_find_vqs一路传递到了__vring_new_virtqueue中最终赋值给了vq->vq.callback。
+static struct virtqueue *vring_create_virtqueue_split(
+        unsigned int index,
+        unsigned int num,
+        unsigned int vring_align,
+        struct virtio_device *vdev,
+        bool weak_barriers,
+        bool may_reduce_num,
+        bool context,
+        bool (*notify)(struct virtqueue *),
+        void (*callback)(struct virtqueue *),
+        const char *name)
+{
+       /* TODO: allocate each queue chunk individually */
+        for (; num && vring_size(num, vring_align) > PAGE_SIZE; num /= 2) {
+		// 申请物理页，地址赋值给queue
+                queue = vring_alloc_queue(vdev, vring_size(num, vring_align),
+                                          &dma_addr,
+                                          GFP_KERNEL|__GFP_NOWARN|__GFP_ZERO);
+        }
+        queue_size_in_bytes = vring_size(num, vring_align);
+        vring_init(&vring, num, queue, vring_align); // 确定 descriptor table, available ring, used ring的位置。
+}
+我们看下如果virtqueue队列如果收到MSIx中断消息后，会调用哪个hook来处理？
+irqreturn_t vring_interrupt(int irq, void *_vq)
+{
+        struct vring_virtqueue *vq = to_vvq(_vq);
+        if (!more_used(vq)) {
+                pr_debug("virtqueue interrupt with no work for %p\n", vq);
+                return IRQ_NONE;
+        }
+        if (unlikely(vq->broken))
+                return IRQ_HANDLED;
+        pr_debug("virtqueue callback for %p (%p)\n", vq, vq->vq.callback);
+        if (vq->vq.callback)
+                vq->vq.callback(&vq->vq); -> virtblk_done
+        return IRQ_HANDLED;
+}
+EXPORT_SYMBOL_GPL(vring_interrupt);
+不难想到中断服务程序里面会调用队列上的callback。 我们再回过头来看下virtnet_find_vqs，原来接受队列的回调函数是skb_recv_done，发送队列的回调函数是skb_xmit_done。
+static int virtnet_find_vqs(struct virtnet_info *vi)
+{
+       /* Allocate/initialize parameters for send/receive virtqueues */
+        for (i = 0; i < vi->max_queue_pairs; i++) {
+		callbacks[rxq2vq(i)] = skb_recv_done;
+		callbacks[txq2vq(i)] = skb_xmit_done;
+	}
+}
+OK，这个小节就到这里。Are you clear ?
+3.2 virtio-net网卡收发在virtqueue上的实现
+这里以virtio-net为例（非vhost-net模式）来分析一下网卡收发报文在virtio协议上的具体实现。 virtio-net模式下网卡收发包的流程为：
+收包：Hardware => Host Kernel => Qemu => Guest
+发包：Guest => Host Kernel => Qemu => Host Kernel => Hardware
+3.2.1 virtio-net网卡发包
+前面我们看到virtio-net设备初始化的时候会创建一个net_device设备： virtnet_probe -> alloc_etherdev_mq注册了netdev_ops = &virtnet_netdev， 这里virtnet_netdev是网卡驱动的回调函数集合（收发包和参数设置）。
+static const struct net_device_ops netdev_ops = {
+        .ndo_open               = rio_open,
+        .ndo_start_xmit = start_xmit,
+        .ndo_stop               = rio_close,
+        .ndo_get_stats          = get_stats,
+        .ndo_validate_addr      = eth_validate_addr,
+        .ndo_set_mac_address    = eth_mac_addr,
+        .ndo_set_rx_mode        = set_multicast,
+        .ndo_do_ioctl           = rio_ioctl,
+        .ndo_tx_timeout         = rio_tx_timeout,
+};
+网卡发包的时候调用ndo_start_xmit，将TCP/IP上层协议栈扔下来的数据发送出去。 对应到virtio网卡的回调函数就是start_xmit，从代码看就是将skb发送到virtqueue中， 然后调用virtqueue_kick通知qemu后端将数据包发送出去。
+Guest内核里面的virtio-net驱动发包：
+内核驱动 virtio_net.c
+static netdev_tx_t start_xmit
+    skb_tx_timestamp(skb)
+	// 将skb放到virtqueue队列中
+ 	-> xmit_skb(sq, skb) -> sg_init_table,virtqueue_add_outbuf -> virtqueue_add
+        virtqueue_add_packed(_vq, sgs, total_sg,
+        or virtqueue_add_split(_vq, sgs, total_sg,
+            virtqueue_kick
+                // kick通知qemu后端去取
+                virtqueue_kick_prepare && virtqueue_notify 
+	// kick次数加1
+	sq->stats.kicks++
+Guest Kick后端从KVM中VMExit出来退出到Qemu用户态（走的是ioeventfd）由Qemu去将数据发送出去。 大致调用的流程是： virtio_queue_host_notifier_read -> virtio_net_handle_tx_bh -> virtio_net_flush_tx -> virtqueue_pop拿到发包(skb) -> qemu_sendv_packet_async
+Qemu代码virtio-net相关代码:
+virtio_queue_host_notifier_read -> virtio_queue_notify_vq
+    -> vq->handle_output -> virtio_net_handle_tx_bh 队列注册的时候，回注册回调函数
+        -> qemu_bh_schedule -> virtio_net_tx_bh
+            -> virtio_net_flush_tx
+	        -> virtqueue_pop
+		-> qemu_sendv_packet_async // 报文放到发送队列上，写tap设备的fd去发包
+		    -> tap_receive_iov -> tap_write_packet
+		    
+// 最后调用 tap_write_packet 把数据包发给tap设备投递出去
+3.2.2 virtio-net网卡收包
+网卡收包的时候，tap设备先收到报文，对应的virtio-net网卡tap设备fd变为可读， Qemu主循环收到POLL_IN事件调用回调函数收包。
+tap_send -> qemu_send_packet_async -> qemu_send_packet_async_with_flags
+    -> qemu_net_queue_send
+        -> qemu_net_queue_deliver
+	    -> qemu_deliver_packet_iov
+	        -> nc_sendv_compat
+		    -> virtio_net_receive
+		        -> virtio_net_receive_rcu
+virtio-net网卡收报最终调用了virtio_net_receive_rcu， 和发包类似都是调用virtqueue_pop从前端获取virtqueue element， 将报文数据填充到vring中然后virtio_notify注入中断通知前端驱动取结果。
+这里不得不吐槽一下，为啥收包函数取名要叫tap_send。
+
+
+
+
+
+Thread 3 hit Breakpoint 3, virtblk_probe (vdev=0xffff88811a36e400) at drivers/block/virtio_blk.c:693
+693     {
+(gdb) bt
+#0  virtblk_probe (vdev=0xffff88811a36e400) at drivers/block/virtio_blk.c:693
+#1  0xffffffff81765deb in virtio_dev_probe (_d=0xffff88811a36e410) at drivers/virtio/virtio.c:273
+#2  0xffffffff8181a721 in call_driver_probe (drv=0xffffffffc000d0a0 <virtio_blk>, drv=0xffffffffc000d0a0 <virtio_blk>, dev=0xffff88811a36e410) at drivers/base/dd.c:517
+#3  really_probe (drv=0xffffffffc000d0a0 <virtio_blk>, dev=0xffff88811a36e410) at drivers/base/dd.c:596
+#4  really_probe (dev=0xffff88811a36e410, drv=0xffffffffc000d0a0 <virtio_blk>) at drivers/base/dd.c:541
+#5  0xffffffff8181aa45 in __driver_probe_device (drv=drv@entry=0xffffffffc000d0a0 <virtio_blk>, dev=dev@entry=0xffff88811a36e410) at drivers/base/dd.c:751
+#6  0xffffffff8181aae3 in driver_probe_device (drv=drv@entry=0xffffffffc000d0a0 <virtio_blk>, dev=dev@entry=0xffff88811a36e410) at drivers/base/dd.c:781
+#7  0xffffffff8181aece in __device_attach_driver (drv=0xffffffffc000d0a0 <virtio_blk>, _data=<optimized out>) at drivers/base/dd.c:898
+#8  0xffffffff81818462 in bus_for_each_drv (bus=<optimized out>, start=start@entry=0x0 <fixed_percpu_data>, data=data@entry=0xffffc90001cdf930, fn=fn@entry=0xffffffff8181ae20 <__device_attach_driver>)
+    at drivers/base/bus.c:427
+#9  0xffffffff8181a48d in __device_attach (dev=dev@entry=0xffff88811a36e410, allow_async=allow_async@entry=true) at drivers/base/dd.c:969
+#10 0xffffffff8181b0a3 in device_initial_probe (dev=dev@entry=0xffff88811a36e410) at drivers/base/dd.c:1016
+#11 0xffffffff8181947f in bus_probe_device (dev=dev@entry=0xffff88811a36e410) at drivers/base/bus.c:487
+#12 0xffffffff81816b2a in device_add (dev=dev@entry=0xffff88811a36e410) at drivers/base/core.c:3396
+#13 0xffffffff81765939 in register_virtio_device (dev=dev@entry=0xffff88811a36e400) at drivers/virtio/virtio.c:423
+#14 0xffffffff8176d74f in virtio_pci_probe (pci_dev=0xffff8881302f0000, id=<optimized out>) at drivers/virtio/virtio_pci_common.c:552
+#15 0xffffffff81688068 in local_pci_probe (_ddi=_ddi@entry=0xffffc90001cdfab8) at drivers/pci/pci-driver.c:323 -> pci_drv->probe(pci_dev, ddi->id)
+#16 0xffffffff81689ba2 in pci_call_probe (id=<optimized out>, dev=0xffff8881302f0000, drv=0xffffffff830f0ee0 <virtio_pci_driver>) at drivers/pci/pci-driver.c:380
+#17 __pci_device_probe (pci_dev=0xffff8881302f0000, drv=0xffffffff830f0ee0 <virtio_pci_driver>) at drivers/pci/pci-driver.c:405
+#18 pci_device_probe (dev=0xffff8881302f00d0) at drivers/pci/pci-driver.c:448
+#19 0xffffffff8181a721 in call_driver_probe (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, drv=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=0xffff8881302f00d0) at drivers/base/dd.c:517
+#20 really_probe (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=0xffff8881302f00d0) at drivers/base/dd.c:596
+#21 really_probe (dev=0xffff8881302f00d0, drv=0xffffffff830f0f58 <virtio_pci_driver+120>) at drivers/base/dd.c:541
+#22 0xffffffff8181aa45 in __driver_probe_device (drv=drv@entry=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=dev@entry=0xffff8881302f00d0) at drivers/base/dd.c:751
+#23 0xffffffff8181aae3 in driver_probe_device (drv=drv@entry=0xffffffff830f0f58 <virtio_pci_driver+120>, dev=dev@entry=0xffff8881302f00d0) at drivers/base/dd.c:781
+#24 0xffffffff8181aece in __device_attach_driver (drv=0xffffffff830f0f58 <virtio_pci_driver+120>, _data=<optimized out>) at drivers/base/dd.c:898
+#25 0xffffffff81818462 in bus_for_each_drv (bus=<optimized out>, start=start@entry=0x0 <fixed_percpu_data>, data=data@entry=0xffffc90001cdfc00, fn=fn@entry=0xffffffff8181ae20 <__device_attach_driver>)
+    at drivers/base/bus.c:427
+#26 0xffffffff8181a48d in __device_attach (dev=dev@entry=0xffff8881302f00d0, allow_async=allow_async@entry=false) at drivers/base/dd.c:969
+#27 0xffffffff8181a530 in device_attach (dev=dev@entry=0xffff8881302f00d0) at drivers/base/dd.c:1010
+#28 0xffffffff8167c26f in pci_bus_add_device (dev=dev@entry=0xffff8881302f0000) at drivers/pci/bus.c:324
+#29 0xffffffff8167c2c1 in pci_bus_add_devices (bus=bus@entry=0xffff888100dcf800) at drivers/pci/bus.c:347
+#30 0xffffffff8167f4ca in pci_rescan_bus (bus=bus@entry=0xffff888100dcf800) at drivers/pci/probe.c:3249
+#31 0xffffffff8168a458 in rescan_store (bus=<optimized out>, buf=<optimized out>, count=2) at drivers/pci/pci-sysfs.c:421
+#32 0xffffffff81817fc4 in bus_attr_store (kobj=<optimized out>, attr=0xffffc90000031014, buf=0xffffc90000031014 "\v", count=4294967296) at drivers/base/bus.c:122
+#33 0xffffffff8142c9ab in sysfs_kf_write (of=<optimized out>, buf=0x100000000 <error: Cannot access memory at address 0x100000000>, count=38, pos=<optimized out>) at fs/sysfs/file.c:139
+#34 0xffffffff8142ba78 in kernfs_fop_write_iter (iocb=0xffffc90001cdfd88, iter=<optimized out>) at fs/kernfs/file.c:296
+#35 0xffffffff8136441a in call_write_iter (file=0xffff888116e53300, iter=0xffffc90001cdfd60, kio=0xffffc90001cdfd88) at ./include/linux/fs.h:2163
+#36 new_sync_write (filp=filp@entry=0xffff888116e53300, buf=buf@entry=0x5567d57f2080 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc000a000 -s .data 0xffffffffc000d000 -s .bss 0xffffffffc000d700\n", 
+    len=len@entry=2, ppos=ppos@entry=0xffffc90001cdfe18) at fs/read_write.c:507
+#37 0xffffffff81366c85 in vfs_write (pos=0xffffc90001cdfe18, count=2, buf=0x5567d57f2080 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc000a000 -s .data 0xffffffffc000d000 -s .bss 0xffffffffc000d700\n", 
+    file=0xffff888116e53300) at fs/read_write.c:594
+#38 vfs_write (file=0xffff888116e53300, buf=0x5567d57f2080 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc000a000 -s .data 0xffffffffc000d000 -s .bss 0xffffffffc000d700\n", count=<optimized out>, 
+    pos=0xffffc90001cdfe18) at fs/read_write.c:574
+#39 0xffffffff81366ee7 in ksys_write (fd=<optimized out>, buf=0x5567d57f2080 "1\nd-symbol-file ./drivers/block/virtio_blk.ko 0xffffffffc000a000 -s .data 0xffffffffc000d000 -s .bss 0xffffffffc000d700\n", count=2)
+    at fs/read_write.c:647
+#40 0xffffffff81366f7a in __do_sys_write (count=<optimized out>, buf=<optimized out>, fd=<optimized out>) at fs/read_write.c:659
+#41 __se_sys_write (count=<optimized out>, buf=<optimized out>, fd=<optimized out>) at fs/read_write.c:656
+#42 __x64_sys_write (regs=<optimized out>) at fs/read_write.c:656
+#43 0xffffffff81cff979 in do_syscall_x64 (nr=<optimized out>, regs=0xffffc90001cdff58) at arch/x86/entry/common.c:50
+#44 do_syscall_64 (regs=0xffffc90001cdff58, nr=<optimized out>) at arch/x86/entry/common.c:80
+#45 0xffffffff81e0007c in entry_SYSCALL_64 () at arch/x86/entry/entry_64.S:113
+#48 0x00007f41692506a0 in ?? () at drivers/block/virtio_blk.c:1027
+#49 0x0000000000000002 in fixed_percpu_data ()
+Backtrace stopped: Cannot access memory at address 0xffffc90001ce0000
+(gdb) 
+
+
+modern
+static const struct virtio_config_ops virtio_pci_config_nodev_ops = {
+	.get		= NULL,
+	.set		= NULL,
+	.generation	= vp_generation,
+	.get_status	= vp_get_status,
+	.set_status	= vp_set_status,
+	.reset		= vp_reset,
+	.find_vqs	= vp_modern_find_vqs,
+	.del_vqs	= vp_del_vqs,
+	.get_features	= vp_get_features,
+	.finalize_features = vp_finalize_features,
+	.bus_name	= vp_bus_name,
+	.set_vq_affinity = vp_set_vq_affinity,
+	.get_vq_affinity = vp_get_vq_affinity,
+	.get_shm_region  = vp_get_shm_region,
+};
+
+virtblk_probe
+    virtio_cread_feature
+        static void vp_get
+            switch (len)
+            case 2:
+                w = cpu_to_le16(ioread16(device + offset))
+                memcpy(buf, &w, sizeof w)
+    num_vqs = min_t(unsigned int, nr_cpu_ids, num_vqs) -> 8
+    for (i = 0; i < num_vqs; i++)
+        callbacks[i] = virtblk_done -> virtblk_done(struct virtqueue *vq) <- vring_interrupt
+            virtqueue_disable_cb(vq)
+            while ((vbr = virtqueue_get_buf(vblk->vqs[qid].vq, &len)) -> virtqueue_get_buf_ctx -> virtqueue_get_buf_ctx_packed -> update ptr
+                struct request *req = blk_mq_rq_from_pdu(vbr)
+                blk_mq_complete_request(req)
+                blk_mq_start_stopped_hw_queues(vblk->disk->queue, true)
+    int virtio_find_vqs -> virtqueue 是客户机前端对于队列管理的数据结构，在客户机的linux内核中通过kmalloc_array进行分配。而队列的实体需要通过函数 virtio_find_vqs 查找或者生成，所以这里还把callback函数指定为virtblk_done，当buffer使用发生变化的时候，需要调用这个callback函数进行通知
+        vdev->config->find_vqs(vdev, nvqs, vqs, callbacks, names, NULL, desc) -> static int vp_modern_find_vqs
+            vp_find_vqs(vdev, nvqs, vqs, callbacks, names, ctx, desc)
+                vp_find_vqs_msix true
+                    vp_request_msix_vectors
+                        pci_alloc_irq_vectors_affinity(vp_dev->pci_dev, nvectors, nvectors, flags, desc)
+                        request_irq(pci_irq_vector(vp_dev->pci_dev, v), vp_config_changed, 0, vp_dev->msix_names[v], vp_dev)
+                        vp_dev->config_vector(vp_dev, v)
+                        request_irq(pci_irq_vector(vp_dev->pci_dev, v), vp_vring_interrupt, 0, vp_dev->msix_names[v], vp_dev)
+                    vp_setup_vq -> static struct virtqueue *setup_vq
+                        notify = vp_notify_with_data
+                        or notify = vp_notify
+                        vring_create_virtqueue -> create the vring
+                            vring_create_virtqueue_split
+                                vring_init
+                                __vring_new_virtqueue
+                        err = vp_active_vq(vq, msix_vec)
+                            vp_modern_set_queue_size(mdev, index, virtqueue_get_vring_size(vq))
+                                vp_iowrite16(index, &mdev->common->queue_select)
+                                vp_iowrite16(size, &mdev->common->queue_size)
+                            vp_modern_queue_address(mdev, index, virtqueue_get_desc_addr(vq), virtqueue_get_avail_addr(vq), virtqueue_get_used_addr(vq)) -> 写qemu中的pci设备配置空间, 告知qemu, 然后qemu和虚机共用这段内存空间 -> virtio的后端有数据结构VirtIODevice、VirtQueue和vring一模一样，前端和后端对应起来，都应该指向刚才创建的那一段内存。现在的问题是，刚才分配的内存在客户机的内核里面，如何告知qemu来访问这段内存呢？qemu模拟出来的virtio block device只是一个PCI设备，对于客户机来讲这是一个外部设备，可以通过给外部设备发送指令的方式告知外部设备，这就是代码中vp_iowrite16的作用，它会调用专门给外部设备发送指令的函数iowrite，告诉外部的PCI设备 -> write vq info to device config space
+                                vp_iowrite16(index, &cfg->queue_select)
+                                vp_iowrite64_twopart(desc_addr, &cfg->queue_desc_lo, &cfg->queue_desc_hi)
+                                vp_iowrite64_twopart(driver_addr, &cfg->queue_avail_lo, &cfg->queue_avail_hi)
+                                vp_iowrite64_twopart(device_addr, &cfg->queue_used_lo, &cfg->queue_used_hi)
+                            msix_vec = vp_modern_queue_vector(mdev, index, msix_vec)
+                        vq->priv = (void __force *)vp_modern_map_vq_notify(mdev, index, NULL)
+                            u16 off = vp_modern_get_queue_notify_off(mdev, index) -> vp_ioread16(&mdev->common->queue_notify_off)
+                            vp_iowrite16(index, &cfg->queue_select)
+                            vp_iowrite16(vector, &cfg->queue_msix_vector)
+                    request_irq(pci_irq_vector(vp_dev->pci_dev, msix_vec), vring_interrupt, 0, vp_dev->msix_names[msix_vec], vqs[i])
+                vp_find_vqs_msix false
+                vp_find_vqs_intx(vdev, nvqs, vqs, callbacks, names, ctx) -> Finally fall back to regular interrupts -> 通过request_irq注册一个中断处理函数vp_interrupt，当设备的配置信息发生改变会产生一个中断，当设备向队列中写入信息时也会产生一个中断，称为vq中断，中断处理函数需要调用相应的队列的回调函数。然后，根据队列的数目依次调用vp_setup_vq，完成virtqueue、vring的分配和初始化
+                    request_irq(vp_dev->pci_dev->irq, vp_interrupt, IRQF_SHARED, dev_name(&vdev->dev), vp_dev) -> virtio_pci：将 vp_try_to_find_vqs 拆分为 INTx 和 MSI-X 变体，vp_try_to_find_vqs 中的 INTx 和 MSI-X 情况之间基本上没有共享逻辑，因此将函数拆分为两个并稍微清理一下。同时删除相当无意义的 vp_request_intx 包装器
+                        isr = ioread8(vp_dev->isr)
+                        vp_config_changed(irq, opaque)
+                            drv->config_changed(dev) -> virtblk_config_changed
+                                queue_work(virtblk_wq, &vblk->config_work)
+                        vp_vring_interrupt(irq, opaque)
+                            list_for_each_entry(info, &vp_dev->virtqueues, node)
+                                vring_interrupt(irq, info->vq)
+                    vqs[i] = vp_setup_vq(vdev, queue_idx++, callbacks[i], names[i], ctx ? ctx[i] : false, VIRTIO_MSI_NO_VECTOR)
+            list_for_each_entry(vq, &vdev->vqs, list) -> 选择并激活所有队列。必须最后完成：一旦我们这样做，除了重置外没有其他办法可以返回。
+                vp_modern_set_queue_enable(&vp_dev->mdev, vq->index, true)
+                    vp_iowrite16(index, &mdev->common->queue_select)
+                    vp_iowrite16(enable, &mdev->common->queue_enable)
+
+
+
+static const struct sysfs_ops bus_sysfs_ops = {
+	.show	= bus_attr_show,
+	.store	= bus_attr_store,
+        bus_attr->store(subsys_priv->bus, buf, count) -> rescan_store
+};
+
+
+static void vp_reset(struct virtio_device *vdev)
+    vp_modern_set_status
+    vp_modern_get_status
+    vp_modern_avq_deactivate -> virtio-pci：引入管理命令发送功能，添加通过管理 virtqueue 接口发送管理命令的支持。设备重置完成后，中止任何正在进行的管理命令。设备准备就绪时激活管理队列；设备重置时停用。为了符合以下规范声明 [1]，仅在设置 DRIVER_OK 状态后，管理 virtqueue 才会为上层用户激活。[1] 在设置 DRIVER_OK 之前，驱动程序不得向设备发送任何缓冲区可用通知
+        __virtqueue_break(admin_vq->info.vq)
+            WRITE_ONCE(vq->broken, true) -> 用于描述符环形缓冲区实现的 Virtio 辅助例程，这些辅助例程为想要使用 virtio 环形的虚拟机管理程序提供大部分 virtqueue_ops。与之前的 lguest 实现不同：1) 环形大小可变（2^n-1 个元素）。2) 它们每个 sg 元素的上限为 65535 字节。3) 页码始终为 64 位（PAE 有人知道吗？）4) 它们不再将 used[] 放在单独的页面上，而只是单独的缓存行。5) 我们对变量进行取模。如果我们在意的话，我们可能会很棘手。6) 使用环形内的标志抑制中断和通知。用户只需获取环形页面并提供通知挂钩（KVM 希望客户分配环形，lguest 可以明智地完成此操作）
+	vp_synchronize_vectors(vdev) -> flush vq/config cb, wait for pending irq handlers
+        synchronize_irq(vp_dev->pci_dev->irq) -> 对 virtqueues 使用共享中断 -> 用于等待PENDING状态的中断处理函数结束（中断处理包括硬中断的处理以及中断线程的处理）
+            struct irq_desc *desc = irq_to_desc(irq) -> get irq desc
+            __synchronize_irq(desc) -> wait hw irq complete -> 其中 __synchronize_hardirq()函数用于等待硬中断的处理完成，在函数handle_irq_event()中处理硬中断之前设置IRQD_IRQ_INPROGRESS，在处理完成后清IRQD_IRQ_INPROGRESS。 __synchronize_hardirq()检查IRQD_IRQ_INPROGRESS是否清除
+                __synchronize_hardirq(desc, true)
+                wait_event(desc->wait_for_threads, !atomic_read(&desc->threads_active)) -> 等待中断线程处理结束  <- irq_thread -> wake_threads_waitq(desc); //唤醒等待队列
+        or synchronize_irq(pci_irq_vector(vp_dev->pci_dev, i))
+
+
+static int irq_thread(void *data)
+    handler_fn = irq_thread_fn
+    irq_thread_check_affinity(desc, action)
+    wake_threads_waitq(desc)
+
+
+
+static const struct blk_mq_ops virtio_mq_ops = {
+	.queue_rq	= virtio_queue_rq,
+	.queue_rqs	= virtio_queue_rqs,
+	.commit_rqs	= virtio_commit_rqs,
+	.complete	= virtblk_request_done,
+	.map_queues	= virtblk_map_queues,
+	.poll		= virtblk_poll, -> static int virtblk_poll(struct blk_mq_hw_ctx *hctx, struct io_comp_batch *iob)
+
+};
+virtio_queue_rq
+    virtblk_prep_rq(hctx, vblk, req, vbr)
+        virtblk_setup_cmd(vblk->vdev, req, vbr)
+            case REQ_OP_WRITE
+                type = VIRTIO_BLK_T_OUT
+                sector = blk_rq_pos(req)
+        num = virtblk_map_data(hctx, req, vbr)
+            sg_alloc_table_chained(&vbr->sg_table, blk_rq_nr_phys_segments(req), vbr->sg_table.sgl, VIRTIO_BLK_INLINE_SG_CNT) -> 分配内存以保存数据 SG 的信息，并调用 blk_rq_map_sg 映射数据 SG
+            blk_rq_map_sg(hctx->queue, req, vbr->sg_table.sgl) -> request映射, 使用blk_rq_map_sg把request映射到一个scatterlist，在__blk_segment_map_sg中，BIOVEC_PHYS_MERGEABLE检测相邻bio_vec是否可以合并，BIOVEC_SEG_BOUNDARY用于检测是否超过边界，比如某些硬件不能跨64MB边界传输，其单次发起DMA的最大大小就是64MB，可以通过queue_max_segment_size来控制scatterlist的表项
+                //block\blk-merge.c
+                __blk_bios_map_sg
+                    __blk_segment_map_sg
+        blk_mq_start_request(req)
+            WRITE_ONCE(rq->state, MQ_RQ_IN_FLIGHT)
+            rq->mq_hctx->tags->rqs[rq->tag] = rq
+    virtblk_add_req(vblk->vqs[qid].vq, vbr) -> virtio-blk：支持 mq_ops->queue_rqs()，此补丁支持 mq_ops->queue_rqs() 钩子。它具有批量提交给 virtio-blk 驱动程序的优势。它还有助于轮询 I/O，因为轮询使用块层的批量完成。queue_rqs() 中的批量提交可以提高轮询性能。在queue_rqs()中，它迭代 plug->mq_list，收集属于同一 HW 队列的请求，直到遇到来自其他 HW 队列的请求或看到列表末尾。然后，virtio-blk 将请求添加到 virtqueue 并踢出 virtqueue 提交请求。如果有错误，它会将错误请求插入 requeue_list 并将其传递给普通块层路径。为了验证，我做了 fio 测试
+        sg_init_one(&out_hdr, &vbr->out_hdr, sizeof(vbr->out_hdr))
+        virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC) -> scatter-list成员入virtqueue的vring
+            virtqueue_add(_vq, sgs, total_sg, out_sgs, in_sgs, data, NULL, gfp)
+    virtqueue_kick_prepare(vblk->vqs[qid].vq)
+        virtqueue_kick_prepare_packed
+        or virtqueue_kick_prepare_split
+    virtqueue_notify(vblk->vqs[qid].vq) -> bool virtqueue_notify(struct virtqueue *_vq) -> vm kernel notify qemu
+        vq->notify(_vq)) -> 
+            vp_notify
+                iowrite16(vq->index, (void __iomem *)vq->priv) -> qemu: virtio_pci_notify_write -> 参考QEMU前端通知机制: https://blog.csdn.net/huang987246510/article/details/105496843
+            or vp_notify_with_data
+                u32 data = vring_notification_data(vq)
+                iowrite32(data, (void __iomem *)vq->priv)
+        vq->broken = true
+
+
+int kvm_cpu_exec(CPUState *cpu)
+{
+    struct kvm_run *run = cpu->kvm_run;
+    int ret, run_ret;
+......
+    run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
+......
+    switch (run->exit_reason) {
+        case KVM_EXIT_IO:
+            DPRINTF("handle_io\n");
+            /* Called outside BQL */
+            kvm_handle_io(run->io.port, attrs,
+                          (uint8_t *)run + run->io.data_offset,
+                          run->io.direction,
+                          run->io.size,
+                          run->io.count);
+            ret = 0;
+            break;
+    }
+......
+}
+
+
+
+mailbox
+ref: https://blog.csdn.net/u010961173/article/details/96422441
+drivers/mailbox/mailbox-test.c
+mbox_create(&mbox, 32)
+mbox_send_message(&mbox, "Hello World!", sizeof("Hello World!"))
+    add_to_rbuf(chan, mssg)
+    msg_submit(chan)
+        chan->cl->tx_prepare(chan->cl, data)
+        chan->mbox->ops->send_data(chan, data)
+        hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL)
+    wait = msecs_to_jiffies
+    ret = wait_for_completion_timeout(&chan->tx_complete, wait)
+    tx_tick(chan, t)
+        complete(&chan->tx_complete)
+
+static const struct file_operations mbox_test_message_ops = {
+	.write	= mbox_test_message_write,
+	.read	= mbox_test_message_read,
+	.fasync	= mbox_test_message_fasync,
+	.poll	= mbox_test_message_poll,
+	.open	= simple_open,
+	.llseek	= generic_file_llseek,
+};
+
+
+drivers/mailbox/hi6220-mailbox.c -> core_initcall(hi6220_mbox_init) -> mbox：Hi6220：添加mbox驱动 添加Hi6220mbox驱动，mbox与MCU通信；发送数据时，可以支持两种底层实现方式：一种是使用中断作为确认，另一种是自动模式，无需任何确认。这两种方式在驱动中都已支持。接收数据时，将依靠中断来通知通道有消息传入。现在mbox驱动用于向MCU发送消息，以控制CPU、GPU和DDR的动态电压和频率调节
+    ...
+    hi6220_mbox_probe
+        mbox->ipc = devm_platform_ioremap_resource(pdev, 0)
+        devm_request_irq(dev, mbox->irq, hi6220_mbox_interrupt, 0, dev_name(dev), mbox)
+            state = readl(ACK_INT_STAT_REG(mbox->ipc))
+            intr_bit = __ffs(state)
+            mbox_chan_txdone(chan, 0)
+            mbox_chan_received_data(chan, (void *)msg)
+        devm_mbox_controller_register(dev, &mbox->controller)
+        platform_set_drvdata(pdev, mbox)
+
+
+
+
+
+
+
+int vp_set_vq_affinity(struct virtqueue *vq, const struct cpumask *cpu_mask)
+    irq = pci_irq_vector(vp_dev->pci_dev, info->msix_vector)
+    if (!cpu_mask)
+        irq_update_affinity_hint(irq, NULL)
+            __irq_set_affinity(irq, m, false)
+                irq_set_affinity_locked(irq_desc_get_irq_data(desc), mask, force)
+                    irq_try_set_affinity(data, mask, force)
+    else
+        cpumask_copy(mask, cpu_mask)
+        irq_set_affinity_and_hint(irq, mask) -> __irq_apply_affinity_hint
+            __irq_set_affinity(irq, m, false)
+
+
+
+virtio_blk IO路径/全流程
+总结一下存储虚拟化的场景下，整个写入的过程，如下图所示：
+（1）在虚拟机里面，应用层调用write系统调用写入文件。
+（2）write系统调用进入虚拟机里面的内核，经过VFS、通用块设备层、I/O调度层，到达块设备驱动。
+（3）虚拟机里面的块设备驱动是virtio_blk，它和通用的块设备驱动一样有一个request queue，另外有一个函数 make_request_fn 会被设置为blk_mq_make_request，这个函数用于将请求放入队列。
+（4）虚拟机里面的块设备驱动是 virtio_blk，会注册一个中断处理函数 vp_interrupt 。当qemu写入完成之后，它会通知虚拟机里面的块设备驱动。
+（5）blk_mq_make_request 最终调用 virtqueue_add，将请求添加到传输队列 virtqueue 中，然后调用 virtqueue_notify 通知 qemu。
+   ------------------------------------------------------------------------------------------------------------
+（6）在qemu中，本来虚拟机正处于KVM_RUN的状态即处于客户机状态。
+（7）qemu收到通知后，通过VM exit指令退出客户机状态进入宿主机状态，根据退出原因得知有I/O需要处理。
+（8）qemu调用 virtio_blk_handle_output/vhost_user_blk_handle_output, 最终调用 virtio_blk_handle_vq。
+（9）virtio_blk_handle_vq 里面有一个循环，在循环中 virtio_blk_get_request 函数从传输队列中拿出请求，然后调用 virtio_blk_handle_request 处理请求。
+（10）virtio_blk_handle_request 会调用 blk_aio_pwritev，通过BlockBackend驱动写入qcow2文件。
+（11）写入完毕之后，virtio_blk_req_complete 会调用 virtio_notify 通知虚拟机里面的驱动，数据写入完成，刚才注册的中断处理函数 vp_interrupt 会收到这个通知
+
+
+
+
+网络虚拟化场景下网络包的发送过程总结一下，如下图所示：
+（1）在虚拟机里面的用户态，应用程序通过write系统调用写入socket。
+（2）写入的内容经过VFS层、内核协议栈，到达虚拟机里面内核的网络设备驱动即virtio_net。
+（3）virtio_net网络设备有一个操作结构struct net_device_ops，里面定义了发送一个网络包调用的函数为start_xmit。
+（4）在virtio_net的前端驱动和qemu中的后端驱动之间，有两个队列virtqueue，一个用于发送一个用于接收。然后，需要在start_xmit中调用virtqueue_add，将网络包放入发送队列，然后调用virtqueue_notify通知qemu。
+（5）qemu本来处于KVM_RUN的状态，收到通知后通过VM exit指令退出客户机模式，进入宿主机模式。发送网络包的时候，virtio_net_handle_tx_bh函数会被调用。
+（6）接下来是一个for循环，需要在循环中调用virtqueue_pop，从传输队列中获取要发送的数据，然后调用qemu_sendv_packet_async进行发送。
+（7）qemu会调用writev向字符设备文件写入，进入宿主机的内核。
+（8）在宿主机内核中字符设备文件的file_operations里面的write_iter会被调用，即会调用tun_chr_write_iter。
+（9）在tun_chr_write_iter函数中，tun_get_user将要发送的网络包从qemu拷贝到宿主机内核里面来，然后调用netif_rx_ni开始调用宿主机内核协议栈进行处理。
+（10）宿主机内核协议栈处理完毕之后，会发送给tap虚拟网卡，完成从虚拟机里面到宿主机的整个发送过程。
+简化的数据流转流程为：客户机用户态{write 数据} -> 客户机内核态{协议栈处理为网络包} -> qemu{循环从队列中获取网络包，再向字符设备写入数据流} -> 宿主机用户态{dev/net/tun字符设备接收数据流} -> 宿主机内核态{将网络包拷贝到宿主机内核里面来，协议栈处理} -> 宿主机用户态{虚拟网卡发送}。
+
+
+vdpa, linux commit: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=4c8cf31885f69e86be0b5b9e6677a26797365e1d
+modprobe vdpa
+core_initcall(vdpa_init) -> vDPA：介绍 vDPA 总线，vDPA 设备是一种使用符合 virtio 规范的数据路径并带有供应商特定控制路径的设备。vDPA 设备既可以物理位于硬件上，也可以通过软件模拟。vDPA 硬件设备通常通过 PCIE 实现，具有以下类型： - PF（物理功能） - 单个物理功能 - VF（虚拟功能） - 支持单根 I/O 虚拟化（SR-IOV）的设备。其虚拟功能（VF）代表设备的虚拟化实例，可以分配给不同的分区 - ADI（可分配设备接口）及其等效项 - 利用 Intel 可扩展 IOV 等技术，由主机操作系统利用一个或多个 ADI 组成的虚拟设备（VDEV）。或者其等效项，如 Mellanox 的 SF（子功能）。 >从驱动程序的角度来看，根据 DMA 转换的方式和位置，vDPA 设备分为两种类型： - 平台特定的 DMA 转换 - 从驱动程序的角度来看，设备可以在设备访问内存中的数据受到限制和/或转换的平台上使用。一个例子是 PCIE vDPA，其 DMA 请求通过总线（例如 PCIE）特定的方式标记。DMA 转换和保护在 PCIE 总线 IOMMU 级别完成。 - 设备特定的 DMA 转换 - 设备通过其自己的逻辑实现 DMA 隔离和保护。一个例子是使用片上 IOMMU 的 vDPA 设备。为了隐藏 vDPA 设备/IOMMU 选项的上述类型的差异和复杂性，并为了向上层展示通用的 virtio 设备，需要一个设备无关的框架。此补丁引入了软件 vDPA 总线，它抽象了 vDPA 设备、vDPA 总线驱动程序的通用属性以及 vDPA 设备抽象和 vDPA 总线驱动程序之间的通信方法 (vdpa_config_ops)。这允许多种类型的驱动程序用于 vDPA 设备，例如 virtio_vdpa 和 vhost_vdpa 驱动程序在总线上运行，并允许内核 virtio 驱动程序或用户空间 vhost 驱动程序使用 vDPA 设备： -> commit: https://github.com/ssbandjl/linux/commit/961e9c84077f6c8579d7a628cbe94a675cb67ae4, 通过对 vDPA 总线和 vDPA 总线操作的抽象，底层硬件的差异和复杂性对上层隐藏起来。上层的 vDPA 总线驱动程序可以使用统一的 vdpa_config_ops 来控制不同类型的 vDPA 设备
+virtio drivers  vhost drivers
+        |             |
+[virtio bus]   [vhost uAPI]
+        |             |
+virtio device   vhost device
+virtio_vdpa drv vhost_vdpa drv
+            \       /
+        [vDPA bus]
+                |
+        vDPA device
+        hardware drv
+                |
+        [hardware bus]
+                |
+        vDPA hardware
+
+static int vdpa_init(void)
+    bus_register(&vdpa_bus)
+    genl_register_family(&vdpa_nl_family) -> netlink -> vdpa mgmtdev show -jp
+        .ops = vdpa_nl_ops
+
+static const struct genl_ops vdpa_nl_ops[] = {
+	{
+		.cmd = VDPA_CMD_MGMTDEV_GET,
+		.doit = vdpa_nl_cmd_mgmtdev_get_doit,
+		.dumpit = vdpa_nl_cmd_mgmtdev_get_dumpit,
+	},
+	{
+		.cmd = VDPA_CMD_DEV_NEW,
+		.doit = vdpa_nl_cmd_dev_add_set_doit,
+            memcpy(config.net.mac, macaddr, sizeof(config.net.mac))
+            mtu
+            max_vq_pairs
+            mdev = vdpa_mgmtdev_get_from_attr(info->attrs)
+            err = mdev->ops->dev_add(mdev, name, &config) -> mlx5_vdpa_dev_add
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = VDPA_CMD_DEV_DEL,
+		.doit = vdpa_nl_cmd_dev_del_set_doit,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = VDPA_CMD_DEV_GET,
+		.doit = vdpa_nl_cmd_dev_get_doit,
+		.dumpit = vdpa_nl_cmd_dev_get_dumpit,
+	},
+	{
+		.cmd = VDPA_CMD_DEV_CONFIG_GET,
+		.doit = vdpa_nl_cmd_dev_config_get_doit,
+		.dumpit = vdpa_nl_cmd_dev_config_get_dumpit,
+	},
+	{
+		.cmd = VDPA_CMD_DEV_VSTATS_GET,
+		.doit = vdpa_nl_cmd_dev_stats_get_doit,
+		.flags = GENL_ADMIN_PERM,
+	},
+};
+
+
+static struct bus_type vdpa_bus = {
+	.name  = "vdpa",
+	.dev_groups = vdpa_dev_groups,
+	.match = vdpa_dev_match,
+	.probe = vdpa_dev_probe,
+        dma_set_mask_and_coherent
+        max_num = ops->get_vq_num_max(vdev)
+        ret = drv->probe(vdev) -> virtio probe
+	.remove = vdpa_dev_remove,
+};
+
+
+
+modprobe vhost_vdpa
+module_init(vhost_vdpa_init); -> vhost：引入基于 vDPA 的后端，此补丁引入了基于 vDPA 的 vhost 后端。此后端建立在 virtio-vDPA 中定义的相同接口之上，并为用户空间提供通用 vhost 接口以加速客户机中的 virtio 设备。此后端作为 vDPA 设备驱动程序实现，基于 virtio-vDPA 中使用的相同操作。它将创建名为 vhost-vdpa-$index 的字符设备条目供用户空间使用。用户空间可以在此字符设备上使用 vhost ioctls 来设置后端。Vhost ioctls 经过扩展，使其与类型无关并像 virtio 设备一样运行，这有助于消除类型特定的 API，例如 vhost_net/scsi/vsock 所做的那样, 对于内存映射，IOTLB API 是 vhost-vDPA 的强制要求，这意味着用户空间驱动程序需要使用 VHOST_IOTLB_UPDATE/VHOST_IOTLB_INVALIDATE 来添加或删除特定用户空间内存区域的映射。vhost-vDPA API 被设计为类型无关的，但它只允许当前阶段的网络设备。由于缺乏控制 virtqueue 支持，一些功能被 vhost-vdpa 过滤掉。我们将在不久的将来启用更多功能和设备, commit -> https://github.com/ssbandjl/linux/commit/4c8cf31885f69e86be0b5b9e6677a26797365e1d
+    alloc_chrdev_region(&vhost_vdpa_major, 0, VHOST_VDPA_DEV_MAX, "vhost-vdpa")
+    vdpa_register_driver(&vhost_vdpa_driver) -> vhost_vdpa_probe -> iproute2 add vdpa device, then match driver and divice, exec this probe
+        device_initialize(&v->dev)
+        v->dev.release = vhost_vdpa_release_dev
+        dev_set_name(&v->dev, "vhost-vdpa-%u", minor) -> char_dev
+        cdev_init(&v->cdev, &vhost_vdpa_fops)
+        cdev_device_add(&v->cdev, &v->dev)
+        init_completion(&v->completion)
+        vdpa_set_drvdata(vdpa, v)
+
+vdpa_register_driver
+    __vdpa_register_driver
+        drv->driver.bus = &vdpa_bus
+        driver_register(&drv->driver)
+
+ls -l  /sys/bus/vdpa/drivers
+ls -l  /sys/bus/vdpa/devices/vdpa0
+readlink /sys/bus/vdpa/devices/vdpa0/driver
+$ ls /sys/bus/vdpa/devices/vdpa0/vhost-*
+vhost-vdpa-0
+
+mlx use vdpa: https://github.com/Mellanox/scalablefunctions/wiki/Upstream-how-to-use-SF-kernel-vdpa-device
+1.7 Assign VHOST VDPA device to VM
+$ sudo x86_64-softmmu/qemu-system-x86_64 \
+        -hda Fedora-Cloud-Base-32-1.6.x86_64.qcow2 \
+        -netdev type=vhost-vdpa,vhostdev=/dev/vhost-vdpa-0,id=vhost-vdpa1 \
+        -device virtio-net-pci,netdev=vhost-vdpa1,mac=00:e8:ca:33:ba:05,\
+        disable-modern=off,page-per-vq=on \
+        -enable-kvm \
+        -nographic \
+        -m 4G \
+        -cpu host \
+        2>&1 | tee vm.log
+
+
+VDUSE（vDPA Device in Userspace）技术是字节跳动2020年10月向 Linux 内核社区正式开源的一项技术，通过VDUSE可以在一个用户进程实现一个软件定义的 vDPA 设备，并可以通过上述 vDPA 框架接入 virtio 或者 vhost 子系统，供容器或者虚机使用。此技术将在Linux 5.15 版本中首次引入：https://blog.csdn.net/hbuxiaofei/article/details/120932071
+
+
+
+drivers/vdpa/Kconfig
+config MLX5_VDPA_NET
+ConnectX6 及更新版本的 VDPA 网络驱动程序。提供 virtio 网络数据路径的卸载，以便放在环上的描述符将由硬件执行。它还支持各种无状态卸载，具体取决于实际使用的设备和固件版本
+
+
+static const struct file_operations vhost_vdpa_fops = {
+	.owner		= THIS_MODULE,
+	.open		= vhost_vdpa_open,
+        v = container_of(inode->i_cdev, struct vhost_vdpa, cdev)
+        vhost_vdpa_reset(v) -> vdpa_reset(vdpa, flags)
+            const struct vdpa_config_ops *ops = vdev->config
+            ops->reset(vdev)
+        for (i = 0; i < nvqs; i++)
+            vqs[i]->handle_kick = handle_vq_kick
+        vhost_dev_init(dev, vqs, nvqs, 0, 0, 0, false, vhost_vdpa_process_iotlb_msg)
+        vhost_vdpa_alloc_domain(v)
+            v->domain = iommu_domain_alloc(bus) -> 在我的理解中，domain这个词是从intel的VT-d文档中继承下来的，其他平台有各自的叫法，比如ARM下叫context。一个domain应该是指一个独立的iommu映射上下文。处于同一个domain中的设备使用同一套映射做地址转换（对于mmio来说就是独立的页表）。core层中使用struct iommu_domain表示一个domain
+            iommu_attach_device(v->domain, dma_dev)
+        vhost_vdpa_set_iova_range
+            struct vdpa_iova_range *range = &v->range
+            *range = ops->get_iova_range(vdpa) -> vdpasim_get_iova_range
+                struct vdpa_iova_range range = {
+                    .first = 0ULL,
+                    .last = ULLONG_MAX,
+                };
+	.release	= vhost_vdpa_release,
+	.write_iter	= vhost_vdpa_chr_write_iter,
+        vhost_chr_write_iter
+            vhost_process_iotlb_msg
+                case VHOST_IOTLB_UPDATE
+                    vhost_iotlb_notify_vq
+                        vhost_poll_queue(&node->vq->poll)
+	.unlocked_ioctl	= vhost_vdpa_unlocked_ioctl,
+        struct vhost_vdpa *v = filep->private_data
+        if (cmd == VHOST_SET_BACKEND_FEATURES)
+            if ((features & BIT_ULL(VHOST_BACKEND_F_IOTLB_PERSIST)) && !vhost_vdpa_has_persistent_map(v))
+                (!ops->set_map && !ops->dma_map) || ops->reset_map || vhost_vdpa_get_backend_features(v) & BIT_ULL(VHOST_BACKEND_F_IOTLB_PERSIST) -> [PATCH v3 3/5] vhost-vdpa：引入 IOTLB_PERSIST 后端功能位，由 Si-Wei Liu 于 8 个月 3 周前发布 用户空间需要此功能标志来区分内核中的 vhost-vdpa iotlb 是否可以信任以在 vDPA 重置期间保留 IOTLB 映射。没有它，用户空间就无法区分它是否在旧内核上运行，这可能会在 vDPA 重置期间默默删除所有 iotlb 映射，尤其是在 .reset 驱动程序操作的父驱动程序实现损坏的情况下。损坏的驱动程序可能会错误地在 .reset 期间删除其自己的所有映射，从而无意中导致 vhost-vdpa 用户空间和内核之间的映射状态损坏。作为一种解决方法，为了使映射行为在重置期间可预测，用户空间必须在 vDPA 重置之前主动删除所有映射，然后在之后恢复所有映射。由于父驱动程序实现问题且没有区分方法，目前所有父驱动程序都无条件地执行此解决方法。自从相应的 vhost-vdpa 用户空间后端问世的第一天起，QEMU 就使用了此解决方法。在 3 种情况下后端可能会声明此功能位：- 必须与平台 IOMMU 配合使用的父设备- 具有片上 IOMMU 的父设备，其驱动程序中具有预期的 .reset_map 支持- 具有供应商特定 IOMMU 实现的父设备，该实现已经具有持久 IOTLB 映射，必须专门声明此后端功能 .reset_map 之所以成为持久 iotlb 的先决条件之一，是因为如果没有它，vhost-vdpa 以后无法将 iotlb 切换回初始状态，尤其是对于从设备创建时的身份映射开始的片上 IOMMU 情况。 virtio-vdpa 需要片上 IOMMU 执行从 PA 到 IOVA 的 1:1 直通转换，而 .reset_map 是 vhost-vdpa 消失后将 iotlb 恢复到身份映射模式的唯一方法。行为上的差异并不重要，因为 QEMU 取消了所有内存的映射，并在 vhost_vdpa_dev_start（started = false）处取消注册内存侦听器，但后端确认此功能标志允许 QEMU 确保在 vhost 停止和启动循环的情况下可以安全地跳过此取消映射和映射。从这个意义上说，此功能标志实际上是让用户空间知道驱动程序错误已解决的信号。不提供它表示用户空间无法相信内核会保留映射
+            vhost_set_backend_features(&v->vdev, features)
+                for (i = 0; i < dev->nvqs; ++i)
+                    vq->acked_backend_features = features
+        switch (cmd) {
+        case VHOST_VDPA_GET_DEVICE_ID:
+            vhost_vdpa_get_device_id
+                device_id = ops->get_device_id(vdpa)
+        case VHOST_VDPA_GET_STATUS
+            vhost_vdpa_get_status
+                status = ops->get_status(vdpa)
+        case VHOST_VDPA_SET_STATUS:
+		    r = vhost_vdpa_set_status(v, argp)
+                if ((status_old & VIRTIO_CONFIG_S_DRIVER_OK) && !(status & VIRTIO_CONFIG_S_DRIVER_OK)) -> status_ok -> status_no_ok
+                    vhost_vdpa_unsetup_vq_irq(v, i)
+                        irq_bypass_unregister_producer(&vq->call_ctx.producer) -> unregister IRQ bypass producer
+                            if (consumer->token == producer->token) {
+				                __disconnect(producer, consumer)
+                _compat_vdpa_reset -> vdpa_reset(vdpa, flags)
+                else vdpa_set_status(vdpa, status) -> vdev->config->set_status(vdev, status)
+                if ((status & VIRTIO_CONFIG_S_DRIVER_OK) && !(status_old & VIRTIO_CONFIG_S_DRIVER_OK)) -> status_no_ok -> status_ok
+                    vhost_vdpa_setup_vq_irq(v, i)
+                        irq = ops->get_vq_irq(vdpa, qid)
+                        irq_bypass_unregister_producer
+                        irq_bypass_register_producer
+                            __connect(producer, consumer)
+        case VHOST_VDPA_GET_CONFIG:
+            vhost_vdpa_get_config -> vdpa_get_config -> vdpa_get_config_unlocked -> ops->get_config
+        case VHOST_VDPA_SET_CONFIG
+            vhost_vdpa_set_config
+        case VHOST_GET_FEATURES:
+		    r = vhost_vdpa_get_features(v, argp) -> get_device_features
+        case VHOST_SET_FEATURES:
+		    r = vhost_vdpa_set_features(v, argp) -> mlx5_vdpa_set_driver_features
+                verify_driver_features(mvdev, features)
+                update_cvq_info(mvdev)
+        case VHOST_VDPA_SET_CONFIG_CALL
+            vhost_vdpa_set_config_call
+                cb.callback = vhost_vdpa_config_cb
+                    eventfd_signal(config_ctx) -> 增加count的值并唤醒wqh中的元素
+                ctx = fd == VHOST_FILE_UNBIND ? NULL : eventfd_ctx_fdget(fd)
+                    ctx = eventfd_ctx_fileget(f.file)
+                        ctx = file->private_data
+                v->vdpa->config->set_config_cb(v->vdpa, &cb)
+        case VHOST_VDPA_GET_IOVA_RANGE
+            vhost_vdpa_get_iova_range
+                .first = v->range.first,
+		        .last = v->range.last,
+        case VHOST_VDPA_GET_CONFIG_SIZE:
+		r = vhost_vdpa_get_config_size(v, argp); -> size = ops->get_config_size(vdpa)
+        case VHOST_VDPA_GET_VQS_COUNT:
+            r = vhost_vdpa_get_vqs_count(v, argp);
+                copy_to_user(argp, &vdpa->nvqs, sizeof(vdpa->nvqs))
+        case VHOST_VDPA_SUSPEND:
+            r = vhost_vdpa_suspend(v); -> ioctl 成功返回后，设备不得处理更多 virtqueue 描述符。设备可以像未暂停一样响应配置字段的读取或写入。特别是，向“queue_enable”写入值为 1 不会使设备开始处理缓冲区
+                ops->suspend(vdpa)
+        case VHOST_VDPA_RESUME:
+            r = vhost_vdpa_resume(v); -> ops->resume(vdpa)
+        vhost_dev_ioctl(&v->vdev, cmd, argp) -> default
+            case VHOST_SET_MEM_TABLE -> vhost_net：内核级 virtio 服务器 它是什么：vhost net 是一种字符设备，可用于减少 virtio 网络中涉及的系统调用数量。现有的 virtio net 代码无需修改即可在客户机中使用。它与 vringfd 有​​相似之处，但有一些不同之处，并且范围有所缩小 - 使用 eventfd 发送信号 - 结构可以随时在内存中移动（有利于迁移，在用户空间中解决错误） - 支持写入日志记录（有利于迁移） - 支持内存表而不仅仅是偏移量（kvm 需要） 通用 virtio 相关代码已放在单独的文件 vhost.c 中，如果/当出现更多后端时，可以将其制成单独的模块。我使用 Rusty 的 lguest.c 作为开发这部分的源代码：这为我提供了一些我自己无法写的诙谐评论。 它不是什么：vhost net 不是总线，也不是通用的新系统调用。没有对客户机如何执行超级调用做出任何假设。支持用户空间虚拟机管理程序以及 kvm。 工作原理：基本上，我们将 virtio 前端（由用户空间配置）连接到后端。后端可以是网络设备或 tap 设备。后端也由用户空间配置，包括 vlan/mac 等。 状态：这对我来说很有效，我没有看到任何崩溃。与用户空间相比，人们报告说延迟有所改善（因为我每个数据包节省了最多 4 个系统调用），以及更好的带宽和 CPU 利用率。 我计划在未来研究的功能： - 可合并缓冲区 - 零拷贝 - 可扩展性调整：找出要使用的最佳线程模型 关于 RCU 使用的注意事项（这也记录在 vhost.h 中，靠近 private_pointer，这是受此 RCU 变体保护的值）：发生的情况是 rcu_dereference() 正在工作队列项中使用。 rcu_read_lock() 的作用由工作队列项的执行开始承担，rcu_read_unlock() 的作用由工作队列项的执行结束承担，syncnize_rcu() 的作用由 flush_workqueue()/flush_work() 承担。将来，我们可能需要将一些 gcc 属性或稀疏注释应用于传递给 INIT_WORK() 的函数。下面 Paul 的确认适用于此 RCU 用法
+                vhost_set_memory(d, argp)
+                    struct vhost_memory mem, *newmem
+                    newmem = kvzalloc(struct_size(newmem, regions, mem.nregions), GFP_KERNEL)
+                    memcpy(newmem, &mem, size)
+                    newumem = iotlb_alloc()
+                        vhost_iotlb_alloc(max_iotlb_entries, VHOST_IOTLB_FLAG_RETIRE) -> max 2048
+                            kzalloc
+                            vhost_iotlb_init(iotlb, limit, flags)
+                                iotlb->root = RB_ROOT_CACHED
+                    vhost_iotlb_add_range(newumem, region->guest_phys_addr, region->guest_phys_addr + region->memory_size - 1, region->userspace_addr, VHOST_MAP_RW)
+                        vhost_iotlb_add_range_ctx(iotlb, start, last, addr, perm, NULL)
+                            vhost_iotlb_add_range_ctx
+                            vhost_iotlb_itree_insert(map, &iotlb->root) -> #define INTERVAL_TREE_DEFINE -> Template for implementing interval trees
+                            list_add_tail(&map->link, &iotlb->list)
+            case VHOST_SET_LOG_BASE
+                void __user *base = (void __user *)(unsigned long)p
+                vq->log_base = base
+            case VHOST_SET_LOG_FD
+                ctx = fd == VHOST_FILE_UNBIND ? NULL : eventfd_ctx_fdget(fd)
+        vhost_vdpa_vring_ioctl
+            case VHOST_VDPA_SET_VRING_ENABLE
+                ops->set_vq_ready(vdpa, idx, s.num)
+            case VHOST_VDPA_GET_VRING_GROUP
+                s.num = ops->get_vq_group(vdpa, idx)
+            case VHOST_VDPA_GET_VRING_DESC_GROUP
+                s.num = ops->get_vq_desc_group(vdpa, idx)
+            case VHOST_VDPA_SET_GROUP_ASID
+                ops->set_group_asid(vdpa, idx, s.num)
+            case VHOST_GET_VRING_BASE
+                ops->get_vq_state(v->vdpa, idx, &vq_state)
+                if (vhost_has_feature(vq, VIRTIO_F_RING_PACKED))
+                    vq->last_avail_idx = vq_state.packed.last_avail_idx | (vq_state.packed.last_avail_counter << 15)
+                    vq->last_used_idx = vq_state.packed.last_used_idx | (vq_state.packed.last_used_counter << 15)
+            r = vhost_vring_ioctl(&v->vdev, cmd, argp)
+            case VHOST_SET_VRING_ADDR
+                if (ops->set_vq_address(vdpa, idx,
+                            (u64)(uintptr_t)vq->desc,
+                            (u64)(uintptr_t)vq->avail,
+                            (u64)(uintptr_t)vq->used))
+            case VHOST_SET_VRING_CALL -> irq to userspace
+                ops->set_vq_cb(vdpa, idx, &cb)
+                vhost_vdpa_setup_vq_irq(v, idx)
+                    irq = ops->get_vq_irq(vdpa, qid) -> int irq = vp_vdpa->vring[idx].irq
+                    irq_bypass_unregister_producer(&vq->call_ctx.producer)
+                        __disconnect(producer, consumer)
+                            prod->stop(prod)
+                            cons->stop(cons)
+                            cons->del_producer(cons, prod)
+                            cons->start(cons)
+                            prod->start(prod)
+                    vq->call_ctx.producer.irq = irq
+                    irq_bypass_register_producer(&vq->call_ctx.producer)
+        case VHOST_SET_OWNER
+            vhost_vdpa_bind_mm
+                ops->bind_mm(vdpa, v->vdev.mm)
+            vhost_dev_reset_owner
+#ifdef CONFIG_MMU
+	.mmap		= vhost_vdpa_mmap,
+        notify = ops->get_vq_notification(vdpa, index)
+        vma->vm_ops = &vhost_vdpa_vm_ops
+#endif /* CONFIG_MMU */
+	.compat_ioctl	= compat_ptr_ioctl,
+};
+
+
+static const struct vm_operations_struct vhost_vdpa_vm_ops = {
+	.fault = vhost_vdpa_fault,
+        notify = ops->get_vq_notification(vdpa, index)
+        vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot) -> vhost_vdpa：通过 mmap 支持门铃映射，目前门铃通过 eventfd 中继，由于 vmexits 或 syscall 的成本，这可能会产生很大的开销。此补丁引入了基于 mmap() 的门铃映射，可以消除 vmexit 或 syscall 造成的开销。为了简化门铃布局（通常是 virtio-pci）的用户空间建模，此补丁从每页门铃模型开始。Vhost-vdpa 仅支持位于页面边界且不与其他寄存器共享页面的硬件门铃。每个 virtqueue 的门铃必须单独映射，pgoff 是 virtqueue 的索引。这允许用户空间映射门铃的子集，这可能对将来实现软件辅助 virtqueue（控制 vq）有用
+        remap_pfn_range(vma, vmf->address & PAGE_MASK, PFN_DOWN(notify.addr), PAGE_SIZE, vma->vm_page_prot)
+            remap_pfn_range_notrack(vma, addr, pfn, size, prot)
+};
+
+module_vdpa_driver(virtio_vdpa_driver)
+static struct vdpa_driver virtio_vdpa_driver = {
+	.driver = {
+		.name	= "virtio_vdpa",
+	},
+	.probe	= virtio_vdpa_probe,
+	.remove = virtio_vdpa_remove,
+};
+virtio_vdpa_probe
+    vd_dev->vdev.config = &virtio_vdpa_config_ops
+    vdpa_set_drvdata(vdpa, vd_dev)
+
+
+
+static int virtio_vdpa_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
+				struct virtqueue *vqs[],
+				vq_callback_t *callbacks[],
+				const char * const names[],
+				const bool *ctx,
+				struct irq_affinity *desc)
+    if (has_affinity)
+        masks = create_affinity_masks(nvqs, desc ? desc : &default_affd)
+    for (i = 0; i < nvqs; ++i)
+        vqs[i] = virtio_vdpa_setup_vq(vdev, queue_idx++, callbacks[i], names[i], ctx ? ctx[i] : false)
+            bool (*notify)(struct virtqueue *vq) = virtio_vdpa_notify
+                ops->kick_vq(vdpa, vq->index)
+            or notify = virtio_vdpa_notify_with_data
+            dma_dev = ops->get_vq_dma_dev(vdpa, index)
+            vq = vring_create_virtqueue_dma(index, max_num, align, vdev, true, may_reduce_num, ctx, notify, callback, name, dma_dev)
+                vring_create_virtqueue_packed
+                    vring_alloc_queue_packed(&vring_packed, vdev, num, dma_dev)
+                    vq->notify = notify
+                    vq->indirect = virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC)
+                    vring_alloc_state_extra_packed(&vring_packed)
+                    virtqueue_vring_init_packed(&vring_packed, !!callback)
+                    virtqueue_init(vq, num)
+                    virtqueue_vring_attach_packed(vq, &vring_packed)
+                    list_add_tail(&vq->vq.list, &vdev->vqs)
+                or vring_create_virtqueue_split
+            desc_addr = virtqueue_get_desc_addr(vq);
+            driver_addr = virtqueue_get_avail_addr(vq);
+            device_addr = virtqueue_get_used_addr(vq);
+            ops->set_vq_address(vdpa, index, desc_addr, driver_addr, device_addr)
+            ops->set_vq_state(vdpa, index, &state)
+            ops->set_vq_ready(vdpa, index, 1)
+            list_add(&info->node, &vd_dev->virtqueues)
+        ops->set_vq_affinity(vdpa, i, &masks[i])
+    cb.callback = virtio_vdpa_config_cb
+    ops->set_config_cb(vdpa, &cb)
+    
+
+static const struct virtio_config_ops virtio_vdpa_config_ops = {
+	.get		= virtio_vdpa_get,
+        vdpa_get_config(vdpa, offset, buf, len) -> vdpa_get_config_unlocked(vdev, offset, buf, len)
+            ops->get_config(vdev, offset, buf, len)
+	.set		= virtio_vdpa_set,
+	.generation	= virtio_vdpa_generation,
+	.get_status	= virtio_vdpa_get_status,
+	.set_status	= virtio_vdpa_set_status,
+	.reset		= virtio_vdpa_reset,
+	.find_vqs	= virtio_vdpa_find_vqs,
+	.del_vqs	= virtio_vdpa_del_vqs,
+	.get_features	= virtio_vdpa_get_features,
+	.finalize_features = virtio_vdpa_finalize_features,
+	.bus_name	= virtio_vdpa_bus_name,
+	.set_vq_affinity = virtio_vdpa_set_vq_affinity,
+	.get_vq_affinity = virtio_vdpa_get_vq_affinity,
+};
+
+
+
+smc-r, SMC socket protocol family, SMC-R 提供“RDMA 套接字”解决方案，利用 RDMA over Converged Ethernet (RoCE) 技术透明地升级 AF_INET TCP 连接。SMC-R 解决方案的 Linux 实现设计为单独的套接字系列 SMC
+net/smc
+
+
+net/smc/af_smc.c -> module_init(smc_init);
+    register_pernet_subsys(&smc_net_ops) -> 注册网络命名空间
+    register_pernet_subsys(&smc_net_stat_ops)
+    smc_ism_init
+        smc_ism_create_system_eid
+            memcpy(seid->seid_string, "IBM-SYSZ-ISMSEID00000000", 24)
+            get_cpu_id(&id)
+        ism_register_client(&smc_ism_client)
+            ism_setup_forwarding(client, ism)
+                ism->subs[client->id] = client
+    smc_clc_init -> Connection Layer Control
+    smc_nl_init -> net/smc：引入通用 netlink 接口用于诊断目的，引入通用 netlink 接口基础设施以公开有关 smc 链路组、链路和设备的诊断信息
+        genl_register_family(&smc_gen_nl_family)
+    smc_pnet_init
+        genl_register_family(&smc_pnet_nl_family)
+        register_netdevice_notifier(&smc_netdev_notifier)
+        genl_unregister_family(&smc_pnet_nl_family)
+    smc_core_init
+    smc_llc_init
+    smc_cdc_init
+    proto_register(&smc_proto, 1)
+    proto_register(&smc_proto6, 1)
+    sock_register(&smc_sock_family_ops);
+    smc_ib_register_client()
+    tcp_register_ulp(&smc_ulp_ops)
+    static_branch_enable(&tcp_have_smc) -> smc：添加 SMC 会合协议，SMC 协议 [1] 使用会合协议在对等端之间协商 SMC 功能。当前 Linux 实现尚未使用此会合协议，因此不符合 RFC7609 且与其他 SMC 实现（如 zOS 中的实现）不兼容。此补丁添加了对 SMC 会合协议的支持。它使用新的 TCP 实验选项。使用此选项，在 TCP 三向握手期间，对等端之间会交换 SMC 功能。[1] SMC-R 信息 RFC：http://www.rfc-editor.org/info/rfc7609
+
+static const struct net_proto_family smc_sock_family_ops = {
+	.family	= PF_SMC,
+	.owner	= THIS_MODULE,
+	.create	= smc_create,
+};
+smc_create
+__smc_create
+smc_sock_alloc
+smc_tcp_listen_work
+smc_listen_work
+smc_listen_find_device
+smc_listen_ism_init
+    smc_conn_create
+        smc_lgr_create
+            smc_llc_lgr_init
+                smc_llc_add_link_work
+                    smc_llc_process_cli_add_link
+                        smc_llc_cli_add_link
+                            smc_ib_ready_link
+                                smc_ib_modify_qp_init
+                                    ib_modify_qp
+
+smcr_tx_rdma_writes
+    smc_tx_rdma_write
+        ib_post_send
+
+
+
+
+pcibios_scan_root（）---->pci_scan_bus_parented()---->pci_scan_child_bus()--->pci_scan_slot()--->pci_scan_single_device()----->pci_device_add()
+
+
+
+ib_register_peer_memory_client -> in ofed lib
+
+
+
+
+
+static struct pernet_operations smc_net_ops = {
+	.init = smc_net_init,
+        smc_sysctl_net_init
+            net->smc.sysctl_autocorking_size
+        smc_pnet_net_init
+            smc_pnet_create_pnetids_list
+                smc_pnet_add_base_pnetid
+	.exit = smc_net_exit,
+	.id   = &smc_net_id,
+	.size = sizeof(struct smc_net),
+};
+
+static struct pernet_operations smc_net_stat_ops = {
+	.init = smc_net_stat_init,
+        smc_stats_init
+            net->smc.fback_rsn = kzalloc
+            net->smc.smc_stats = alloc_percpu(struct smc_stats)
+	.exit = smc_net_stat_exit,
+};
+
+
+static struct ism_client smc_ism_client = {
+	.name = "SMC-D",
+	.add = smcd_register_dev,
+        const struct smcd_ops *ops = ism_get_smcd_ops
+            return &ism_ops
+        smcd_alloc_dev
+            smcd->conn = devm_kcalloc
+            INIT_LIST_HEAD(&smcd->vlan) -> net/smc：为 SMC-D 和 ISM 添加基础架构，SMC 支持两种变体：SMC-R 和 SMC-D。对于数据传输，SMC-R 使用 RDMA 设备，SMC-D 使用所谓的内部共享内存 (ISM) 设备。ISM 设备仅允许同一台机器上的 SMC 实例之间进行共享内存通信。例如，这允许同一主机上的虚拟机通过 SMC 进行通信，而无需 RDMA 设备。此补丁将 SMC-D 和 ISM 设备的基础架构添加到现有 SMC 代码中。它包含以下内容：* ISM 驱动程序接口：此接口允许 ISM 驱动程序在 SMC 中注册 ISM 设备。在此过程中，驱动程序为每个设备提供一组设备操作。SMC 使用这些操作在设备上执行 SMC 特定的操作或通过设备传输数据。* 核心 SMC-D 链路组、连接和缓冲区支持：链路组、SMC 连接和 SMC 缓冲区（在 smc_core 中）已扩展以支持 SMC-D。 * SMC 类型检查：添加了一些类型检查，以防止将 SMC-R 特定代码用于 SMC-D，反之亦然。要实际使用 SMC-D，需要对 pnetid、CLC、CDC 等进行额外更改。这些将在后续补丁中添加
+	.remove = smcd_unregister_dev,
+	.handle_event = smcd_handle_event,
+	.handle_irq = smcd_handle_irq,
+};
+
+static const struct smcd_ops ism_ops = {
+	.query_remote_gid = smcd_query_rgid,
+	.register_dmb = smcd_register_dmb,
+	.unregister_dmb = smcd_unregister_dmb,
+	.add_vlan_id = smcd_add_vlan_id,
+	.del_vlan_id = smcd_del_vlan_id,
+	.set_vlan_required = smcd_set_vlan_required,
+	.reset_vlan_required = smcd_reset_vlan_required,
+	.signal_event = smcd_signal_ieq,
+	.move_data = smcd_move,
+	.supports_v2 = smcd_supports_v2,
+	.get_local_gid = smcd_get_local_gid,
+	.get_chid = smcd_get_chid,
+	.get_dev = smcd_get_dev,
+};
+
+
+struct genl_family smc_gen_nl_family __ro_after_init = {
+	.hdrsize =	0,
+	.name =		SMC_GENL_FAMILY_NAME,
+	.version =	SMC_GENL_FAMILY_VERSION,
+	.maxattr =	SMC_CMD_MAX_ATTR,
+	.policy =	smc_gen_nl_policy,
+	.netnsok =	true,
+	.module =	THIS_MODULE,
+	.ops =		smc_gen_nl_ops,
+	.n_ops =	ARRAY_SIZE(smc_gen_nl_ops),
+	.resv_start_op = SMC_NETLINK_DISABLE_HS_LIMITATION + 1,
+};
+
+
+rdma inline
+MLX5_SCATTER_TO_CQE
+MLX5_QP_FLAG_SCATTER_CQE
+create_qp
+    switch (qp->type)
+    create_dci
+
+
+RDMA/mlx5：允许提供额外的散射 CQE QP 标志，散射 CQE 功能依赖于两个标志 MLX5_QP_FLAG_SCATTER_CQE 和 MLX5_QP_FLAG_ALLOW_SCATTER_CQE
+process_vendor_flags
+
+create_user_qp
+    if ((qp->flags_en & MLX5_QP_FLAG_SCATTER_CQE) &&
+	    (init_attr->qp_type == IB_QPT_RC ||
+	     init_attr->qp_type == IB_QPT_UC))
+        int rcqe_sz = mlx5_ib_get_cqe_size(init_attr->recv_cq) -> 128 | 64 (default)
+        rcqe_sz == 128 ? MLX5_RES_SCAT_DATA64_CQE : MLX5_RES_SCAT_DATA32_CQE
+	if (qp->type == MLX5_IB_QPT_DCI || qp->type == IB_QPT_RC))
+		configure_requester_scat_cqe(dev, qp, init_attr, qpc)
+            IB_SIGNAL_ALL_WR -> IB/mlx5：允许在不向全局 WR 发送信号的前提下向 CQE 发送散射，请求者向 CQE 发送散射仅限于配置为向所有 WR 发送信号的 QP。此补丁添加了在请求者中启用向 cqe 发送散射（强制启用）的功能，无需 sig_all，适用于不希望向所有 WR 发送信号的用户，而只希望向在 CQE 中找到其数据的 WR 发送信号
+
+
+
+handle_good_req
+
+
+build module, driver
+make clean
+cd drivers/scsi/
+make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+# make -C ../../ M=$(pwd) modules
+
+
+驱动/模块初始化顺序
+core_initcall(fn) --->.initcall1.init  
+postcore_initcall(fn) --->.initcall2.init  
+arch_initcall(fn) --->.initcall3.init  
+subsys_initcall(fn) --->.initcall4.init  
+fs_initcall(fn) --->.initcall5.init  
+device_initcall(fn) --->.initcall6.init  
+late_initcall(fn) --->.initcall7.init
+
+Linux 内核启动期间调用如下函数
+start_kernel -->
+    arch_call_rest_init -->
+        rest_init -->
+            kthread_create(kernel_init) -->
+                kernel_init_freeable -->
+                    do_basic_setup -->
+                        do_initcalls
+pure_initcall: 最先运行的，不依赖于任何其他初始化函数。
+core_initcall
+core_initcall_sync
+postcore_initcall
+postcore_initcall_sync
+arch_initcall
+arch_initcall_sync
+subsys_initcall
+subsys_initcall_sync
+fs_initcall
+fs_initcall_sync
+rootfs_initcall
+device_initcall
+device_initcall_sync
+late_initcall
+late_initcall_sync
+可以看一下x86中pci初始化的代码，首先是 pci_access_init ，这个函数是 arch_initcall 的，然后是 pci_legacy_init，这个函数是 subsys_initcall 的，然后是 pcibios_irq_init ，这个函数也是 subsys_initcall 的，然后是 pcibios_assign_resources这个函数是fs_initcall的，最后才是 pci_init，这个函数是device_initcall的，这样就把整个pci初始化过程分开了
+
+
+struct virtio_blk_config {
+	/* The capacity (in 512-byte sectors). */
+	__virtio64 capacity;
+	/* The maximum segment size (if VIRTIO_BLK_F_SIZE_MAX) */
+	__virtio32 size_max;
+	/* The maximum number of segments (if VIRTIO_BLK_F_SEG_MAX) */
+	__virtio32 seg_max;
+	/* geometry of the device (if VIRTIO_BLK_F_GEOMETRY) */ -> 盘式几何体
+	struct virtio_blk_geometry {
+		__virtio16 cylinders;
+		__u8 heads;
+		__u8 sectors;
+	} geometry;
+
+	/* block size of device (if VIRTIO_BLK_F_BLK_SIZE) */
+	__virtio32 blk_size;
+
+	/* the next 4 entries are guarded by VIRTIO_BLK_F_TOPOLOGY  */
+	/* exponent for physical block per logical block. */
+	__u8 physical_block_exp;
+	/* alignment offset in logical blocks. */
+	__u8 alignment_offset;
+	/* minimum I/O size without performance penalty in logical blocks. */
+	__virtio16 min_io_size;
+	/* optimal sustained I/O size in logical blocks. */
+	__virtio32 opt_io_size;
+
+	/* writeback mode (if VIRTIO_BLK_F_CONFIG_WCE) */
+	__u8 wce;
+	__u8 unused;
+
+	/* number of vqs, only available when VIRTIO_BLK_F_MQ is set */
+	__virtio16 num_queues;
+
+	/* the next 3 entries are guarded by VIRTIO_BLK_F_DISCARD */
+	/*
+	 * The maximum discard sectors (in 512-byte sectors) for
+	 * one segment.
+	 */
+	__virtio32 max_discard_sectors;
+	/*
+	 * The maximum number of discard segments in a
+	 * discard command.
+	 */
+	__virtio32 max_discard_seg;
+	/* Discard commands must be aligned to this number of sectors. */
+	__virtio32 discard_sector_alignment;
+
+	/* the next 3 entries are guarded by VIRTIO_BLK_F_WRITE_ZEROES */
+	/*
+	 * The maximum number of write zeroes sectors (in 512-byte sectors) in
+	 * one segment.
+	 */
+	__virtio32 max_write_zeroes_sectors;
+	/*
+	 * The maximum number of segments in a write zeroes
+	 * command.
+	 */
+	__virtio32 max_write_zeroes_seg;
+	/*
+	 * Set if a VIRTIO_BLK_T_WRITE_ZEROES request may result in the
+	 * deallocation of one or more of the sectors.
+	 */
+	__u8 write_zeroes_may_unmap;
+
+	__u8 unused1[3];
+
+	/* the next 3 entries are guarded by VIRTIO_BLK_F_SECURE_ERASE */
+	/*
+	 * The maximum secure erase sectors (in 512-byte sectors) for
+	 * one segment.
+	 */
+	__virtio32 max_secure_erase_sectors;
+	/*
+	 * The maximum number of secure erase segments in a
+	 * secure erase command.
+	 */
+	__virtio32 max_secure_erase_seg;
+	/* Secure erase commands must be aligned to this number of sectors. */
+	__virtio32 secure_erase_sector_alignment;
+
+	/* Zoned block device characteristics (if VIRTIO_BLK_F_ZONED) */
+	struct virtio_blk_zoned_characteristics {
+		__virtio32 zone_sectors;
+		__virtio32 max_open_zones;
+		__virtio32 max_active_zones;
+		__virtio32 max_append_sectors;
+		__virtio32 write_granularity;
+		__u8 model;
+		__u8 unused2[3];
+	} zoned;
+} __attribute__((packed));
+
+
+
+
+enum vhost_user_request {
+	VHOST_USER_GET_FEATURES = 1,
+	VHOST_USER_SET_FEATURES = 2,
+	VHOST_USER_SET_OWNER = 3,
+	VHOST_USER_RESET_OWNER = 4,
+	VHOST_USER_SET_MEM_TABLE = 5,
+	VHOST_USER_SET_LOG_BASE = 6,
+	VHOST_USER_SET_LOG_FD = 7,
+	VHOST_USER_SET_VRING_NUM = 8,
+	VHOST_USER_SET_VRING_ADDR = 9,
+	VHOST_USER_SET_VRING_BASE = 10,
+	VHOST_USER_GET_VRING_BASE = 11,
+	VHOST_USER_SET_VRING_KICK = 12,
+	VHOST_USER_SET_VRING_CALL = 13,
+	VHOST_USER_SET_VRING_ERR = 14,
+	VHOST_USER_GET_PROTOCOL_FEATURES = 15,
+	VHOST_USER_SET_PROTOCOL_FEATURES = 16,
+	VHOST_USER_GET_QUEUE_NUM = 17,
+	VHOST_USER_SET_VRING_ENABLE = 18,
+	VHOST_USER_SEND_RARP = 19,
+	VHOST_USER_NET_SEND_MTU = 20,
+	VHOST_USER_SET_SLAVE_REQ_FD = 21,
+	VHOST_USER_IOTLB_MSG = 22,
+	VHOST_USER_SET_VRING_ENDIAN = 23,
+	VHOST_USER_GET_CONFIG = 24,
+	VHOST_USER_SET_CONFIG = 25,
+	VHOST_USER_VRING_KICK = 35,
+};
+
+
+
+virtio_cwrite8
+/* Config space accessors. */
+#define virtio_cwrite(vdev, structname, member, ptr)
+    vdev->config->set((vdev), offsetof(structname, member),	&virtio_cwrite_v, sizeof(virtio_cwrite_v)) -> vp_set
+
+
+
+cache_type_store
+    virtio_cwrite8(vdev, offsetof(struct virtio_blk_config, wce), i)
+
+
+virtio_fs:
+config VIRTIO_FS -> Virtio Filesystem allows guests to mount file systems from the host
+module_init(virtio_fs_init)
+    register_virtio_driver(&virtio_fs_driver)
+    register_filesystem(&virtio_fs_type)
+static struct virtio_driver virtio_fs_driver = {
+	.driver.name		= KBUILD_MODNAME,
+	.driver.owner		= THIS_MODULE,
+	.id_table		= id_table,
+	.feature_table		= feature_table,
+	.feature_table_size	= ARRAY_SIZE(feature_table),
+	.probe			= virtio_fs_probe, -> virtio-fs：添加 virtiofs 文件系统，为 virtio-fs 添加基本文件系统模块。这还不包含主机和客户机之间的共享数据支持或元数据一致性加速。但是它已经比 virtio-9p 快得多。设计概述，为了设计具有更好性能和本地文件系统语义的东西，提出了许多想法。- 使用 fuse 协议（而不是 9p）进行客户机和主机之间的通信。客户机内核将是 fuse 客户端，而 fuse 服务器将在主机上运行以处理请求。- 对于客户机内部的数据访问，在 QEMU 地址空间中 mmap 文件的部分，客户机使用 dax 访问此内存。这样，客户机页面缓存被绕过，并且只有一个数据副本（在主机上）。这还将在客户机之间启用 mmap（MAP_SHARED）。- 对于元数据一致性，有一个共享内存区域，其中包含与元数据关联的版本号，任何更改元数据的客户机都会更新版本号，其他客户机在下次访问时刷新元数据。这尚未实现。 virtio-fs 与现有方法的不同之处，virtio-fs 背后的独特理念是利用虚拟机和虚拟机管理程序的共置来避免通信 (vmexits)。DAX 允许在不与虚拟机管理程序通信的情况下访问文件内容。元数据的共享内存区域避免了在元数据不变的常见情况下的通信。通过用更便宜的共享内存访问取代昂贵的通信，我们期望实现比基于网络文件系统协议的方法更好的性能。此外，这也使得实现本地文件系统语义 (一致性) 变得更容易。这些技术不适用于网络文件系统协议，因为通过利用本地机器上的共享内存可以绕过通信通道。这就是我们决定构建 virtio-fs 而不是专注于 9P 或 NFS 的原因。缓存模式：与 virtio-9p 一样，支持不同的缓存模式，这也决定了一致性级别。“cache=FOO”和“writeback”选项控制客户机和主机文件系统之间的一致性级别。 - cache=none 元数据、数据和路径名查找不会缓存在客户机中。它们始终从主机获取，任何更改都会立即推送到主机。 - cache=always 元数据、数据和路径名查找缓存在客户机中，永不过期。 - cache=auto 元数据和路径名查找缓存在配置的时间后过期（默认为 1 秒）。文件打开时缓存数据（接近打开一致性）。 - writeback/no_writeback 这些选项控制写回策略。如果禁用写回，则正常写入将立即与主机 fs 同步。如果启用写回，则写入可能会缓存在客户机中，直到文件关闭或执行 fsync(2)。此选项对 mmap 写入或通过 DAX 机制的写入没有影响
+        virtio_fs_read_tag(vdev, fs) -> mount_tag
+            virtio_cread_bytes(vdev, offsetof(struct virtio_fs_config, tag),  &tag_buf, sizeof(tag_buf))
+                __virtio_cread_many
+                    vdev->config->generation(vdev)
+                    vdev->config->get(vdev, offset + bytes * i, buf + i * bytes, bytes)
+        virtio_fs_setup_vqs(vdev, fs)
+            fs->nvqs = VQ_REQUEST + fs->num_request_queues
+            callbacks[VQ_HIPRIO] = virtio_fs_vq_done -> high priority -> virtio_fs_hiprio_done_work
+            virtio_fs_init_vq(&fs->vqs[VQ_HIPRIO], "hiprio", VQ_HIPRIO) -> init work queue
+            virtio_fs_init_vq(&fs->vqs[i], vq_name, VQ_REQUEST)
+            callbacks[i] = virtio_fs_vq_done -> schedule_work(&fsvq->done_work) -> virtio_fs_requests_done_work
+            virtio_find_vqs(vdev, fs->nvqs, vqs, callbacks, names, NULL)
+            virtio_fs_start_all_queues(fs) -> fsvq->connected = true
+        virtio_fs_setup_dax -> virtiofs：设置 virtio_fs dax_device 设置 dax 设备。使用 shm 功能查找缓存条目并映射它。DAX 窗口由 fs/dax.c 基础架构访问，并且必须具有 struct pages（至少在 x86 上）。使用 devm_memremap_pages() 映射 DAX 窗口 PCI BAR 并分配 struct page
+            struct virtio_shm_region cache_reg
+            have_cache = virtio_get_shm_region(vdev, &cache_reg, (u8)VIRTIO_FS_SHMCAP_ID_CACHE) -> vdev->config->get_shm_region(vdev, region, id)
+            devm_request_mem_region(&vdev->dev, cache_reg.addr, cache_reg.len, dev_name(&vdev->dev)) -> 申请使用这段IO内存， 再使用 ioremap() 将其映射出来， 供用户空间使用
+            fs->window_kaddr = devm_memremap_pages(&vdev->dev, pgmap) -> devm_memremap_pages() 是一种可以为任意范围创建 struct page 条目的工具，它使驱动程序能够颠覆页面管理的核心方面。具体来说，该工具与内核的内存热插拔功能紧密集成。它将 altmap 参数深深地注入到特定于体系结构的 vmemmap 实现中，以允许从特定的保留页面进行分配，并且它具有与 get_user_pages() 和 get_user_pages_fast() 相关的页面结构引用计数的 Linux 特定假设。这是一个疏忽和错误，它从一开始就没有标记为 EXPORT_SYMBOL_GPL。同样，devm_memremap_pagex() 公开并依赖于核心内核内部假设，并将随着“struct page”、内存热插拔和对新内存类型/拓扑的支持而不断发展。只有内核内 GPL 驱动程序才能跟上这一持续的发展。此接口以及从此接口派生的功能不适用于内核外部驱动程序
+            fs->window_phys_addr = (phys_addr_t) cache_reg.addr
+            devm_add_action_or_reset(&vdev->dev, virtio_fs_cleanup_dax, fs->dax_dev) -> 辅助函数 devm_add_action_or_reset() 将在内部调用 devm_add_action()，如果 devm_add_action() 失败，它将执行所提到的操作并返回错误代码。因此，使用 devm_add_action_or_reset() 代替 devm_add_action() 来简化错误处理，减少代码
+                kill_dax(dax_dev)
+        virtio_device_ready(vdev)
+	.remove			= virtio_fs_remove,
+#ifdef CONFIG_PM_SLEEP
+	.freeze			= virtio_fs_freeze,
+	.restore		= virtio_fs_restore,
+#endif
+};
+
+static struct file_system_type virtio_fs_type = {
+	.owner		= THIS_MODULE,
+	.name		= "virtiofs",
+	.init_fs_context = virtio_fs_init_fs_context,
+         fuse_init_fs_context_submount(fsc)
+            fsc->ops = &fuse_context_submount_ops
+         fsc->ops = &virtio_fs_context_ops
+	.kill_sb	= virtio_kill_sb,
+};
+
+
+
+SYSCALL_DEFINE2(fsopen, const char __user *, _fs_name, unsigned int, flags)
+    fs_context_for_mount
+        alloc_fs_context -> Create a filesystem context
+            init_fs_context(fc)
+
+static const struct fs_context_operations virtio_fs_context_ops = {
+	.free		= virtio_fs_free_fsc,
+	.parse_param	= virtio_fs_parse_param,
+	.get_tree	= virtio_fs_get_tree,
+};
+
+
+
+
+
+uml: UserMode Linux, 
+module_init(virtio_uml_init); -> um：驱动程序：添加 virtio vhost-user 驱动程序，此模块允许通过 vhost-user 套接字使用 virtio 设备。
+static struct platform_driver virtio_uml_driver = {
+	.probe = virtio_uml_probe,
+	.remove = virtio_uml_remove,
+	.driver = {
+		.name = "virtio-uml",
+		.of_match_table = virtio_uml_match,
+	},
+	.suspend = virtio_uml_suspend,
+	.resume = virtio_uml_resume,
+};
+
+virtio_uml_probe
+    vu_dev->vdev.config = &virtio_uml_config_ops
+    vhost_user_init(vu_dev)
+    register_virtio_device(&vu_dev->vdev)
+
+static const struct virtio_config_ops virtio_uml_config_ops = {
+	.get = vu_get,
+	.set = vu_set,
+	.get_status = vu_get_status,
+	.set_status = vu_set_status,
+	.reset = vu_reset,
+	.find_vqs = vu_find_vqs,
+        vhost_user_set_mem_table(vu_dev)
+            struct vhost_user_msg msg = {
+                .header.request = VHOST_USER_SET_MEM_TABLE,
+                .header.size = sizeof(msg.payload.mem_regions),
+                .payload.mem_regions.num = 1,
+            };
+            vhost_user_init_mem_region(reserved, physmem_size - reserved, &fds[0], &msg.payload.mem_regions.regions[0])
+                phys_mapping(addr + size - 1, &mem_offset)
+            vhost_user_send(vu_dev, false, &msg, fds, msg.payload.mem_regions.num)
+                full_sendmsg_fds(vu_dev->sock, msg, size, fds, num_fds)
+                    os_sendmsg_fds(fd, buf, len, fds, fds_num)
+                vhost_user_recv_u64
+        for (i = 0; i < nvqs; ++i)
+            vqs[i] = vu_setup_vq(vdev, queue_idx++, callbacks[i], names[i], ctx ? ctx[i] : false)
+                vq = vring_create_virtqueue(index, num, PAGE_SIZE, vdev, true, true, ctx, vu_notify, callback, info->name)
+                vu_setup_vq_call_fd(vu_dev, vq)
+                vhost_user_set_vring_num
+                vhost_user_set_vring_base
+                    vhost_user_set_vring_state(vu_dev, VHOST_USER_SET_VRING_BASE, index, offset)
+                vhost_user_set_vring_addr(vu_dev, index, virtqueue_get_desc_addr(vq), virtqueue_get_used_addr(vq), virtqueue_get_avail_addr(vq), (u64) -1)
+                    .header.request = VHOST_USER_SET_VRING_ADDR,
+        list_for_each_entry(vq, &vdev->vqs, list)
+            vhost_user_set_vring_kick(vu_dev, vq->index, info->kick_fd)
+            vhost_user_set_vring_enable(vu_dev, vq->index, true)
+	.del_vqs = vu_del_vqs,
+	.get_features = vu_get_features,
+	.finalize_features = vu_finalize_features,
+	.bus_name = vu_bus_name,
+};
+
+tools/virtio/vringh_test.c
+    ...
+    host_map = mmap(NULL, mapsize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    guest_map = mmap(NULL, mapsize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    ...
+
+kernel:
+drivers/vhost/test.c
+module_misc_device(vhost_test_misc); -> 将模块作为杂项设备自动注册 -> https://blog.csdn.net/qq_37858281/article/details/125702163
+static const struct file_operations vhost_test_fops = {
+	.owner          = THIS_MODULE,
+	.release        = vhost_test_release,
+	.unlocked_ioctl = vhost_test_ioctl,
+        switch (ioctl)
+        case VHOST_TEST_RUN
+            vhost_test_run(n, test)
+                vhost_dev_check_owner
+                vhost_vq_access_ok
+                vhost_vq_get_backend
+                vhost_vq_set_backend
+                vhost_vq_init_access
+                    vhost_init_is_le(vq) -> vhost：对旧设备的跨端支持，此补丁在用于实现旧式 virtio 设备时为 vhost 带来跨端支持。由于这种情况相对罕见，因此该功能的可用性由内核配置选项控制（默认情况下未设置）。添加了 vq->is_le 布尔字段以缓存用于环访问的字节序。它默认为本机字节序，如旧式 virtio 设备所期望的那样。当环激活时，如果设备是现代的，我们会强制使用小端。当环停用时，我们会恢复为本机字节序默认值。如果编译了跨端，则会添加 vq->user_be 布尔字段，以便用户空间可以请求特定的字节序。此字段用于在激活旧式设备的环时覆盖默认值。它对现代设备没有影响
+                    vhost_update_used_flags
+                        log_used(vq, (used - (void __user *)vq->used), sizeof vq->used->flags)
+                            log_write(vq->log_base, vq->log_addr + used_offset, len)
+                                set_bit_to_user(bit, (void __user *)(unsigned long)log)
+                                    pin_user_pages_fast(log, 1, FOLL_WRITE, &page)
+                                    set_bit(bit, base)
+                            translate_desc(vq, (uintptr_t)vq->used + used_offset, len, iov, 64, VHOST_ACCESS_WO) -> vhost：正确记录脏页，Vhost 脏页记录 API 旨在通过 GPA 同步。但我们尝试在启用设备 IOTLB 时记录 GIOVA。这是错误的，可能会导致迁移后数据丢失。为了解决这个问题，在启用设备 IOTLB 的情况下记录时，我们将：1）重用设备 IOTLB 转换结果 GIOVA->HVA 映射来获取 HVA，对于可写描述符，通过 iovec 获取 HVA。对于已使用的环更新，将其 GIOVA 转换为 HVA 2）遍历 GPA->HVA 映射以获取可能的 GPA 并通过 GPA 记录。请注意，这种反向映射不能保证是唯一的，因此在这种情况下我们应该记录每个可能的 GPA。这修复了迁移期间 scp 到客户机的失败。在 -next 中，我们可能会支持传递 GIOVA->GPA 而不是 GIOVA->HVA
+                                map = vhost_iotlb_itree_first(umem, addr, last) -> return the first overlapped range
+                                    vhost_iotlb_itree_iter_first(&iotlb->root, start, last)
+                                vhost_iotlb_miss(vq, addr, access)
+                                    msg->type = VHOST_IOTLB_MISS
+                                    vhost_enqueue_msg(dev, &dev->read_list, node) -> list_add_tail(&node->node, head)
+                            log_write_hva(vq,	(uintptr_t)iov[i].iov_base, iov[i].iov_len)
+                                r = log_write(vq->log_base, u->start + start - u->addr, l)
+                    vhost_get_used_idx(vq, &last_used_idx) -> vhost：细粒度用户空间内存访问器，用于隐藏 virtqueue 助手的元数据地址。这将允许实现基于 vmap 的元数据快速访问
+                        vhost_get_used(vq, *idx, &vq->used->idx) -> VHOST_ADDR_USED (VHOST_ACCESS_WO)
+                vhost_test_flush -> vhost_dev_flush
+                    xa_for_each(&dev->worker_xa, i, worker)
+                        vhost_worker_flush(worker)
+                            init_completion(&flush.wait_event)
+                            vhost_work_init(&flush.work, vhost_flush_work)
+                                complete(&s->wait_event)
+                            vhost_worker_queue(worker, &flush.work)
+	.compat_ioctl   = compat_ptr_ioctl,
+	.open           = vhost_test_open,
+        struct vhost_test *n = kmalloc
+        vqs = kmalloc_array
+        n->vqs[VHOST_TEST_VQ].handle_kick = handle_vq_kick
+            ops->kick_vq(v->vdpa, vq - v->vqs) -> mlx5_vdpa_kick_vq -> iowrite16(idx, ndev->mvdev.res.kick_addr) -> or kick_vq_with_data -> call notify or async work call
+                or handle_vq(n)
+                    private = vhost_vq_get_backend(vq)
+                    vhost_disable_notify(&n->dev, vq)
+                    for (;;)
+                        head = vhost_get_vq_desc(vq, vq->iov, ARRAY_SIZE(vq->iov), &out, &in, NULL, NULL)
+                        vhost_enable_notify(&n->dev, vq)
+                        len = iov_length(vq->iov, out)
+                        vhost_add_used_and_signal(&n->dev, vq, head, 0)
+                        vhost_exceeds_weight(vq, 0, total_len) -> over weight
+        vhost_dev_init(dev, vqs, VHOST_TEST_VQ_MAX, UIO_MAXIOV, VHOST_TEST_PKT_WEIGHT, VHOST_TEST_WEIGHT, true, NULL)
+            dev->vqs = vqs
+            dev->nvqs = nvqs
+            INIT_LIST_HEAD(&dev->read_list)
+            INIT_LIST_HEAD(&dev->pending_list)
+            for (i = 0; i < dev->nvqs; ++i)
+                vhost_vq_reset(dev, vq)
+                    vhost_vring_call_reset(&vq->call_ctx) -> memset(&call_ctx->producer, 0x0, sizeof(struct irq_bypass_producer))
+                    __vhost_vq_meta_reset(vq) -> vhost：引入 O(1) vq 元数据缓存，当启用设备 IOTLB 时，所有地址转换都存储在间隔树中。由于 virtqueue 元数据（可用、已使用和描述符）的访问频率比其他地址高得多，因此 O(lgN) 搜索时间可能很慢。因此，此补丁引入了一个 O(1) 数组，该数组指向存储 vq 元数据转换的间隔树节点。这些数组在 vq IOTLB 预取期间更新，并在每次失效和 tlb 更新期间重置。每次我们想要访问 vq 元数据时，都会在间隔树之前查询这个小数组。这对于静态映射来说已经足够，但对于动态映射则不够，我们可以在上面进行优化。测试是在客户机（2M 大页面）中使用 l2fwd 进行的：
+                        vq->meta_iotlb[j] = NULL
+                vhost_poll_init(&vq->poll, vq->handle_kick,	EPOLLIN, dev, vq) -> work->fn(work)
+                    init_waitqueue_func_entry(&poll->wait, vhost_poll_wakeup)
+                        vhost_poll_queue(poll) -> handle_vq_kick
+                    init_poll_funcptr(&poll->table, vhost_poll_func)
+                        pt->_qproc = qproc -> vhost_poll_func -> add_wait_queue(wqh, &poll->wait) -> 将一个进程添加到等待队列，首先获得队列的自旋锁，然后调用__add_wait_queue()实现将新的等待进程添加等待队列（添加到等待队列的头部），然后解锁 -> wait wake_up
+                    vhost_work_init(&poll->work, fn)
+                        work->fn = fn -> vq->handle_kick
+        f->private_data = n
+	.llseek		= noop_llseek,
+};
+
+
+init_waitqueue_func_entry(struct wait_queue_entry *wq_entry, wait_queue_func_t func)
+    wq_entry->func		= func
+
+module_init(vhost_vsock_init);
+    vsock_core_register(&vhost_transport.transport, VSOCK_TRANSPORT_F_H2G)
+    misc_register(&vhost_vsock_misc)
+
+
+static struct miscdevice vhost_vsock_misc = {
+	.minor = VHOST_VSOCK_MINOR,
+	.name = "vhost-vsock",
+	.fops = &vhost_vsock_fops,
+};
+static const struct file_operations vhost_vsock_fops = {
+	.owner          = THIS_MODULE,
+	.open           = vhost_vsock_dev_open,
+	.release        = vhost_vsock_dev_release,
+	.llseek		= noop_llseek,
+	.unlocked_ioctl = vhost_vsock_dev_ioctl,
+	.compat_ioctl   = compat_ptr_ioctl,
+	.read_iter      = vhost_vsock_chr_read_iter,
+        vhost_chr_read_iter
+            node = vhost_dequeue_msg(dev, &dev->read_list)
+	.write_iter     = vhost_vsock_chr_write_iter,
+	.poll           = vhost_vsock_chr_poll,
+        vhost_chr_poll(file, dev, wait)
+            poll_wait(file, &dev->wait, wait) -> poll_wait 不会挂起当前进程,而是把自己注册到某个事件等待队列中
+            mask |= EPOLLIN | EPOLLRDNORM
+};
+
+
+
+userspace:
+tools/virtio/virtio_test.c
+    vdev_info_init
+        dev->buf_size = 1024
+        dev->buf = malloc(dev->buf_size)
+        dev->control = open("/dev/vhost-test", O_RDWR) -> vhost_test_open
+        ioctl(dev->control, VHOST_SET_OWNER, NULL) -> vhost_test_ioctl
+        dev->mem->regions[0].guest_phys_addr = (long)dev->buf
+        dev->mem->regions[0].userspace_addr = (long)dev->buf
+        ioctl(dev->control, VHOST_SET_MEM_TABLE, dev->mem)
+    vq_info_add -> 256 vring_size
+        info->kick = eventfd(0, EFD_NONBLOCK)
+        info->call = eventfd(0, EFD_NONBLOCK)
+        posix_memalign(&info->ring, 4096, vring_size(num, 4096))
+        vhost_vq_setup
+            struct vhost_vring_addr addr = {
+                .index = info->idx,
+                .desc_user_addr = (uint64_t)(unsigned long)info->vring.desc,
+                .avail_user_addr = (uint64_t)(unsigned long)info->vring.avail,
+                .used_user_addr = (uint64_t)(unsigned long)info->vring.used,
+            };
+            ioctl(dev->control, VHOST_SET_FEATURES, &features)
+            ioctl(dev->control, VHOST_SET_VRING_NUM, &state)
+            ioctl(dev->control, VHOST_SET_VRING_BASE, &state)
+            ioctl(dev->control, VHOST_SET_VRING_ADDR, &addr)
+            ioctl(dev->control, VHOST_SET_VRING_KICK, &file)
+            ioctl(dev->control, VHOST_SET_VRING_CALL, &file)
+    run_test(&dev, &dev.vqs[0], delayed, batch, reset, 0x100000)
+        ioctl(dev->control, VHOST_TEST_RUN, &test)
+        for (;;)
+            virtqueue_disable_cb(vq->vq)
+                virtqueue_disable_cb_packed
+                    vq->packed.event_flags_shadow = VRING_PACKED_EVENT_FLAG_DISABLE
+                    vq->packed.vring.driver->flags = cpu_to_le16(vq->packed.event_flags_shadow)
+                or virtqueue_disable_cb_split
+            batch = (random() % vq->vring.num) + 1
+            sg_init_one(&sl, dev->buf, dev->buf_size) -> init 1024B buf to sgl
+            virtqueue_add_outbuf(vq->vq, &sl, 1, dev->buf + started, GFP_ATOMIC)
+            virtqueue_kick(vq->vq) -> update after add_buf, kick to other side
+                virtqueue_kick_prepare(vq)
+                virtqueue_notify(vq)
+            ioctl(dev->control, VHOST_TEST_SET_BACKEND
+            virtqueue_get_buf(vq->vq, &len)
+            virtqueue_enable_cb(vq->vq) -> restart callbacks after disable_cb
+                unsigned int last_used_idx = virtqueue_enable_cb_prepare(_vq)
+                    virtqueue_enable_cb_prepare_packed -> 我们乐观地重新打开中断，然后检查是否还有更多事情要做
+                        return vq->last_used_idx
+                    or virtqueue_enable_cb_prepare_split
+                return !virtqueue_poll(_vq, last_used_idx)
+                    virtqueue_poll_packed(_vq, last_used_idx)
+                        is_used_desc_packed(vq, used_idx, wrap_counter)
+                            flags = le16_to_cpu(vq->packed.vring.desc[idx].flags)
+                            avail = !!(flags & (1 << VRING_PACKED_DESC_F_AVAIL))
+                            used = !!(flags & (1 << VRING_PACKED_DESC_F_USED))
+                    or virtqueue_poll_split(_vq, last_used_idx)
+            wait_for_interrupt(dev)
+        r = ioctl(dev->control, VHOST_TEST_RUN, &test)
+
+
+
+module_init(vhost_scsi_init);
+vhost_vring_ioctl
+    vhost_vring_set_num_addr
+        case VHOST_SET_VRING_ADDR
+            vhost_vring_set_addr(d, vq, argp)
+                vq->desc = (void __user *)(unsigned long)a.desc_user_addr
+                vq->avail = (void __user *)(unsigned long)a.avail_user_addr
+                vq->log_addr = a.log_guest_addr
+                vq->used = (void __user *)(unsigned long)a.used_user_addr
+    case VHOST_SET_VRING_BUSYLOOP_TIMEOUT
+        vq->busyloop_timeout = s.num
+    if (pollstart && vq->handle_kick)
+        vhost_poll_start(&vq->poll, vq->kick)
+            mask = vfs_poll(file, &poll->table) -> file->f_op->poll(file, pt)
+            vhost_poll_wakeup(&poll->wait, 0, 0, poll_to_key(mask))
+    case VHOST_SET_VRING_KICK
+        eventfp = f.fd == VHOST_FILE_UNBIND ? NULL : eventfd_fget(f.fd)
+        filep = eventfp
+
+
+
+
+
+module_auxiliary_driver(mlx5v_driver)
+    mlx5v_probe
+        mgtdev->mgtdev.ops = &mdev_ops
+        mgtdev->mgtdev.supported_features = get_supported_features(mdev) -> vdpa mgmtdev show
+        mgtdev->vdpa_ops = mlx5_vdpa_ops
+        vdpa_mgmtdev_register(&mgtdev->mgtdev) -> vdpa dev add mgmtdev pci/0000:3b:00.1 name vdpa0 -> vdpa dev show
+            list_add_tail(&mdev->list, &mdev_head)
+        auxiliary_set_drvdata(adev, mgtdev)
+
+
+mlx5 support vdpa, commit: https://github.com/ssbandjl/linux/commit/29064bfdabd5ef49eac6909d3a36a075e3b52255
+config MLX5_VDPA
+
+static const struct vdpa_mgmtdev_ops mdev_ops = {
+	.dev_add = mlx5_vdpa_dev_add,
+        vdpa_alloc_device(struct mlx5_vdpa_net, mvdev.vdev, mdev->device, &mgtdev->vdpa_ops, MLX5_VDPA_NUMVQ_GROUPS, MLX5_VDPA_NUM_AS, name, false) -> vdpa/mlx5：启用硬件对 vq 描述符映射的支持，通过填写包含到 hw vq 的描述符映射的附加 mkey，硬件支持 Vq 描述符映射。本系列中的上一个补丁增加了对 ASID 1 的 hw mkey (mr) 创建的支持。此补丁根据组 ASID 映射填写 vq 数据和 vq 描述符 mkey。该功能通过 .get_vq_desc_group op 的存在向 vdpa 核心发出信号
+            vdev = kzalloc(size, GFP_KERNEL)
+            vdev->dev.bus = &vdpa_bus
+            device_initialize(&vdev->dev)
+        init_mvqs(ndev)
+        allocate_irqs(ndev)
+            ndev->irqp.entries = kcalloc(ndev->mvdev.max_vqs, sizeof(*ndev->irqp.entries), GFP_KERNEL)
+            for (i = 0; i < ndev->mvdev.max_vqs; i++)
+                ent->map = pci_msix_alloc_irq_at(ndev->mvdev.mdev->pdev, MSI_ANY_INDEX, NULL)
+        config_func_mtu
+        query_mtu
+        get_link_state
+        memcpy(ndev->config.mac, add_config->net.mac, ETH_ALEN)
+        mlx5_query_nic_vport_mac_address
+        pfmdev = pci_get_drvdata(pci_physfn(mdev->pdev))
+        mvdev->vdev.dma_dev = &mdev->pdev->dev
+        ndev = mlx5_vdpa_alloc_resources(struct mlx5_vdpa_dev *mvdev)
+            u64 offset = MLX5_CAP64_DEV_VDPA_EMULATION(mvdev->mdev, doorbell_bar_offset)
+            mlx5_get_uars_page
+            kick_addr = mdev->bar_addr + offset -> dev->bar_addr = pci_resource_start(pdev, 0)
+            res->phys_kick_addr = kick_addr
+            res->kick_addr = ioremap(kick_addr, PAGE_SIZE) -> map device mem to kernel
+            init_ctrl_vq(mvdev)
+                mvdev->cvq.iotlb = vhost_iotlb_alloc(0, 0)
+                vringh_set_iotlb(&mvdev->cvq.vring, mvdev->cvq.iotlb, &mvdev->cvq.iommu_lock) -> #if IS_REACHABLE(CONFIG_VHOST_IOTLB)
+                    vrh->iotlb = iotlb;
+                    vrh->iotlb_lock = iotlb_lock;
+        INIT_LIST_HEAD(&mvdev->mr_list_head)
+        mlx5_vdpa_create_dma_mr(mvdev)
+        alloc_resources(ndev)
+             mlx5_vdpa_alloc_transport_domain(&ndev->mvdev, &res->tdn) -> MLX5_CMD_OP_ALLOC_TRANSPORT_DOMAIN
+        INIT_WORK(&ndev->cvq_ent.work, mlx5_cvq_kick_handler)
+        _vdpa_register_device(&mvdev->vdev, max_vqs + 1)
+	.dev_del = mlx5_vdpa_dev_del,
+};
+
+
+
+static const struct vdpa_config_ops mlx5_vdpa_ops = {
+	.set_vq_address = mlx5_vdpa_set_vq_address,
+        struct mlx5_vdpa_virtqueue *mvq
+        mvq = &ndev->vqs[idx]
+        mvq->desc_addr = desc_area
+        mvq->device_addr = device_area
+        mvq->driver_addr = driver_area
+        mvq->modified_fields |= MLX5_VIRTQ_MODIFY_MASK_VIRTIO_Q_ADDRS
+	.set_vq_num = mlx5_vdpa_set_vq_num,
+	.kick_vq = mlx5_vdpa_kick_vq,
+        iowrite16(idx, ndev->mvdev.res.kick_addr)
+	.set_vq_cb = mlx5_vdpa_set_vq_cb,
+        ndev->event_cbs[idx] = *cb
+        mvdev->cvq.event_cb = *cb
+	.set_vq_ready = mlx5_vdpa_set_vq_ready,
+	.get_vq_ready = mlx5_vdpa_get_vq_ready,
+	.set_vq_state = mlx5_vdpa_set_vq_state,
+	.get_vq_state = mlx5_vdpa_get_vq_state,
+	.get_vendor_vq_stats = mlx5_vdpa_get_vendor_vq_stats,
+	.get_vq_notification = mlx5_get_vq_notification,
+        addr = (phys_addr_t)ndev->mvdev.res.phys_kick_addr
+	.get_vq_irq = mlx5_get_vq_irq,
+        mvq = &ndev->vqs[idx]
+        mvq->map.virq
+	.get_vq_align = mlx5_vdpa_get_vq_align,
+	.get_vq_group = mlx5_vdpa_get_vq_group,
+	.get_vq_desc_group = mlx5_vdpa_get_vq_desc_group, /* Op disabled if not supported. */
+	.get_device_features = mlx5_vdpa_get_device_features, -> return ndev->mvdev.mlx_features
+	.get_backend_features = mlx5_vdpa_get_backend_features,
+	.set_driver_features = mlx5_vdpa_set_driver_features,
+	.get_driver_features = mlx5_vdpa_get_driver_features,
+	.set_config_cb = mlx5_vdpa_set_config_cb, -> ndev->config_cb = *cb
+	.get_vq_num_max = mlx5_vdpa_get_vq_num_max,
+	.get_device_id = mlx5_vdpa_get_device_id,
+        return VIRTIO_ID_NET
+	.get_vendor_id = mlx5_vdpa_get_vendor_id,
+	.get_status = mlx5_vdpa_get_status,
+	.set_status = mlx5_vdpa_set_status,
+        if ((status ^ ndev->mvdev.status) & VIRTIO_CONFIG_S_DRIVER_OK)
+            setup_cvq_vring(mvdev) -> vdpa/mlx5：仅初始化一次 CVQ vring(控制虚拟队列)，目前，CVQ vringh 在 setup_virtqueues() 内初始化，每次完成内存更新时都会调用此函数。这是不可取的，因为它会重置 vring 的所有上下文，包括可用和已使用的索引。当设置 VIRTIO_CONFIG_S_DRIVER_OK 时，将初始化移至 mlx5_vdpa_set_status()
+                u16 idx = cvq->vring.last_avail_idx
+                vringh_init_iotlb(&cvq->vring, mvdev->actual_features, MLX5_CVQ_MAX_ENT, false,
+					(struct vring_desc *)(uintptr_t)cvq->desc_addr,
+					(struct vring_avail *)(uintptr_t)cvq->driver_addr,
+					(struct vring_used *)(uintptr_t)cvq->device_addr) -> initialize a vringh for a ring with IOTLB -> #if IS_REACHABLE(CONFIG_VHOST_IOTLB)
+                cvq->vring.last_avail_idx = cvq->vring.last_used_idx = idx
+            register_link_notifier(ndev) -> vdpa/mlx5：避免丢失链接状态更新，如果未协商 VIRTIO_NET_F_STATUS，当前代码将忽略链接状态更新。但是，在功能协商完成之前可能会收到链接状态更新，因此导致链接状态事件丢失，可能导致链接状态关闭。修改代码，以便在协商 DRIVER_OK 后注册链接状态通知程序，并且仅在协商 VIRTIO_NET_F_STATUS 时才进行注册。重置设备时取消注册通知程序
+                ndev->nb.notifier_call = event_handler
+                mlx5_notifier_register(ndev->mvdev.mdev, &ndev->nb)
+                queue_link_work(ndev)
+                    INIT_WORK(&wqent->work, update_carrier) -> ndev->config_cb.callback(ndev->config_cb.private) -> virtio_vdpa_config_cb
+                        virtio_config_changed(&vd_dev->vdev) -> __virtio_config_changed(dev)
+            setup_driver(mvdev)
+                mlx5_vdpa_add_debugfs(ndev)
+                read_umem_params(ndev) -> vdpa/mlx5：修复创建 1k VQ 时出现的固件错误，切换到 switchdev 模式后，在 PF 上配置 9k MTU，然后使用具有更大（1k）环的 vdpa 设备时，会触发固件错误：mlx5_cmd_out_err：CREATE_GENERAL_OBJECT(0xa00) op_mod(0xd) 失败，状态为坏资源（0x5），综合征（0xf6db90），err(-22) 这是因为 hw VQ 大小参数是根据 umem_1/2/3_buffer_param_a/b 功能计算的，并且当驱动程序移至 switchdev 模式时，所有设备功能都是只读的。有问题的配置流程如下所示：1) 创建 VF 2) 解除 VF 绑定 3) 将 PF 切换到 switchdev 模式。 4) 绑定 VF 5) 将 PF MTU 设置为 9k 6) 创建 vDPA 设备 7) 使用 vDPA 设备和 1K 队列大小启动 VM 请注意，在步骤 3) 之前设置 MTU 不会触发此问题。此补丁会在创建设备的 VQ 之前尽可能晚地读取上述 umem 参数。v2：- 使用 kmalloc 分配输出以减少堆栈帧大小。- 从 cc 中删除稳定版本
+                    MLX5_CMD_OP_QUERY_HCA_CAP
+                setup_virtqueues(mvdev)
+                    for (i = 0; i < mvdev->max_vqs; i++)
+                        setup_vq(ndev, &ndev->vqs[i])
+                            cq_create(ndev, idx, mvq->num_ent)
+                            qp_create(ndev, mvq, &mvq->fwqp)
+                            qp_create(ndev, mvq, &mvq->vqqp)
+                            connect_qps(ndev, mvq)
+                            counter_set_alloc(ndev, mvq)
+                            alloc_vector(ndev, mvq)
+                                for (i = 0; i < irqp->num_ent; i++)
+                                    ent->dev_id = &ndev->event_cbs[mvq->index]
+                                    request_irq(ent->map.virq, mlx5_vdpa_int_handler, 0, ent->name, ent->dev_id) -> vdpa/mlx5：支持中断绕过，添加对从设备直接向 VM 和 VCPU 生成中断的支持，从而避免主机 CPU 的开销。当支持时，驱动程序将尝试为每个数据虚拟队列分配向量。如果无法提供虚拟队列的向量，它将使用 QP 模式，其中通知通过驱动程序。此外，我们添加了关机回调，以确保在关机时释放分配的中断，从而允许干净关机
+                                        cb->callback(cb->private)
+                            create_virtqueue(ndev, mvq)
+                                umems_create(ndev, mvq)
+                                MLX5_CMD_OP_CREATE_GENERAL_OBJECT MLX5_OBJ_TYPE_VIRTIO_NET_Q
+                                MLX5_SET64(virtio_q, vq_ctx, desc_addr, mvq->desc_addr);
+                                MLX5_SET64(virtio_q, vq_ctx, used_addr, mvq->device_addr);
+                                MLX5_SET64(virtio_q, vq_ctx, available_addr, mvq->driver_addr);
+                            modify_virtqueue_state(ndev, mvq, MLX5_VIRTIO_NET_Q_OBJECT_STATE_RDY)
+                                mvq->modified_fields |= MLX5_VIRTQ_MODIFY_MASK_STATE
+                                modify_virtqueue(ndev, mvq, state) -> vdpa/mlx5：允许在一个修改命令中修改多个 vq 字段，添加一个位掩码变量，用于跟踪 hw vq 字段更改，这些更改应在下一个 hw vq 更改命令中修改。这对于在恢复 vq 时设置多个 vq 字段很有用
+                                    MLX5_CMD_OP_MODIFY_GENERAL_OBJECT
+                create_rqt(ndev) -> RQ 表 (RQT)，RQT 对象保存一个 RQ 表。TIR 指向 RQT 并将其用作间接表。RQT 允许仅将数据包分派到表中的单个 RQ，通过表索引访问。RQT 上下文通过 CREATE_RQT 命令创建。然后可以通过 MODIFY_RQT 命令修改上下文。可以通过 QUERY_RQT 命令查询上下文。完成后，RQT 上下文通过 DESTROY_RQT 命令销毁。通过 QUERY_HCA 命令通过 log_max_rqt 参数报告 RQT 的支持情况和支持的 RQT 数量
+                    MLX5_CMD_OP_CREATE_RQT
+                create_tir(ndev) -> 传输接口接收 (TIR)，传输接口接收 (TIR) 对象负责在接收端执行所有与传输相关的操作。TIR 执行数据包处理和重组，还负责将数据包解复用为不同的 RQ。解复用支持将数据包传送到列出的一个或多个 RQ 中，或者从列表中基于哈希选择单个 RQ（例如接收端缩放）。TIR 上下文是通过 CREATE_TIR 命令创建的。然后可以通过 MODIFY_TIR 命令根据 TIR 状态机修改上下文。可以通过 QUERY_TIR 命令对其进行查询。完成之后，TIR 上下文通过 DESTROY_TIR 命令销毁。通过 QUERY_HCA 命令通过 log_max_tir 参数报告对 TIR 的支持以及支持的 TIR 数量
+                    static const u8 rx_hash_toeplitz_key[] = { 0x2c, 0xc6, 0x81, 0xd1, 0x5b, 0xdb, 0xf4, 0xf7,
+                    MLX5_CMD_OP_CREATE_TIR
+                setup_steering(ndev) -> vdpa/mlx5：添加 RX MAC VLAN 过滤器支持，支持 MAC/VLAN 数据包的 HW 卸载过滤。为此，我们添加了一个处理程序来处理通过控制 VQ 的 VLAN 配置。支持两种操作。1. 添加 VLAN - 在这种情况下，将向 RX 流表添加一个条目，以允许将 MAC/VLAN 的组合转发到 TIR。2. 删除 VLAN - 将从流表中删除条目，从而有效地阻止此类数据包通过。目前，控制 VQ 不会将更改传播到 VLAN 设备的 MAC，因此我们始终使用父设备的 MAC。示例：1. 创建 vlan 设备：$ ip link add link ens1 name ens1.8 type vlan id 8
+                    mlx5_get_flow_namespace(ndev->mvdev.mdev, MLX5_FLOW_NAMESPACE_BYPASS)
+                    mlx5_create_auto_grouped_flow_table
+                    mlx5_vdpa_add_rx_flow_table
+                    mac_vlan_add(ndev, ndev->config.mac, 0, false)
+        ndev->mvdev.status = status
+	.reset = mlx5_vdpa_reset, -> mlx5_vdpa_compat_reset
+	.compat_reset = mlx5_vdpa_compat_reset,
+        ndev->mvdev.status = 0
+
+	.get_config_size = mlx5_vdpa_get_config_size,
+        return sizeof(struct virtio_net_config)
+	.get_config = mlx5_vdpa_get_config,
+        memcpy(buf, (u8 *)&ndev->config + offset, len)
+	.set_config = mlx5_vdpa_set_config, -> /* not supported */
+	.get_generation = mlx5_vdpa_get_generation, -> return mvdev->generation
+	.set_map = mlx5_vdpa_set_map,
+        set_map_data(mvdev, iotlb, asid)
+            if (vhost_iotlb_itree_first(iotlb, 0, U64_MAX))
+                new_mr = mlx5_vdpa_create_mr(mvdev, iotlb) -> vdpa/mlx5：改进 mr 更新流程，当前更新 mr 的流程直接在 mvdev->mr 上进行，这使得处理多个新 mr 结构变得很麻烦。此补丁通过让 mlx5_vdpa_create_mr 返回一个将更新旧 mr（如果有）的新 mr，使流程更加简单。旧 mr 将被删除并与 mvdev 解除链接。对于 iotlb 为空（非 NULL）的情况，将清除旧 mr。此更改为添加不同 ASID 的 mrs 铺平了道路。不再需要初始化的 bool，因为 mr 现在是 mlx5_vdpa_dev 结构中的指针，未初始化时将为 NULL
+                    _mlx5_vdpa_create_mr
+                        if (iotlb)
+                            create_user_mr(mvdev, mr, iotlb)
+                        else create_dma_mr(mvdev, mr)
+                        mr->iotlb = vhost_iotlb_alloc(0, 0)
+                        dup_iotlb(mr->iotlb, iotlb)
+                        list_add_tail(&mr->mr_list, &mvdev->mr_list_head)
+            mlx5_vdpa_update_mr(mvdev, new_mr, asid)
+            or mlx5_vdpa_change_map(mvdev, new_mr, asid)
+            mlx5_vdpa_update_cvq_iotlb(mvdev, iotlb, asid)
+                prune_iotlb(mvdev->cvq.iotlb)
+                dup_iotlb(mvdev->cvq.iotlb, iotlb)
+	.reset_map = mlx5_vdpa_reset_map,
+	.set_group_asid = mlx5_set_group_asid,
+        mvdev->group2asid[group] = asid
+	.get_vq_dma_dev = mlx5_get_vq_dma_dev, -> mvdev->vdev.dma_dev
+	.free = mlx5_vdpa_free,
+	.suspend = mlx5_vdpa_suspend,
+        for (i = 0; i < ndev->cur_num_vqs; i++)
+            suspend_vq(ndev, mvq)
+                modify_virtqueue_state(ndev, mvq, MLX5_VIRTIO_NET_Q_OBJECT_STATE_SUSPEND)
+                    opcode, MLX5_CMD_OP_MODIFY_GENERAL_OBJECT -> op to hw
+                query_virtqueue(ndev, mvq, &attr)
+                    opcode, MLX5_CMD_OP_QUERY_GENERAL_OBJECT)
+                mvq->avail_idx = attr.available_index
+                mvq->used_idx = attr.used_index
+        mlx5_vdpa_cvq_suspend(mvdev)
+	.resume = mlx5_vdpa_resume, /* Op disabled if not supported. */
+        resume_vqs(ndev) -> resume_vq
+            modify_virtqueue_state(ndev, mvq, MLX5_VIRTIO_NET_Q_OBJECT_STATE_RDY)
+};
+
+
+vdpa:
+drivers/vdpa/vdpa_sim/vdpa_sim_net.c
+modprobe vdpa-sim-net -> module_init(vdpasim_net_init)
+    device_register(&vdpasim_net_mgmtdev)
+    vdpa_mgmtdev_register(&mgmt_dev)
+
+static struct vdpa_mgmt_dev mgmt_dev = {
+	.device = &vdpasim_net_mgmtdev,
+	.id_table = id_table,
+	.ops = &vdpasim_net_mgmtdev_ops,
+};
+
+
+static const struct vdpa_mgmtdev_ops vdpasim_net_mgmtdev_ops = {
+	.dev_add = vdpasim_net_dev_add,
+	.dev_del = vdpasim_net_dev_del
+};
+
+# Add `vdpa-net1` device through `vdpasim_net` management device
+$ vdpa dev add name vdpa-net1 mgmtdev vdpasim_net
+vdpasim_net_dev_add
+
+
+
+modprobe vdpa-sim-blk
+drivers/vdpa/vdpa_sim/vdpa_sim_blk.c
+module_init(vdpasim_blk_init) -> sim
+static struct vdpa_mgmt_dev mgmt_dev = {
+	.device = &vdpasim_blk_mgmtdev,
+	.id_table = id_table,
+	.ops = &vdpasim_blk_mgmtdev_ops,
+};
+
+static const struct vdpa_mgmtdev_ops vdpasim_blk_mgmtdev_ops = {
+	.dev_add = vdpasim_blk_dev_add,
+	.dev_del = vdpasim_blk_dev_del
+};
+
+
+
+# Add `vdpa-blk1` device through `vdpasim_blk` management device
+$ vdpa dev add name vdpa-blk1 mgmtdev vdpasim_blk
+static int vdpasim_blk_dev_add(struct vdpa_mgmt_dev *mdev, const char *name, const struct vdpa_dev_set_config *config)
+    dev_attr.get_config = vdpasim_blk_get_config
+    dev_attr.work_fn = vdpasim_blk_work
+        vdpasim_blk_handle_req
+            vringh_getdesc_iotlb(&vq->vring, &vq->out_iov, &vq->in_iov, &vq->head, GFP_ATOMIC)
+            to_push = vringh_kiov_length(&vq->in_iov) - 1
+            to_pull = vringh_kiov_length(&vq->out_iov)
+            bytes = vringh_iov_pull_iotlb(&vq->vring, &vq->out_iov, &hdr, sizeof(hdr))
+            type = vdpasim32_to_cpu(vdpasim, hdr.type);
+            sector = vdpasim64_to_cpu(vdpasim, hdr.sector);
+            offset = sector << SECTOR_SHIFT;
+            status = VIRTIO_BLK_S_OK;
+            case VIRTIO_BLK_T_IN
+                vringh_iov_push_iotlb -> vringh_iov_xfer(vrh, wiov, (void *)src, len, xfer_to_iotlb)
+                    err = xfer(vrh, iov->iov[iov->i].iov_base, ptr, partlen)
+                        copy_to_iotlb(vrh, dst, src, len)
+                            ret = iotlb_translate(vrh, (u64)(uintptr_t)dst
+                            copy_to_iter
+            case VIRTIO_BLK_T_OUT:
+            vringh_complete_iotlb(&vq->vring, vq->head, pushed)
+        if (vringh_need_notify_iotlb(&vq->vring) > 0)
+            vringh_notify(&vq->vring)
+    simdev = vdpasim_create(&dev_attr, config)
+        ops = &vdpasim_batch_config_ops
+        or ops = &vdpasim_config_ops
+        vdpa = __vdpa_alloc_device(NULL, ops, dev_attr->ngroups, dev_attr->nas, dev_attr->alloc_size, dev_attr->name, use_va)
+        kthread_init_work(&vdpasim->work, vdpasim_work_fn)
+        vdpasim->worker = kthread_create_worker(0, "vDPA sim worker: %s", dev_attr->name)
+        vdpasim->vqs = kcalloc(dev_attr->nvqs
+        vdpasim->iommu = kmalloc_array(vdpasim->dev_attr.nas, sizeof(*vdpasim->iommu), GFP_KERNEL)
+        vhost_iotlb_init
+        vhost_iotlb_add_range
+        vringh_set_iotlb
+    blk = sim_to_blk(simdev)
+    blk->shared_backend = shared_backend
+    blk->buffer = kvzalloc
+    _vdpa_register_device(&simdev->vdpa, VDPASIM_BLK_VQ_NUM)
+
+
+static const struct vdpa_config_ops vdpasim_config_ops = {
+	.set_vq_address         = vdpasim_set_vq_address,
+        vq->desc_addr = desc_area;
+        vq->driver_addr = driver_area
+        vq->device_addr = device_area
+	.set_vq_num             = vdpasim_set_vq_num,
+	.kick_vq                = vdpasim_kick_vq, -> vdpasim_schedule_work(vdpasim) -> vdpasim_work_fn
+        vdpasim->dev_attr.work_fn(vdpasim) -> vdpasim_blk_work
+	.set_vq_cb              = vdpasim_set_vq_cb,
+	.set_vq_ready           = vdpasim_set_vq_ready,
+	.get_vq_ready           = vdpasim_get_vq_ready,
+	.set_vq_state           = vdpasim_set_vq_state,
+	.get_vendor_vq_stats    = vdpasim_get_vq_stats,
+	.get_vq_state           = vdpasim_get_vq_state,
+	.get_vq_align           = vdpasim_get_vq_align,
+	.get_vq_group           = vdpasim_get_vq_group,
+	.get_device_features    = vdpasim_get_device_features,
+	.get_backend_features   = vdpasim_get_backend_features,
+	.set_driver_features    = vdpasim_set_driver_features,
+	.get_driver_features    = vdpasim_get_driver_features,
+	.set_config_cb          = vdpasim_set_config_cb,
+	.get_vq_num_max         = vdpasim_get_vq_num_max,
+	.get_device_id          = vdpasim_get_device_id,
+	.get_vendor_id          = vdpasim_get_vendor_id,
+	.get_status             = vdpasim_get_status,
+	.set_status             = vdpasim_set_status,
+        vdpasim->status = status
+	.reset			= vdpasim_reset,
+	.compat_reset		= vdpasim_compat_reset,
+	.suspend		= vdpasim_suspend,
+	.resume			= vdpasim_resume,
+	.get_config_size        = vdpasim_get_config_size,
+	.get_config             = vdpasim_get_config,
+	.set_config             = vdpasim_set_config,
+        vdpasim->dev_attr.set_config(vdpasim, vdpasim->config) -> 中转
+	.get_generation         = vdpasim_get_generation,
+	.get_iova_range         = vdpasim_get_iova_range,
+	.set_group_asid         = vdpasim_set_group_asid,
+	.dma_map                = vdpasim_dma_map,
+        vhost_iotlb_add_range_ctx(&vdpasim->iommu[asid], iova, iova + size - 1, pa, perm, opaque)
+	.dma_unmap              = vdpasim_dma_unmap,
+	.reset_map              = vdpasim_reset_map,
+	.bind_mm		= vdpasim_bind_mm,
+        mm_work.mm_to_bind = mm
+        vdpasim_worker_change_mm_sync(vdpasim, &mm_work)
+            vdpasim_mm_work_fn
+	.unbind_mm		= vdpasim_unbind_mm,
+	.free                   = vdpasim_free,
+};
+
+
+virtio_vdpa_notify_with_data
+    kick_vq_with_data -> snet_kick_vq_with_data
+        iowrite32((data & 0xFFFF0000) | SNET_KICK_VAL, snet->vqs[idx]->kick_ptr)
+
+
+static const struct vdpa_config_ops vp_vdpa_ops = {
+	.get_device_features = vp_vdpa_get_device_features,
+	.set_driver_features = vp_vdpa_set_driver_features,
+	.get_driver_features = vp_vdpa_get_driver_features,
+	.get_status	= vp_vdpa_get_status,
+	.set_status	= vp_vdpa_set_status,
+	.reset		= vp_vdpa_reset,
+	.get_vq_num_max	= vp_vdpa_get_vq_num_max,
+	.get_vq_state	= vp_vdpa_get_vq_state,
+	.get_vq_notification = vp_vdpa_get_vq_notification,
+	.set_vq_state	= vp_vdpa_set_vq_state,
+	.set_vq_cb	= vp_vdpa_set_vq_cb,
+	.set_vq_ready	= vp_vdpa_set_vq_ready,
+	.get_vq_ready	= vp_vdpa_get_vq_ready,
+	.set_vq_num	= vp_vdpa_set_vq_num,
+	.set_vq_address	= vp_vdpa_set_vq_address,
+	.kick_vq	= vp_vdpa_kick_vq,
+        vp_iowrite16(qid, vp_vdpa->vring[qid].notify)
+	.get_generation	= vp_vdpa_get_generation,
+	.get_device_id	= vp_vdpa_get_device_id,
+	.get_vendor_id	= vp_vdpa_get_vendor_id,
+	.get_vq_align	= vp_vdpa_get_vq_align,
+	.get_config_size = vp_vdpa_get_config_size,
+	.get_config	= vp_vdpa_get_config,
+	.set_config	= vp_vdpa_set_config,
+	.set_config_cb  = vp_vdpa_set_config_cb,
+	.get_vq_irq	= vp_vdpa_get_vq_irq,
+};
+
+
+module_pci_driver(vp_vdpa_driver) -> vdpa：引入 virtio pci 驱动程序，此补丁引入了用于 virtio-pci 设备的 vDPA 驱动程序。它将 virtio-pci 控制命令桥接到 vDPA 总线。这将用于功能原型设计和测试。请注意，不支持获取/恢复 virtqueue 状态，这需要在 virtio 规范上进行扩展
+vp_vdpa_probe
+    mgtdev->ops = &vp_vdpa_mdev_ops
+    pcim_enable_device(pdev)
+    vp_modern_probe
+    vdpa_mgmtdev_register
+
+
+
+
+static const struct vdpa_mgmtdev_ops vp_vdpa_mdev_ops = {
+	.dev_add = vp_vdpa_dev_add,
+        vp_vdpa = vdpa_alloc_device(struct vp_vdpa, vdpa, dev, &vp_vdpa_ops, 1, 1, name, false)
+        device_features = vp_modern_get_features(mdev)
+        devm_add_action_or_reset(dev, vp_vdpa_free_irq_vectors, pdev)
+        for (i = 0; i < vp_vdpa->queues; i++)
+            vp_vdpa->vring[i].notify = vp_modern_map_vq_notify(mdev, i, &vp_vdpa->vring[i].notify_pa) -> vp_vdpa：报告门铃地址，此补丁将每个 vq 门铃位置和大小报告给 vDPA 总线。然后，用户空间可以通过 vhost-vDPA 总线驱动程序通过 mmap() 映射门铃
+                *pa = mdev->notify_pa + off * mdev->notify_offset_multiplier
+                return mdev->notify_base + off * mdev->notify_offset_multiplier -> 从规范的介绍来看，notify地址是notify cap在bar空间内的偏移，加上common cap的queue_notify_off字段与notify cap的notify_off_multiplier的乘积。再看一次之前的地址计算公式，就是规范里面介绍的计算方法
+        ret = _vdpa_register_device(&vp_vdpa->vdpa, vp_vdpa->queues)
+            dev = bus_find_device(&vdpa_bus, NULL, dev_name(&vdev->dev), vdpa_name_match)
+            device_add(&vdev->dev)
+	.dev_del = vp_vdpa_dev_del,
+};
+
+
+vdpa, commit: https://patchwork.kernel.org/project/kvm/patch/20200131033651.103534-1-tiwei.bie@intel.com/
+此补丁引入了基于 vDPA 的 vhost 后端。此后端建立在 virtio-vDPA 中定义的相同接口之上，并为用户空间提供通用 vhost 接口，以加速客户机中的 virtio 设备。此后端作为 vDPA 设备驱动程序实现，基于 virtio-vDPA 中使用的相同操作。它将创建名为 vhost-vdpa/$vdpa_device_index 的字符设备条目供用户空间使用。用户空间可以在此字符设备上使用 vhost ioctls 来设置后端
+
+
+
+module_init(vhost_net_init)
+static const struct file_operations vhost_net_fops = {
+	.owner          = THIS_MODULE,
+	.release        = vhost_net_release,
+	.read_iter      = vhost_net_chr_read_iter,
+	.write_iter     = vhost_net_chr_write_iter,
+	.poll           = vhost_net_chr_poll,
+	.unlocked_ioctl = vhost_net_ioctl,
+	.compat_ioctl   = compat_ptr_ioctl,
+	.open           = vhost_net_open,
+        n->vqs[VHOST_NET_VQ_TX].xdp = xdp
+        n->vqs[VHOST_NET_VQ_TX].vq.handle_kick = handle_tx_kick
+        n->vqs[VHOST_NET_VQ_RX].vq.handle_kick = handle_rx_kick
+        handle_tx_kick
+            handle_tx
+                handle_tx_zerocopy
+                    get_tx_bufs
+                        vhost_net_tx_get_vq_desc
+                            vhost_net_busy_poll
+        vhost_dev_init
+        vhost_poll_init(n->poll + VHOST_NET_VQ_TX, handle_tx_net, EPOLLOUT, dev, vqs[VHOST_NET_VQ_TX])
+        vhost_poll_init(n->poll + VHOST_NET_VQ_RX, handle_rx_net, EPOLLIN, dev,	vqs[VHOST_NET_VQ_RX])
+	.llseek		= noop_llseek,
+};
+
+
+
+
+vdpa alibaab
+drivers/vdpa/alibaba/eni_vdpa.c
+module_pci_driver(eni_vdpa_driver) -> eni_vdpa_probe
+    eni_vdpa = vdpa_alloc_device(struct eni_vdpa, vdpa, dev, &eni_vdpa_ops, 1, 1, NULL, false)
+    vp_legacy_probe(ldev)
+    eni_vdpa->queues = eni_vdpa_get_num_queues(eni_vdpa) -> read register
+        eni_vdpa_get_config(&eni_vdpa->vdpa, offsetof(struct virtio_net_config, max_virtqueue_pairs), &max_virtqueue_pairs,	sizeof(max_virtqueue_pairs))
+        void __iomem *ioaddr = ldev->ioaddr + VIRTIO_PCI_CONFIG_OFF(eni_vdpa->vectors) + offset
+        *p++ = ioread8(ioaddr + i)
+    for (i = 0; i < eni_vdpa->queues; i++)
+        eni_vdpa->vring[i].irq = VIRTIO_MSI_NO_VECTOR
+        eni_vdpa->vring[i].notify = ldev->ioaddr + VIRTIO_PCI_QUEUE_NOTIFY
+    vdpa_register_device(&eni_vdpa->vdpa, eni_vdpa->queues)
+
+static const struct vdpa_config_ops eni_vdpa_ops = {
+	.get_device_features = eni_vdpa_get_device_features,
+	.set_driver_features = eni_vdpa_set_driver_features,
+	.get_driver_features = eni_vdpa_get_driver_features,
+	.get_status	= eni_vdpa_get_status,
+	.set_status	= eni_vdpa_set_status,
+	.reset		= eni_vdpa_reset,
+	.get_vq_num_max	= eni_vdpa_get_vq_num_max,
+	.get_vq_num_min	= eni_vdpa_get_vq_num_min,
+	.get_vq_state	= eni_vdpa_get_vq_state,
+	.set_vq_state	= eni_vdpa_set_vq_state,
+	.set_vq_cb	= eni_vdpa_set_vq_cb,
+	.set_vq_ready	= eni_vdpa_set_vq_ready,
+	.get_vq_ready	= eni_vdpa_get_vq_ready,
+	.set_vq_num	= eni_vdpa_set_vq_num,
+	.set_vq_address	= eni_vdpa_set_vq_address, -> eni_vdpa：为阿里巴巴 ENI 添加 vDPA 驱动程序，此补丁为阿里巴巴 ENI（弹性网络接口）添加了一个新的 vDPA 驱动程序，该驱动程序基于 virtio 0.9.5 规范构建。并且此驱动程序目前仅在 X86 主机上启用
+        vp_legacy_set_queue_address(ldev, qid, pfn) -> vs modern -> vp_modern_queue_address
+            iowrite16(index, ldev->ioaddr + VIRTIO_PCI_QUEUE_SEL) -> select queue
+            iowrite32(queue_pfn, ldev->ioaddr + VIRTIO_PCI_QUEUE_PFN)
+	.kick_vq	= eni_vdpa_kick_vq,
+        iowrite16(qid, eni_vdpa->vring[qid].notify)
+	.get_device_id	= eni_vdpa_get_device_id,
+	.get_vendor_id	= eni_vdpa_get_vendor_id,
+	.get_vq_align	= eni_vdpa_get_vq_align,
+	.get_config_size = eni_vdpa_get_config_size,
+	.get_config	= eni_vdpa_get_config,
+	.set_config	= eni_vdpa_set_config,
+	.set_config_cb  = eni_vdpa_set_config_cb,
+	.get_vq_irq	= eni_vdpa_get_vq_irq,
+};
+
+
+
+qemu驱动commit: https://github.com/wangzhou/linux/commit/87695695e4d3ea72e60d9c5da5fc5804ae71fb48
+如何在qemu里增加一个虚拟设备: https://wangzhou.github.io/%E5%A6%82%E4%BD%95%E5%9C%A8qemu%E9%87%8C%E5%A2%9E%E5%8A%A0%E4%B8%80%E4%B8%AA%E8%99%9A%E6%8B%9F%E8%AE%BE%E5%A4%87/
+
+#动态模块
+obj-m += helloworld.o
+
+
+env:
+install make, gcc
+
+
+qa?
+模块验证失败：缺少签名和/或所需密钥 - 污染内核
+
+
+show devices:
+ls -alh /sys/devices/pci0000:00/0000:`lspci|grep "1234:3456"|awk '{print$1}'`/
+cat /sys/devices/pci0000:00/0000:`lspci|grep "1234:3456"|awk '{print$1}'`/copy_size
+echo 128 > /sys/devices/pci0000:00/0000:`lspci|grep "1234:3456"|awk '{print$1}'`/copy_size
+
+
+flow:
+pci_register_driver
+
+关键宏:(sysfs/debugfs), 属性文件, read/write fd will trigger copy_size_show/copy_size_store
+static DEVICE_ATTR_RW(copy_size);
+
+write:
+echo 128 > /sys/devices/pci0000:00/0000:00:05.0/copy_size
+copy_size_store
+    do_dma_copy_test(hw)
+        src = kmalloc(buf_size * 2, GFP_KERNEL) -> malloc 80 * 2 = 160
+        dma_src = dma_map_single(dev, src, buf_size * 2, DMA_BIDIRECTIONAL) -> map va(dram) -> ha(device)
+        do_dma_copy(hw, dma_src, dma_src + buf_size, buf_size)
+            void *base = hw->io_va
+            start DMA
+            writeq(src, base + IO_OFFSET_CHAN_SRC) -> mmio -> dma_engine_io_write
+            ...
+                pci_dma_read(pdev, chan->src + offset, buf, buf_size)
+                pci_dma_write(pdev, chan->dts + offset, buf, buf_size);
+            readl_relaxed_poll_timeout(base + IO_OFFSET_CHAN_DONE, val, (val == 1), 10, 1000)
+    dma_unmap_single
+    memcmp(src, src + buf_size, buf_size)
+
+read:
+cat /sys/devices/pci0000:00/0000:00:05.0/copy_siz
+copy_size_show
+    sysfs_emit(buf, "0x%lx\n", hw->copy_size)
+
+
+
+readl_relaxed_poll_timeout delay_us, timeout_us
+
+
+
+
+watch "dmesg | tail -20"
+
+real_time dmesg log:
+tail -f /var/log/{dmesg,syslog}
+
+
+
+sudo strace insmod dma_engine.ko
+
+
+
+debug driver:
+root@vm:/home/xb/project/dma_engine_driver# lsmod|grep engine
+dma_engine             16384  -1
+root@vm:/home/xb/project/dma_engine_driver# lsmod |less
+root@vm:/home/xb/project/dma_engine_driver# cat /proc/modules |grep dma
+dma_engine 16384 -1 - Unloading 0xffffffffc045f000 (OE-)
+
+cat /sys/module/dma_engine/refcnt
+
+
+
+dma_engine.c
+module_init(dma_init)
+static struct pci_driver dma_pci_drv = {
+	.name     = DMA_ENGINE,
+	.id_table = dma_pci_tbl,
+	.probe    = dma_pci_probe,
+        pci_enable_device
+        dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))
+        pci_alloc_irq_vectors
+        pci_irq_vector
+        pci_set_master(pdev) -> 设置设备具有获得总线的能力，即调用这个函数，使设备具备申请使用PCI总线的能力
+        hw = dma_hw_init(pdev, irq)
+            hw = devm_kzalloc(dev, sizeof(*hw), GFP_KERNEL)
+            hw->io_va = devm_ioremap_resource(dev, &pdev->resource[0]) -> get bar0 addr -> 将设备寄存器地址映射为内核空间的虚拟地址HA -> VA -> 申请内存资源:devm_request_mem_region, 映射为虚拟地址:devm_ioremap
+            devm_request_irq(dev, irq, dma_irq_handler, 0, DMA_ENGINE, hw) -> 申请中断号
+                dev_info(&hw->pdev->dev, "dma interrupt! "FFL_FMT"\n", FFL) -> print irq info
+            sysfs_create_file(&dev->kobj, &dev_attr_copy_size.attr) 创建系统文件 copy_size -> 通过sysfs接口向用户态暴露了一个叫 copy_size 的文件，向这个文件写入一个数值将触发一次该数值大小的DMA数据拷贝，为了方便起见，我们在这个驱动的内部生成需要拷贝的数据 -> /sys/devices/pci0000:00/0000:00:05.0/copy_size
+        pci_set_drvdata(pdev, hw)
+	.remove   = dma_pci_remove,
+	.shutdown = dma_pci_shutdown,
+};
+
+
+edu, dma
+print log level:
+cat /proc/sys/kernel/printk
+
+sudo echo 7 > /proc/sys/kernel/printk
+
+dmesg -wH
+
+read config edu:
+configure address 0x0, read data is 11e81234
+
+mmio_base = pci_iomap(device, 0, pci_resource_len(device, 0))
+
+
+driver:
+// Config
+#define DMA_REG_SRC    0x80
+#define DMA_REG_DST    0x88
+#define DMA_REG_LEN    0x90
+#define DMA_REG_CMD    0x98
+
+// DMA
+#define DMA_FILE_OFF   0x40000
+#define DMA_REG_SRC    0x80
+#define DMA_REG_DST    0x88
+#define DMA_REG_LEN    0x90
+#define DMA_REG_CMD    0x98
+
+#define DMA_CMD_SEND   0x01
+#define DMA_CMD_RECV   0x03
+#define DMA_CMD_IRQ    0x04
+
+// MMIO
+#define MMIO_FILE_OFF     0x214
+static void __iomem *mmio_base;
+
+module_init(edu_init);
+    pci_register_driver(&pci_driver)
+
+static struct pci_driver pci_driver = {
+    .name = "edu",
+    .id_table = pci_id_table,
+    .probe = edu_probe,
+    .remove = edu_remove
+};
+
+edu_probe
+    major = register_chrdev(0, "edu", &file_ops);
+    pci_request_region(device, 0, "region")
+    dma_set_mask_and_coherent(&(device->dev),  DMA_BIT_MASK(28))
+    mmio_base = pci_iomap(device, 0, pci_resource_len(device, 0))
+    request_irq(device->irq, dma_irq_handler, IRQF_SHARED, "pci_irq_handler0", &major)
+
+
+
+static struct file_operations file_ops = {
+    .owner     = THIS_MODULE,
+    .llseek    = edu_llseek,
+    .read      = edu_read,
+    .write     = edu_write
+};
+
+test:
+test\test.c
+    open("/dev/edu", O_RDWR)
+    write(fd, buffer, length) -> edu_write
+        switch(get_ops_type(*off))
+        case CONFIG_OPS:
+            retVal = edu_config_write(filp, buf, len, off);
+                pci_write_config_dword(pci_device, *off - MMIO_FILE_OFF, memory)
+        case MMIO_OPS:
+            retVal = edu_reg_write(filp, buf, len, off);
+                iowrite32(memory, mmio_base + *off - MMIO_FILE_OFF)
+        case DMA_OPS:
+            edu_dma_write(filp, buf,len,off);
+                vaddr = dma_alloc_coherent(&(pci_device->dev), len, &dma_handle, GFP_ATOMIC)
+                if(raw_copy_from_user(vaddr, buf, len)
+                iowrite32(dma_handle, mmio_base + DMA_REG_SRC);
+                iowrite32(*off, mmio_base + DMA_REG_DST);
+                iowrite32(len, mmio_base + DMA_REG_LEN);
+                iowrite32(DMA_CMD_SEND|DMA_CMD_IRQ, mmio_base + DMA_REG_CMD); -> start DMA
+                while(ioread32(mmio_base + 0x98) & 0x1 )
+                dma_free_coherent(&(pci_device->dev), len, vaddr, dma_handle)
+
+
+
+bytedance, vduse, commit: https://github.com/ssbandjl/linux/commit/c8a6153b6c59d95c0e091f053f6f180952ade91e
+kernel_doc: https://docs.kernel.org/userspace-api/vduse.html
+vduse：在用户空间引入 VDUSE - vDPA 设备，此 VDUSE 驱动程序支持在用户空间实现软件模拟的 vDPA 设备。vDPA 设备由 /dev/vduse/control 上的 ioctl(VDUSE_CREATE_DEV) 创建。然后将字符设备接口 (/dev/vduse/$NAME) 导出到用户空间进行设备模拟。为了使设备模拟更安全，设备的控制路径在内核中处理。引入了一种消息机制来将一些数据平面相关的控制消息转发到用户空间。并且在数据路径中，DMA 缓冲区将通过不同的方式映射到用户空间地址空间，具体取决于 vDPA 设备所连接的 vDPA 总线。在 virtio-vdpa 情况下，使用基于 MMU 的软件 IOTLB 来实现这一点。在 vhost-vdpa 情况下，DMA 缓冲区位于用户空间内存区域中，可以通过传输 shmfd 将其共享给 VDUSE 用户空间进程。有关 VDUSE 设计和使用的更多详细信息，请参阅后续文档提交
+drivers/vdpa/vdpa_user/vduse_dev.c
+module_init(vduse_init)
+    class_register(&vduse_class)
+        .name = "vduse"
+    alloc_chrdev_region(&vduse_major, 0, VDUSE_DEV_MAX, "vduse")
+    cdev_init(&vduse_ctrl_cdev, &vduse_ctrl_fops)
+    cdev_add(&vduse_ctrl_cdev, vduse_major, 1)
+    dev = device_create(&vduse_class, NULL, vduse_major, NULL, "control") -> /dev/vduse/control
+    cdev_init(&vduse_cdev, &vduse_dev_fops) -> /dev/vduse/$DEVICE
+    cdev_add(&vduse_cdev, MKDEV(MAJOR(vduse_major), 1), VDUSE_DEV_MAX - 1)
+    vduse_irq_wq = alloc_workqueue("vduse-irq", WQ_HIGHPRI | WQ_SYSFS | WQ_UNBOUND, 0)
+    vduse_irq_bound_wq = alloc_workqueue("vduse-irq-bound", WQ_HIGHPRI, 0)
+    vduse_domain_init
+        iova_cache_get() -> 内核启动时，通过该函数，声明了 struct iova 结构体专用的slab分配器
+            iova_cache = kmem_cache_create("iommu_iova", sizeof(struct iova), 0, SLAB_HWCACHE_ALIGN, NULL)
+    vduse_mgmtdev_init
+        vduse_mgmt->mgmt_dev.ops = &vdpa_dev_mgmtdev_ops
+        vdpa_mgmtdev_register(&vduse_mgmt->mgmt_dev)
+
+
+static const struct file_operations vduse_ctrl_fops = {
+	.owner		= THIS_MODULE,
+	.open		= vduse_open,
+	.release	= vduse_release,
+	.unlocked_ioctl	= vduse_ioctl,
+        case VDUSE_CREATE_DEV -> #define VDUSE_CREATE_DEV	_IOW(VDUSE_BASE, 0x02, struct vduse_dev_config)
+            vduse_create_dev(&config, buf, control->api_version)
+                dev = vduse_dev_create()
+                dev->bounce_size = VDUSE_BOUNCE_SIZE -> 64MB
+                idr_alloc(&vduse_idr, dev, 1, VDUSE_DEV_MAX, GFP_KERNEL)
+                dev->dev = device_create_with_groups(&vduse_class, NULL, MKDEV(MAJOR(vduse_major), dev->minor), dev, vduse_dev_groups, "%s", config->name) -> new kernel -> creates a device and registers it with sysfs
+                vduse_dev_init_vqs(dev, config->vq_align, config->vq_num)
+                    dev->vqs = kcalloc(dev->vq_num, sizeof(*dev->vqs), GFP_KERNEL)
+                    for (i = 0; i < vq_num; i++)
+                        dev->vqs[i]->irq_effective_cpu = IRQ_UNBOUND
+                        INIT_WORK(&dev->vqs[i]->inject, vduse_vq_irq_inject)
+                            vq->cb.callback(vq->cb.private)
+                        INIT_WORK(&dev->vqs[i]->kick, vduse_vq_kick_work) -> vduse_vq_kick(vq)
+                            if (vq->kickfd)
+                                eventfd_signal(vq->kickfd) -> vq->kickfd = ctx <- vduse_kickfd_setup
+                            else
+                                vq->kicked = true
+                        kobject_add(&dev->vqs[i]->kobj, &dev->dev->kobj, "vq%d", i)
+                __module_get(THIS_MODULE) -> 增加模块的引用计数
+	.compat_ioctl	= compat_ptr_ioctl,
+	.llseek		= noop_llseek,
+};
+
+static const struct file_operations vduse_dev_fops = {
+	.owner		= THIS_MODULE,
+	.open		= vduse_dev_open,
+	.release	= vduse_dev_release,
+	.read_iter	= vduse_dev_read_iter,
+	.write_iter	= vduse_dev_write_iter,
+	.poll		= vduse_dev_poll,
+	.unlocked_ioctl	= vduse_dev_ioctl,
+        case VDUSE_VQ_SETUP_KICKFD
+            vduse_kickfd_setup(dev, &eventfd)
+                ctx = eventfd_ctx_fdget(eventfd->fd)
+                vq->kickfd = ctx
+	.compat_ioctl	= compat_ptr_ioctl,
+	.llseek		= noop_llseek,
+};
+
+static const struct vdpa_mgmtdev_ops vdpa_dev_mgmtdev_ops = {
+	.dev_add = vdpa_dev_add,
+        dev = vduse_find_dev(name)
+            idr_for_each_entry(&vduse_idr, dev, id) <- static DEFINE_IDR(vduse_idr
+        vduse_dev_init_vdpa(dev, name)
+            vdev = vdpa_alloc_device(struct vduse_vdpa, vdpa, dev->dev, &vduse_vdpa_config_ops, 1, 1, name, true)
+            set_dma_ops(&vdev->vdpa.dev, &vduse_dev_dma_ops)
+        dev->domain = vduse_domain_create(VDUSE_IOVA_SIZE - 1, dev->bounce_size)
+            domain->iotlb = vhost_iotlb_alloc(0, 0)
+            file = anon_inode_getfile("[vduse-domain]", &vduse_domain_fops, domain, O_RDWR)
+            init_iova_domain(&domain->stream_iovad,	PAGE_SIZE, IOVA_START_PFN)
+            iova_domain_init_rcaches(&domain->stream_iovad)
+        _vdpa_register_device(&dev->vdev->vdpa, dev->vq_num) -> __vdpa_register_device(vdev, nvqs)
+            dev = bus_find_device(&vdpa_bus, NULL, dev_name(&vdev->dev), vdpa_name_match)
+            device_add(&vdev->dev)
+	.dev_del = vdpa_dev_del,
+};
+
+
+static const struct dma_map_ops vduse_dev_dma_ops = {
+	.map_page = vduse_dev_map_page,
+	.unmap_page = vduse_dev_unmap_page,
+	.alloc = vduse_dev_alloc_coherent,
+	.free = vduse_dev_free_coherent,
+	.max_mapping_size = vduse_dev_max_mapping_size,
+};
+
+static const struct vdpa_config_ops vduse_vdpa_config_ops = {
+	.set_vq_address		= vduse_vdpa_set_vq_address,
+	.kick_vq		= vduse_vdpa_kick_vq,
+        schedule_work(&vq->kick)
+        vduse_vq_kick(vq)
+	.set_vq_cb		= vduse_vdpa_set_vq_cb,
+	.set_vq_num             = vduse_vdpa_set_vq_num,
+	.set_vq_ready		= vduse_vdpa_set_vq_ready,
+	.get_vq_ready		= vduse_vdpa_get_vq_ready,
+	.set_vq_state		= vduse_vdpa_set_vq_state,
+	.get_vq_state		= vduse_vdpa_get_vq_state,
+	.get_vq_align		= vduse_vdpa_get_vq_align,
+	.get_device_features	= vduse_vdpa_get_device_features,
+	.set_driver_features	= vduse_vdpa_set_driver_features,
+	.get_driver_features	= vduse_vdpa_get_driver_features,
+	.set_config_cb		= vduse_vdpa_set_config_cb,
+	.get_vq_num_max		= vduse_vdpa_get_vq_num_max,
+	.get_device_id		= vduse_vdpa_get_device_id,
+	.get_vendor_id		= vduse_vdpa_get_vendor_id,
+	.get_status		= vduse_vdpa_get_status,
+	.set_status		= vduse_vdpa_set_status,
+	.get_config_size	= vduse_vdpa_get_config_size,
+	.get_config		= vduse_vdpa_get_config,
+	.set_config		= vduse_vdpa_set_config,
+	.get_generation		= vduse_vdpa_get_generation,
+	.set_vq_affinity	= vduse_vdpa_set_vq_affinity,
+	.get_vq_affinity	= vduse_vdpa_get_vq_affinity,
+	.reset			= vduse_vdpa_reset,
+	.set_map		= vduse_vdpa_set_map,
+	.free			= vduse_vdpa_free,
+};
+
+
+static const struct file_operations vduse_domain_fops = {
+	.owner = THIS_MODULE,
+	.mmap = vduse_domain_mmap,
+	.release = vduse_domain_release,
+};
+
+
+kvm test,
+tools/testing/selftests/kvm/aarch64/page_fault_test.c
+    vm = ____vm_create(VM_SHAPE(mode))
+    setup_memslots(vm, p)
+    kvm_vm_elf_load
+    setup_ucall
+    vm_vcpu_add(vm, 0, guest_code)
+    setup_gva_maps
+        region = vm_get_mem_region(vm, MEM_REGION_TEST_DATA)
+        virt_pg_map(vm, TEST_GVA, region->region.guest_phys_addr) -> virt_arch_pg_map(vm, vaddr, paddr)
+            __virt_pg_map(vm, vaddr, paddr, PG_LEVEL_4K)
+                pml4e = virt_create_upper_pte(vm, &vm->pgd, vaddr, paddr, PG_LEVEL_512G, level)
+                    virt_get_pte
+                    vm_alloc_page_table
+                        vm_phy_page_alloc(vm, KVM_GUEST_PAGE_TABLE_MIN_PADDR, vm->memslots[MEM_REGION_PT])
+                            vm_phy_pages_alloc(vm, 1, paddr_min, memslot)
+                pdpe = virt_create_upper_pte(vm, pml4e, vaddr, paddr, PG_LEVEL_1G, level)
+                pde = virt_create_upper_pte(vm, pdpe, vaddr, paddr, PG_LEVEL_2M, level)
+                pte = virt_get_pte(vm, pde, vaddr, PG_LEVEL_4K)
+        pte_gpa = addr_hva2gpa(vm, virt_get_pte_hva(vm, TEST_GVA))
+    vcpu_run_loop
+
+
+
+vu_notify
+    vhost_user_set_vring_state(vu_dev, VHOST_USER_VRING_KICK, vq->index, 0)
+
+
+
+中断和kick vq
+Interrupts and virtqueue kicks are relayed via eventfd (two yellow arrows going to and from the “vhost subsystem” box 如下图两个黄框). The vhost-vDPA adapter sets up eventfds via VHOST_SET_VRING_KICK (for virtqueue kick) and VHOST_SET_VRING_CALL (for virtqueue interrupt). When vhost-vDPA adapter needs to kick a specific virtqueue, it will write to that eventfd. The vhost-vDPA device will be notified and forward the kick request to the vDPA VF driver (which is one example of a vDPA device driver) via vDPA bus operations. When an interrupt is raised by a specific virtqueue, the vhost-vDPA device writes to the eventfd and wakes up the vhost-vDPA adapter in the userspace
+
+
+
+
+vdpa mgmtdev show
+vdpa/vdpa.c -> main
+    vdpa = vdpa_alloc()
+        vdpa->indent = alloc_indent_mem()
+    vdpa_init(vdpa)
+        mnlu_gen_socket_open(&vdpa->nlg, VDPA_GENL_NAME, VDPA_GENL_VERSION)
+            nlg->nl = mnlu_socket_open(NETLINK_GENERIC)
+        new_json_obj_plain(vdpa->json_output)
+            _jw = jsonw_new(stdout)
+            jsonw_pretty(_jw, true)
+    vdpa_cmd(vdpa, argc, argv)
+        cmd_mgmtdev(vdpa, argc - 1, argv + 1)
+            cmd_mgmtdev_show(vdpa, argc - 1, argv + 1)
+                mnlu_gen_socket_cmd_prepare(&vdpa->nlg, VDPA_CMD_MGMTDEV_GET, flags)
+                mnlu_gen_socket_sndrcv(&vdpa->nlg, nlh, cmd_mgmtdev_show_cb, vdpa)
+        or cmd_dev(vdpa, argc - 1, argv + 1)
+
+
+
+
+enum vdpa_command {
+	VDPA_CMD_UNSPEC,
+	VDPA_CMD_MGMTDEV_NEW,
+	VDPA_CMD_MGMTDEV_GET,		/* can dump */
+	VDPA_CMD_DEV_NEW, <- vdpa dev add mgmtdev vdpasim_net name foo2
+	VDPA_CMD_DEV_DEL,
+	VDPA_CMD_DEV_GET,		/* can dump */
+};
+
+
+red_black_tree, rb_tree:
+static inline bool vhost_iotlb_itree_augment_compute_max(struct vhost_iotlb_map *node, bool exit) { 
+    struct vhost_iotlb_map *child; 
+    __u64 max = ((node)->last); 
+    if (node->rb.rb_left) { 
+        child = container_of(node->rb.rb_left, struct vhost_iotlb_map, rb); 
+        if (child->__subtree_last > max) 
+            max = child->__subtree_last; 
+    } 
+    if (node->rb.rb_right) { 
+        child = container_of(node->rb.rb_right, struct vhost_iotlb_map, rb); 
+        if (child->__subtree_last > max) 
+            max = child->__subtree_last; 
+    } 
+    if (exit && node->__subtree_last == max) 
+        return true; 
+    node->__subtree_last = max; 
+    return false; 
+} 
+
+static inline void vhost_iotlb_itree_augment_propagate(struct rb_node *rb, struct rb_node *stop) { 
+    while (rb != stop) { 
+        struct vhost_iotlb_map *node = container_of(rb, struct vhost_iotlb_map, rb); 
+        if (vhost_iotlb_itree_augment_compute_max(node, true)) 
+            break; 
+        rb = ((struct rb_node *)((&node->rb)->__rb_parent_color & ~3)); 
+    } 
+} 
+
+static inline void vhost_iotlb_itree_augment_copy(struct rb_node *rb_old, struct rb_node *rb_new) { 
+    struct vhost_iotlb_map *old = container_of(rb_old, struct vhost_iotlb_map, rb); 
+    struct vhost_iotlb_map *new = container_of(rb_new, struct vhost_iotlb_map, rb); 
+    new->__subtree_last = old->__subtree_last; 
+} 
+
+static void vhost_iotlb_itree_augment_rotate(struct rb_node *rb_old, struct rb_node *rb_new) { 
+    struct vhost_iotlb_map *old = container_of(rb_old, struct vhost_iotlb_map, rb); 
+    struct vhost_iotlb_map *new = container_of(rb_new, struct vhost_iotlb_map, rb); 
+    new->__subtree_last = old->__subtree_last; 
+    vhost_iotlb_itree_augment_compute_max(old, false); 
+} 
+
+static const struct rb_augment_callbacks vhost_iotlb_itree_augment = { 
+    .propagate = vhost_iotlb_itree_augment_propagate, 
+    .copy = vhost_iotlb_itree_augment_copy, 
+    .rotate = vhost_iotlb_itree_augment_rotate 
+}; 
+
+static inline void vhost_iotlb_itree_insert(struct vhost_iotlb_map *node, struct rb_root_cached *root) { 
+    struct rb_node **link = &root->rb_root.rb_node, 
+    *rb_parent = NULL; 
+    __u64 start = ((node)->start), 
+    last = ((node)->last); 
+    struct vhost_iotlb_map *parent; 
+    bool leftmost = true; 
+    while (*link) { 
+        rb_parent = *link; parent = container_of(rb_parent, struct vhost_iotlb_map, rb); 
+        if (parent->__subtree_last < last) 
+            parent->__subtree_last = last; 
+        if (start < ((parent)->start)) 
+            link = &parent->rb.rb_left; 
+        else { 
+            link = &parent->rb.rb_right; 
+            leftmost = false; 
+        } 
+    } 
+    node->__subtree_last = last; 
+    rb_link_node(&node->rb, rb_parent, link); 
+    rb_insert_augmented_cached(&node->rb, root, leftmost, &vhost_iotlb_itree_augment); 
+} 
+
+static inline void vhost_iotlb_itree_remove(struct vhost_iotlb_map *node, struct rb_root_cached *root) { 
+    rb_erase_augmented_cached(&node->rb, root, &vhost_iotlb_itree_augment); 
+} 
+
+static struct vhost_iotlb_map * vhost_iotlb_itree_subtree_search(struct vhost_iotlb_map *node, __u64 start, __u64 last) { 
+    while (true) { 
+        if (node->rb.rb_left) { 
+            struct vhost_iotlb_map *left = container_of(node->rb.rb_left, struct vhost_iotlb_map, rb); 
+            if (start <= left->__subtree_last) { 
+                node = left; 
+                continue; 
+            } 
+        } 
+        if (((node)->start) <= last) { 
+            if (start <= ((node)->last)) 
+                return node; 
+            if (node->rb.rb_right) { 
+                node = container_of(node->rb.rb_right, struct vhost_iotlb_map, rb); 
+                if (start <= node->__subtree_last) 
+                    continue; 
+            } 
+        } 
+        return NULL; 
+    } 
+} 
+
+static inline struct vhost_iotlb_map * vhost_iotlb_itree_iter_first(struct rb_root_cached *root, __u64 start, __u64 last) { 
+    struct vhost_iotlb_map *node, *leftmost; 
+    if (!root->rb_root.rb_node) 
+        return NULL; 
+    node = container_of(root->rb_root.rb_node, struct vhost_iotlb_map, rb); 
+    if (node->__subtree_last < start) 
+        return NULL; 
+    leftmost = container_of(root->rb_leftmost, struct vhost_iotlb_map, rb); 
+    if (((leftmost)->start) > last) 
+        return NULL; 
+    return vhost_iotlb_itree_subtree_search(node, start, last); 
+} 
+
+static inline struct vhost_iotlb_map * vhost_iotlb_itree_iter_next(struct vhost_iotlb_map *node, __u64 start, __u64 last) { 
+    struct rb_node *rb = node->rb.rb_right, *prev; 
+    while (true) { 
+        if (rb) { 
+            struct vhost_iotlb_map *right = container_of(rb, struct vhost_iotlb_map, rb); 
+            if (start <= right->__subtree_last) 
+                return vhost_iotlb_itree_subtree_search(right, start, last); 
+        } 
+        do { 
+            rb = ((struct rb_node *)((&node->rb)->__rb_parent_color & ~3)); 
+            if (!rb) 
+                return NULL; 
+            prev = &node->rb; 
+            node = container_of(rb, struct vhost_iotlb_map, rb); 
+            rb = node->rb.rb_right; 
+        } while (prev == rb); 
+        if (last < ((node)->start)) 
+            return NULL; 
+        else if (start <= ((node)->last)) 
+            return node; 
+    } 
+}
+
+
+
+module_virtio_driver(virtio_balloon_driver)
+virtio_balloon_driver
+
+
+
+print_val_func
+    virtqueue_add_outbuf(vq, &sg, 1, vb, GFP_KERNEL)
+    virtqueue_kick(vq)
+
+
+insmod virtio_scsi.ko -> drivers/scsi/virtio_scsi.c -> module_init(virtio_scsi_init)
+    virtscsi_cmd_cache = KMEM_CACHE(virtio_scsi_cmd, 0)
+    virtscsi_cmd_pool = mempool_create_slab_pool(VIRTIO_SCSI_MEMPOOL_SZ, virtscsi_cmd_cache)
+    register_virtio_driver(&virtio_scsi_driver)
+
+
+static struct virtio_driver virtio_scsi_driver = {
+	.feature_table = features,
+	.feature_table_size = ARRAY_SIZE(features),
+	.driver.name = KBUILD_MODNAME,
+	.driver.owner = THIS_MODULE,
+	.id_table = id_table, -> #define VIRTIO_ID_SCSI			8 /* virtio scsi */
+	.probe = virtscsi_probe,
+        num_queues = virtscsi_config_get(vdev, num_queues) ? : 1
+        shost = scsi_host_alloc(&virtscsi_host_template, struct_size(vscsi, req_vqs, num_queues))
+            shost->shost_gendev.bus = &scsi_bus_type;
+	        shost->shost_gendev.type = &scsi_host_type;
+            shost->ehandler = kthread_run(scsi_error_handler, shost, "scsi_eh_%d", shost->host_no)
+            ...
+        virtscsi_init(vdev, vscsi)
+            callbacks[0] = virtscsi_ctrl_done
+            callbacks[1] = virtscsi_event_done
+            callbacks[i] = virtscsi_req_done
+                virtscsi_complete_cmd
+            virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &desc)
+            virtscsi_init_vq(&vscsi->ctrl_vq, vqs[0])
+            virtscsi_init_vq(&vscsi->event_vq, vqs[1])
+            virtscsi_init_vq(&vscsi->req_vqs[i - VIRTIO_SCSI_VQ_BASE], vqs[i])
+        shost->can_queue = virtqueue_get_vring_size(vscsi->req_vqs[0].vq)
+        scsi_add_host(shost, &vdev->dev) -> scsi_add_host_with_dma
+            scsi_init_sense_cache(shost)
+            scsi_mq_setup_tags(shost)
+            device_add(&shost->shost_gendev)
+            scsi_sysfs_add_host(shost)
+        virtio_device_ready(vdev)
+        scsi_scan_host(shost)
+            do_scsi_scan_host
+                scsi_scan_host_selected
+                    scsi_scan_channel -> __scsi_scan_target
+                        starget = scsi_alloc_target(parent, channel, id)
+                        scsi_probe_and_add_lun
+                            scsi_probe_lun
+                            scsi_add_lun
+                                transport_configure_device(&sdev->sdev_gendev)
+                                scsi_device_set_state(sdev, SDEV_RUNNING)
+                                scsi_sysfs_add_sdev
+#ifdef CONFIG_PM_SLEEP
+	.freeze = virtscsi_freeze,
+	.restore = virtscsi_restore,
+#endif
+	.remove = virtscsi_remove,
+};
+
+
+
+static const struct scsi_host_template virtscsi_host_template = {
+	.module = THIS_MODULE,
+	.name = "Virtio SCSI HBA",
+	.proc_name = "virtio_scsi",
+	.this_id = -1,
+	.cmd_size = sizeof(struct virtio_scsi_cmd),
+	.queuecommand = virtscsi_queuecommand, <- scsi_dispatch_cmd
+        dev_dbg(&sc->device->sdev_gendev, "cmd %p CDB: %#02x\n", sc, sc->cmnd[0])
+        virtio_scsi_init_hdr_pi(vscsi->vdev, &cmd->req.cmd_pi, sc)
+        or virtio_scsi_init_hdr(vscsi->vdev, &cmd->req.cmd, sc)
+            cmd->lun[2] = (sc->device->lun >> 8) | 0x40
+            cmd->task_attr = VIRTIO_SCSI_S_SIMPLE
+        kick = (sc->flags & SCMD_LAST) != 0
+        memcpy(cmd->req.cmd.cdb, sc->cmnd, sc->cmd_len)
+        virtscsi_add_cmd(req_vq, cmd, req_size, sizeof(cmd->resp.cmd), kick) -> add a virtio_scsi_cmd to a virtqueue, optionally kick it
+            __virtscsi_add_cmd(vq->vq, cmd, req_size, resp_size)
+                sg_init_one(&req, &cmd->req, req_size)
+                sg_init_one(&resp, &cmd->resp, resp_size)
+                virtqueue_add_sgs(vq, sgs, out_num, in_num, cmd, GFP_ATOMIC) -> add io buf to vq, then choose to kick qemu
+            needs_kick = virtqueue_kick_prepare(vq->vq)
+            if (needs_kick)
+                virtqueue_notify(vq->vq) -> check qemu project func: virtio_add_queue in "hw/scsi/virtio-scsi.c"
+	.mq_poll = virtscsi_mq_poll,
+	.commit_rqs = virtscsi_commit_rqs,
+	.change_queue_depth = virtscsi_change_queue_depth,
+	.eh_abort_handler = virtscsi_abort,
+	.eh_device_reset_handler = virtscsi_device_reset,
+        virtscsi_tmf -> [SCSI] virtio-scsi：基于 QEMU 的虚拟机的 SCSI 驱动程序 virtio-scsi HBA 是基于 QEMU 的虚拟机（包括 KVM）的替代存储堆栈的基础。与 virtio-blk 相比，它更具可扩展性，因为它支持单个 PCI 插槽上的多个 LUN）、功能更强大（它更容易支持主机设备到客户机的直通）并且更易于扩展（QEMU 实现的新 SCSI 功能不需要更新客户机中的驱动程序 -> commit: https://github.com/ssbandjl/linux/commit/4fe74b1cb051dc9d47a80e263c388cf1651783d4
+            if (virtscsi_add_cmd(&vscsi->ctrl_vq, cmd, sizeof cmd->req.tmf, sizeof cmd->resp.tmf, true) < 0)
+	.eh_timed_out = virtscsi_eh_timed_out,
+	.slave_alloc = virtscsi_device_alloc,
+	.dma_boundary = UINT_MAX,
+	.map_queues = virtscsi_map_queues,
+	.track_queue_depth = 1,
+};
+
+
+
+blk_mq_dispatch_rq_list
+    blk_mq_commit_rqs
+        scsi_commit_rqs
+            commit_rqs(shost, hctx->queue_num)
+
+
+
+intel ifcvf, Intel IFC VF VDPA driver, vdpa, Intel FPGA 100G VF (IFCVF)
+modprobe ifcvf
+insmod ifcvf.ko
+drivers/vdpa/ifcvf/ifcvf_main.c
+module_pci_driver(ifcvf_driver) -> ifcvf_probe
+    pcim_enable_device
+    pcim_iomap_regions(pdev, BIT(0) | BIT(2) | BIT(4), IFCVF_DRIVER_NAME) -> "ifcvf"
+    dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64))
+    devm_add_action_or_reset(dev, ifcvf_free_irq_vectors, pdev)
+    pci_set_master(pdev)
+    ifcvf_mgmt_dev = kzalloc(sizeof(struct ifcvf_vdpa_mgmt_dev), GFP_KERNEL)
+    vf->base = pcim_iomap_table(pdev) -> array of mapped addresses indexed by BAR -> here get first addr
+    ifcvf_init_hw(vf, pdev) -> vDPA/ifcvf：支持用户空间查询管理设备的功能和 MQ 适应当前的 netlink 接口，此提交允许用户空间查询管理设备的功能位和 MQ 功能。目前 vDPA 设备和管理设备都是 VF 本身，因此此 ifcvf 应在设置 struct vdpa_mgmt_dev 之前在probe() 中初始化 virtio 功能
+        pci_read_config_byte(pdev, PCI_CAPABILITY_LIST, &pos)
+        ifcvf_read_config_range(pdev, (u32 *)&cap, sizeof(cap), pos)
+            pci_read_config_dword(dev, where + i, val + i / 4)
+        hw->common_cfg = get_cap_addr(hw, &cap)
+        hw->notify_base = get_cap_addr(hw, &cap)
+        hw->isr = get_cap_addr(hw, &cap)
+        hw->nr_vring = vp_ioread16(&hw->common_cfg->num_queues)
+        hw->vring = kzalloc(sizeof(struct vring_info) * hw->nr_vring, GFP_KERNEL)
+        vp_iowrite16(i, &hw->common_cfg->queue_select)
+        IFCVF_DBG(pdev, "PCI capability mapping: common cfg: %p, notify base: %p\n, isr cfg: %p, device cfg: %p, multiplier: %u\n",hw->common_cfg, hw->notify_base, hw->isr, hw->dev_cfg, hw->notify_off_multiplier)
+    case VIRTIO_ID_BLOCK:
+        ifcvf_mgmt_dev->mdev.id_table = id_table_blk; -> VIRTIO_ID_BLOCK
+    ifcvf_mgmt_dev->mdev.ops = &ifcvf_vdpa_mgmt_dev_ops
+        .dev_add = ifcvf_vdpa_dev_add,
+            adapter = vdpa_alloc_device(struct ifcvf_adapter, vdpa, &pdev->dev, &ifc_vdpa_ops, 1, 1, NULL, false)
+            dev_set_name(&vdpa_dev->dev, "vdpa%u", vdpa_dev->index)
+            _vdpa_register_device(&adapter->vdpa, vf->nr_vring)
+        .dev_del = ifcvf_vdpa_dev_del
+    vdpa_mgmtdev_register(&ifcvf_mgmt_dev->mdev)
+    pci_set_drvdata(pdev, ifcvf_mgmt_dev)
+
+
+
+static const struct vdpa_config_ops ifc_vdpa_ops = {
+	.get_device_features = ifcvf_vdpa_get_device_features,
+	.set_driver_features = ifcvf_vdpa_set_driver_features,
+	.get_driver_features = ifcvf_vdpa_get_driver_features,
+	.get_status	= ifcvf_vdpa_get_status,
+        vp_ioread8(&hw->common_cfg->device_status)
+	.set_status	= ifcvf_vdpa_set_status,
+        vp_iowrite8(status, &hw->common_cfg->device_status)
+	.reset		= ifcvf_vdpa_reset,
+        ifcvf_stop(vf)
+            ifcvf_synchronize_irq(hw)
+                for (i = 0; i < nvectors; i++)
+                    irq = pci_irq_vector(pdev, i)
+                    synchronize_irq(irq)
+            ifcvf_reset_vring(hw)
+                hw->vring[qid].cb.callback = NULL
+                hw->vring[qid].cb.private = NULL
+                ifcvf_set_vq_vector(hw, qid, VIRTIO_MSI_NO_VECTOR)
+                    vp_iowrite16(qid, &cfg->queue_select);
+                    vp_iowrite16(vector, &cfg->queue_msix_vector);
+            ifcvf_reset_config_handler(hw)
+                hw->config_cb.callback = NULL
+                vp_iowrite16(vector,  &cfg->msix_config)
+        ifcvf_reset(vf)
+            ifcvf_set_status(hw, 0)
+	.get_vq_num_max	= ifcvf_vdpa_get_vq_num_max,
+        queue_size = vp_ioread16(&hw->common_cfg->queue_size)
+	.get_vq_state	= ifcvf_vdpa_get_vq_state,
+	.set_vq_state	= ifcvf_vdpa_set_vq_state,
+	.set_vq_cb	= ifcvf_vdpa_set_vq_cb,
+	.set_vq_ready	= ifcvf_vdpa_set_vq_ready,
+	.get_vq_ready	= ifcvf_vdpa_get_vq_ready,
+	.set_vq_num	= ifcvf_vdpa_set_vq_num,
+	.set_vq_address	= ifcvf_vdpa_set_vq_address,
+        vp_iowrite16(qid, &cfg->queue_select);
+        vp_iowrite64_twopart(desc_area, &cfg->queue_desc_lo, &cfg->queue_desc_hi);
+        vp_iowrite64_twopart(driver_area, &cfg->queue_avail_lo, &cfg->queue_avail_hi);
+        vp_iowrite64_twopart(device_area, &cfg->queue_used_lo, &cfg->queue_used_hi);
+	.get_vq_irq	= ifcvf_vdpa_get_vq_irq,
+        return vf->vring[qid].irq
+	.kick_vq	= ifcvf_vdpa_kick_vq,
+        ifcvf_notify_queue(vf, qid)
+            vp_iowrite16(qid, hw->vring[qid].notify_addr)
+	.get_generation	= ifcvf_vdpa_get_generation,
+	.get_device_id	= ifcvf_vdpa_get_device_id,
+	.get_vendor_id	= ifcvf_vdpa_get_vendor_id,
+	.get_vq_align	= ifcvf_vdpa_get_vq_align,
+	.get_vq_group	= ifcvf_vdpa_get_vq_group,
+	.get_config_size	= ifcvf_vdpa_get_config_size,
+	.get_config	= ifcvf_vdpa_get_config,
+        vp_ioread8(&hw->common_cfg->config_generation)
+	.set_config	= ifcvf_vdpa_set_config,
+        vp_iowrite8(*p++, hw->dev_cfg + offset + i)
+	.set_config_cb  = ifcvf_vdpa_set_config_cb,
+	.get_vq_notification = ifcvf_get_vq_notification,
+        area.addr = vf->vring[idx].notify_pa
+        area.size = PAGE_SIZE 
+        or area.size = vf->notify_off_multiplier
+};
+
+
+
+
+
+/boot – Stores actual kernel and related file such system man and initrd images.
+/etc or /boot/grub – Stores grub.conf file (most distro use /boot/grub these days).
+/lib/modules/KERNEL-VERSION/* (/lib/modules/$(uname -r))- Linux device drivers (modules)
+
+remove kernel:
+dpkg --list | grep 5.4.0-25
+dpkg --list | grep kernel-image
+sudo apt --purge remove linux-headers_xxx

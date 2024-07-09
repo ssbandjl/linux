@@ -1084,8 +1084,7 @@ bool blk_mq_dispatch_rq_list
 						if (protect && sdkp->protection_type == T10_PI_TYPE2_PROTECTION) -> T10保护信息(T10 Protection Information (PI))
 						sd_setup_rw10_cmnd(cmd, write, lba, nr_blocks -> static blk_status_t sd_setup_rw10_cmnd -> 打印日志: SCSI_LOG_  -> SCSI_LOG_HLQUEUE -> [66521.609478] sd 6:0:0:0: [sda] tag#23 sd_setup_read_write_cmnd: block=893164736, count=8
 							cmd->cmd_len = 10
-
-			static int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
+			reason = scsi_dispatch_cmd(cmd) -> static int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 				trace_scsi_dispatch_cmd_start(cmd)
 				rtn = host->hostt->queuecommand(host, cmd) -> .queuecommand           = iscsi_queuecommand, -> int iscsi_queuecommand
 					iscsi_session_chkready -> 检查会话通过iscsi_session_chkready进行。当会话状态不是ISCSI_SESSION_LOGGED_IN时，不适合处理scsi指令。链接检查通过链接是否存在、链接状态、链接可接收的命令窗口是否达到最大值。这几个方面判断
@@ -1094,7 +1093,7 @@ bool blk_mq_dispatch_rq_list
 						ISCSI_DBG_SESSION
 					list_add_tail(&task->running, &conn->cmdqueue) -> 将任务插入命令队列 cmdqueue -> 由 iscsi_xmitworker 线程发送命令
 					iscsi_conn_queue_xmit(conn)
-
+			return BLK_STS_OK
 
 static void iscsi_xmitworker(struct work_struct *work)
 	do iscsi_data_xmit(conn)
