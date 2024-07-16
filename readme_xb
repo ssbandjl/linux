@@ -12163,6 +12163,57 @@ virtio_vdpa drv vhost_vdpa drv
                 |
         vDPA hardware
 
+
+root@host101:/dev# tree -L 100 /sys/bus/vdpa/
+/sys/bus/vdpa/
+├── devices
+├── drivers
+├── drivers_autoprobe
+├── drivers_probe
+└── uevent
+
+
+modprobe -a virtio-vdpa vhost-vdpa
+root@host101:/sys/bus/vdpa# tree -L 10
+.
+├── devices
+├── drivers
+│   ├── vhost_vdpa
+│   │   ├── bind
+│   │   ├── module -> ../../../../module/vhost_vdpa
+│   │   ├── uevent
+│   │   └── unbind
+│   └── virtio_vdpa
+│       ├── bind
+│       ├── module -> ../../../../module/virtio_vdpa
+│       ├── uevent
+│       └── unbind
+├── drivers_autoprobe
+├── drivers_probe
+└── uevent
+
+root@host101:/sys/bus/vdpa# vdpa dev add mgmtdev vdpasim_blk name vdpa0
+root@host101:/sys/bus/vdpa# tree -L 10
+.
+├── devices
+│   └── vdpa0 -> ../../../devices/vdpa0
+├── drivers
+│   ├── vhost_vdpa
+│   │   ├── bind
+│   │   ├── module -> ../../../../module/vhost_vdpa
+│   │   ├── uevent
+│   │   └── unbind
+│   └── virtio_vdpa
+│       ├── bind
+│       ├── module -> ../../../../module/virtio_vdpa
+│       ├── uevent
+│       ├── unbind
+│       └── vdpa0 -> ../../../../devices/vdpa0
+├── drivers_autoprobe
+├── drivers_probe
+└── ueven
+
+
 static int vdpa_init(void)
     bus_register(&vdpa_bus)
     genl_register_family(&vdpa_nl_family) -> netlink -> vdpa mgmtdev show -jp
@@ -12220,7 +12271,7 @@ static struct bus_type vdpa_bus = {
 
 
 
-modprobe vhost_vdpa
+modprobe vhost_vdpa, insmod vhost_vdpa.ko
 module_init(vhost_vdpa_init); -> vhost：引入基于 vDPA 的后端，此补丁引入了基于 vDPA 的 vhost 后端。此后端建立在 virtio-vDPA 中定义的相同接口之上，并为用户空间提供通用 vhost 接口以加速客户机中的 virtio 设备。此后端作为 vDPA 设备驱动程序实现，基于 virtio-vDPA 中使用的相同操作。它将创建名为 vhost-vdpa-$index 的字符设备条目供用户空间使用。用户空间可以在此字符设备上使用 vhost ioctls 来设置后端。Vhost ioctls 经过扩展，使其与类型无关并像 virtio 设备一样运行，这有助于消除类型特定的 API，例如 vhost_net/scsi/vsock 所做的那样, 对于内存映射，IOTLB API 是 vhost-vDPA 的强制要求，这意味着用户空间驱动程序需要使用 VHOST_IOTLB_UPDATE/VHOST_IOTLB_INVALIDATE 来添加或删除特定用户空间内存区域的映射。vhost-vDPA API 被设计为类型无关的，但它只允许当前阶段的网络设备。由于缺乏控制 virtqueue 支持，一些功能被 vhost-vdpa 过滤掉。我们将在不久的将来启用更多功能和设备, commit -> https://github.com/ssbandjl/linux/commit/4c8cf31885f69e86be0b5b9e6677a26797365e1d
     alloc_chrdev_region(&vhost_vdpa_major, 0, VHOST_VDPA_DEV_MAX, "vhost-vdpa")
     vdpa_register_driver(&vhost_vdpa_driver) -> vhost_vdpa_probe -> iproute2 add vdpa device, then match driver and divice, exec this probe
@@ -12275,7 +12326,37 @@ static const struct file_operations vhost_vdpa_fops = {
             ops->reset(vdev)
         for (i = 0; i < nvqs; i++)
             vqs[i]->handle_kick = handle_vq_kick
-        vhost_dev_init(dev, vqs, nvqs, 0, 0, 0, false, vhost_vdpa_process_iotlb_msg)
+        vhost_dev_init(dev, vqs, nvqs, 0, 0, 0, false, vhost_vdpa_process_iotlb_msg) -> dev->msg_handler = msg_handler
+            if (msg->type == VHOST_IOTLB_UPDATE || msg->type == VHOST_IOTLB_BATCH_BEGIN)
+                as = vhost_vdpa_find_alloc_as(v, asid)
+            else
+                iotlb = asid_to_iotlb(v, asid)
+            case VHOST_IOTLB_UPDATE
+                vhost_vdpa_process_iotlb_update(v, iotlb, msg)
+                    vhost_iotlb_itree_first(iotlb, msg->iova, msg->iova + msg->size - 1) -> return the first overlapped range
+                         vhost_iotlb_itree_iter_first(&iotlb->root, start, last)
+                    if (vdpa->use_va)
+                        return vhost_vdpa_va_map(v, iotlb, msg->iova, msg->size, msg->uaddr, msg->perm)
+                            vma = find_vma(dev->mm, uaddr) -> 查找 addr 所在的第一个 VMA，如果没有则为 NULL，应使用 mm->mmap_lock 进行调用，至少保持读锁定
+                            map_file = kzalloc(sizeof(*map_file), GFP_KERNEL)
+                            vhost_vdpa_map(v, iotlb, map_iova, map_size, uaddr, perm, map_file)
+                                vhost_iotlb_add_range_ctx(iotlb, iova, iova + size - 1, pa, perm, opaque)
+                                if (ops->dma_map)
+                                    ops->dma_map(vdpa, asid, iova, size, pa, perm, opaque)
+                                else iommu_map(v->domain, iova, pa, size, perm_to_iommu_flags(perm), GFP_KERNEL_ACCOUNT)
+                    vhost_vdpa_pa_map(v, iotlb, msg->iova, msg->size, msg->uaddr, msg->perm)
+                        page_list = (struct page **) __get_free_page(GFP_KERNEL)
+                        npages = PFN_UP(size + (iova & ~PAGE_MASK))
+                        pinned = pin_user_pages(cur_base, sz2pin, gup_flags, page_list)
+                        map_pfn = page_to_pfn(page_list[0])
+                        while (npages)
+                            vhost_vdpa_map(v, iotlb, iova, csize, PFN_PHYS(map_pfn), perm, NULL)
+                        vhost_vdpa_map(v, iotlb, iova, PFN_PHYS(last_pfn - map_pfn + 1), PFN_PHYS(map_pfn), perm, NULL) -> Pin the rest chunk
+            case VHOST_IOTLB_BATCH_BEGIN
+                v->batch_asid = asid
+                v->in_batch = true;
+            case VHOST_IOTLB_BATCH_END
+                ops->set_map(vdpa, asid, iotlb)
         vhost_vdpa_alloc_domain(v)
             v->domain = iommu_domain_alloc(bus) -> 在我的理解中，domain这个词是从intel的VT-d文档中继承下来的，其他平台有各自的叫法，比如ARM下叫context。一个domain应该是指一个独立的iommu映射上下文。处于同一个domain中的设备使用同一套映射做地址转换（对于mmio来说就是独立的页表）。core层中使用struct iommu_domain表示一个domain
             iommu_attach_device(v->domain, dma_dev)
@@ -12289,7 +12370,10 @@ static const struct file_operations vhost_vdpa_fops = {
 	.release	= vhost_vdpa_release,
 	.write_iter	= vhost_vdpa_chr_write_iter,
         vhost_chr_write_iter
-            vhost_process_iotlb_msg
+            case VHOST_IOTLB_MSG
+            case VHOST_IOTLB_MSG_V2
+            ret = dev->msg_handler(dev, asid, &msg) -> vhost_vdpa_process_iotlb_msg
+            ret = vhost_process_iotlb_msg(dev, asid, &msg)
                 case VHOST_IOTLB_UPDATE
                     vhost_iotlb_notify_vq
                         vhost_poll_queue(&node->vq->poll)
@@ -12366,6 +12450,8 @@ static const struct file_operations vhost_vdpa_fops = {
                             kzalloc
                             vhost_iotlb_init(iotlb, limit, flags)
                                 iotlb->root = RB_ROOT_CACHED
+                                iotlb->limit = limit
+                                INIT_LIST_HEAD(&iotlb->list)
                     vhost_iotlb_add_range(newumem, region->guest_phys_addr, region->guest_phys_addr + region->memory_size - 1, region->userspace_addr, VHOST_MAP_RW)
                         vhost_iotlb_add_range_ctx(iotlb, start, last, addr, perm, NULL)
                             vhost_iotlb_add_range_ctx
@@ -12430,6 +12516,7 @@ static const struct vm_operations_struct vhost_vdpa_vm_ops = {
             remap_pfn_range_notrack(vma, addr, pfn, size, prot)
 };
 
+modprobe virtio_vdpa, insmod virtio_vdpa.ko
 module_vdpa_driver(virtio_vdpa_driver)
 static struct vdpa_driver virtio_vdpa_driver = {
 	.driver = {
@@ -12439,7 +12526,10 @@ static struct vdpa_driver virtio_vdpa_driver = {
 	.remove = virtio_vdpa_remove,
 };
 virtio_vdpa_probe
+    vd_dev->vdev.id.device = ops->get_device_id(vdpa)
+    vd_dev->vdev.id.vendor = ops->get_vendor_id(vdpa)
     vd_dev->vdev.config = &virtio_vdpa_config_ops
+    register_virtio_device(&vd_dev->vdev)
     vdpa_set_drvdata(vdpa, vd_dev)
 
 
@@ -12496,6 +12586,7 @@ static const struct virtio_config_ops virtio_vdpa_config_ops = {
 	.finalize_features = virtio_vdpa_finalize_features,
 	.bus_name	= virtio_vdpa_bus_name,
 	.set_vq_affinity = virtio_vdpa_set_vq_affinity,
+        ops->set_vq_affinity(vdpa, index, cpu_mask)
 	.get_vq_affinity = virtio_vdpa_get_vq_affinity,
 };
 
@@ -12975,6 +13066,11 @@ tools/virtio/vringh_test.c
 kernel:
 drivers/vhost/test.c
 module_misc_device(vhost_test_misc); -> 将模块作为杂项设备自动注册 -> https://blog.csdn.net/qq_37858281/article/details/125702163
+static struct miscdevice vhost_test_misc = {
+	MISC_DYNAMIC_MINOR,
+	"vhost-test", -> /dev/vhost-test
+	&vhost_test_fops,
+};
 static const struct file_operations vhost_test_fops = {
 	.owner          = THIS_MODULE,
 	.release        = vhost_test_release,
@@ -13162,7 +13258,8 @@ vhost_vring_ioctl
 
 
 
-
+modprobe mlx5_vdpa
+insmod mlx5_vdpa.ko
 module_auxiliary_driver(mlx5v_driver)
     mlx5v_probe
         mgtdev->mgtdev.ops = &mdev_ops
@@ -13355,7 +13452,7 @@ static const struct vdpa_config_ops mlx5_vdpa_ops = {
 
 vdpa:
 drivers/vdpa/vdpa_sim/vdpa_sim_net.c
-modprobe vdpa-sim-net -> module_init(vdpasim_net_init)
+modprobe vdpa-sim-net | insmod vdpa-sim-net.ko -> module_init(vdpasim_net_init)
     device_register(&vdpasim_net_mgmtdev)
     vdpa_mgmtdev_register(&mgmt_dev)
 
@@ -13366,20 +13463,63 @@ static struct vdpa_mgmt_dev mgmt_dev = {
 };
 
 
+# Add `vdpa-net1` device through `vdpasim_net` management device
+$ vdpa dev add name vdpa-net1 mgmtdev vdpasim_net
+
+# Add `vdpa-blk1` device through `vdpasim_blk` management device
+$ vdpa dev add name vdpa-blk1 mgmtdev vdpasim_blk
+
+# List all vdpa devices on the system
+$ vdpa dev show
+vdpa-net1: type network mgmtdev vdpasim_net vendor_id 0 max_vqs 2 max_vq_size 256
+vdpa-blk1: type block mgmtdev vdpasim_blk vendor_id 0 max_vqs 1 max_vq_size 256
+
 static const struct vdpa_mgmtdev_ops vdpasim_net_mgmtdev_ops = {
 	.dev_add = vdpasim_net_dev_add,
+        dev_attr.id = VIRTIO_ID_NET
+        dev_attr.get_config = vdpasim_net_get_config
+            net_config->status = cpu_to_vdpasim16(vdpasim, VIRTIO_NET_S_LINK_UP)
+        dev_attr.work_fn = vdpasim_net_work
+            vdpasim_handle_cvq(vdpasim)
+                vringh_getdesc_iotlb -> get next available descriptor from ring with IOTLB
+                vringh_iov_pull_iotlb -> copy bytes from vring_iov
+                vdpasim_handle_ctrl_mac
+                    vringh_iov_pull_iotlb(&cvq->vring, &cvq->in_iov, vio_config->mac, ETH_ALEN)
+                vringh_iov_push_iotlb -> copy bytes into vring_iov
+                vringh_complete_iotlb ->  finished with descriptor, publish it
+                u64_stats_update_begin
+                u64_stats_update_end
+            vringh_getdesc_iotlb(&txq->vring, &txq->out_iov, NULL, &txq->head, GFP_ATOMIC)
+            vringh_iov_pull_iotlb(&txq->vring, &txq->out_iov, net->buffer, PAGE_SIZE)
+            receive_filter(vdpasim, read)
+                is_broadcast_ether_addr
+                is_multicast_ether_addr
+            vringh_getdesc_iotlb(&rxq->vring, NULL, &rxq->in_iov, &rxq->head, GFP_ATOMIC)
+            vringh_iov_push_iotlb(&rxq->vring, &rxq->in_iov, net->buffer, read)
+            vdpasim_net_complete(txq, 0);
+            vdpasim_net_complete(rxq, write)
+            vdpasim_schedule_work(vdpasim)
+        simdev = vdpasim_create(&dev_attr, config)
+        vdpasim_net_setup_config(simdev, config) -> set mac and mtu
+            memcpy(vio_config->mac, config->net.mac, ETH_ALEN)
+            vio_config->mtu = cpu_to_vdpasim16(vdpasim, config->net.mtu)
+        _vdpa_register_device(&simdev->vdpa, VDPASIM_NET_VQ_NUM)
 	.dev_del = vdpasim_net_dev_del
 };
 
 # Add `vdpa-net1` device through `vdpasim_net` management device
 $ vdpa dev add name vdpa-net1 mgmtdev vdpasim_net
-vdpasim_net_dev_add
 
 
 
-modprobe vdpa-sim-blk
+modprobe vdpa-sim-blk, insmod vdpa_sim_blk.ko
 drivers/vdpa/vdpa_sim/vdpa_sim_blk.c
 module_init(vdpasim_blk_init) -> sim
+    module_param(shared_backend, bool, 0444)
+    device_register(&vdpasim_blk_mgmtdev)
+    vdpa_mgmtdev_register(&mgmt_dev)
+    if (shared_backend)
+        shared_buffer = kvzalloc(VDPASIM_BLK_CAPACITY << SECTOR_SHIFT, GFP_KERNEL)
 static struct vdpa_mgmt_dev mgmt_dev = {
 	.device = &vdpasim_blk_mgmtdev,
 	.id_table = id_table,
@@ -13396,38 +13536,77 @@ static const struct vdpa_mgmtdev_ops vdpasim_blk_mgmtdev_ops = {
 # Add `vdpa-blk1` device through `vdpasim_blk` management device
 $ vdpa dev add name vdpa-blk1 mgmtdev vdpasim_blk
 static int vdpasim_blk_dev_add(struct vdpa_mgmt_dev *mdev, const char *name, const struct vdpa_dev_set_config *config)
+    dev_attr.id = VIRTIO_ID_BLOCK
+    dev_attr.supported_features = VDPASIM_BLK_FEATURES
+    dev_attr.nvqs = VDPASIM_BLK_VQ_NUM -> 1
     dev_attr.get_config = vdpasim_blk_get_config
+        blk_config->capacity = cpu_to_vdpasim64(vdpasim, VDPASIM_BLK_CAPACITY) -> 0x40000 -> print(0x40000) 262144 * 512 = 134217728 = 128MB -> lsblk vda    252:0    0   128M  0 block:virtio:vdpa
+        blk_config->size_max = cpu_to_vdpasim32(vdpasim, VDPASIM_BLK_SIZE_MAX) -> 4096
+        blk_config->seg_max = cpu_to_vdpasim32(vdpasim, VDPASIM_BLK_SEG_MAX) -> 32
+        blk_config->blk_size = cpu_to_vdpasim32(vdpasim, SECTOR_SIZE) -> 1<<9 = 512
+        ...
     dev_attr.work_fn = vdpasim_blk_work
-        vdpasim_blk_handle_req
-            vringh_getdesc_iotlb(&vq->vring, &vq->out_iov, &vq->in_iov, &vq->head, GFP_ATOMIC)
-            to_push = vringh_kiov_length(&vq->in_iov) - 1
-            to_pull = vringh_kiov_length(&vq->out_iov)
-            bytes = vringh_iov_pull_iotlb(&vq->vring, &vq->out_iov, &hdr, sizeof(hdr))
-            type = vdpasim32_to_cpu(vdpasim, hdr.type);
-            sector = vdpasim64_to_cpu(vdpasim, hdr.sector);
-            offset = sector << SECTOR_SHIFT;
-            status = VIRTIO_BLK_S_OK;
-            case VIRTIO_BLK_T_IN
-                vringh_iov_push_iotlb -> vringh_iov_xfer(vrh, wiov, (void *)src, len, xfer_to_iotlb)
-                    err = xfer(vrh, iov->iov[iov->i].iov_base, ptr, partlen)
-                        copy_to_iotlb(vrh, dst, src, len)
-                            ret = iotlb_translate(vrh, (u64)(uintptr_t)dst
-                            copy_to_iter
-            case VIRTIO_BLK_T_OUT:
-            vringh_complete_iotlb(&vq->vring, vq->head, pushed)
-        if (vringh_need_notify_iotlb(&vq->vring) > 0)
-            vringh_notify(&vq->vring)
+        for (i = 0; i < VDPASIM_BLK_VQ_NUM; i++)
+            while (vdpasim_blk_handle_req(vdpasim, vq))
+                vdpasim_blk_handle_req
+                    struct virtio_blk_outhdr hdr
+                    vringh_getdesc_iotlb(&vq->vring, &vq->out_iov, &vq->in_iov, &vq->head, GFP_ATOMIC) -> 不再需要使用 riov 和 wiov 时，您应该通过调用 vringh_kiov_cleanup() 来清理它们以释放内存
+                        __vringh_iov(vrh, *head, riov, wiov, no_range_check, NULL,gfp, copydesc_iotlb)
+                    to_push = vringh_kiov_length(&vq->in_iov) - 1
+                    to_pull = vringh_kiov_length(&vq->out_iov)
+                    bytes = vringh_iov_pull_iotlb(&vq->vring, &vq->out_iov, &hdr, sizeof(hdr)) -> copy bytes from vring_iov to hdr(从GUEST获取消息头)
+                        vringh_iov_xfer(vrh, riov, dst, len, xfer_from_iotlb)
+                            err = xfer(vrh, iov->iov[iov->i].iov_base, ptr, partlen) -> xfer_from_iotlb
+                                copy_from_iotlb(vrh, dst, src, len)
+                    type = vdpasim32_to_cpu(vdpasim, hdr.type);
+                    sector = vdpasim64_to_cpu(vdpasim, hdr.sector);
+                    offset = sector << SECTOR_SHIFT;
+                    status = VIRTIO_BLK_S_OK;
+                    switch (type)
+                    case VIRTIO_BLK_T_IN -> GUEST READ
+                        vringh_iov_push_iotlb(&vq->vring, &vq->in_iov, blk->buffer + offset, to_push) -> copy bytes into vring_iov -> vringh_iov_xfer(vrh, wiov, (void *)src, len, xfer_to_iotlb) -> read from blk->buffer + offset
+                            err = xfer(vrh, iov->iov[iov->i].iov_base, ptr, partlen)
+                                copy_to_iotlb(vrh, dst, src, len)
+                                    ret = iotlb_translate(vrh, (u64)(uintptr_t)dst
+                                    copy_to_iter
+                    case VIRTIO_BLK_T_OUT: ->  GUEST WRITE
+                        bytes = vringh_iov_pull_iotlb(&vq->vring, &vq->out_iov, blk->buffer + offset, to_pull) ->  copy bytes from vring_iov to blk buffer(将IO写入blk指向的缓冲区(偏移))
+                    case VIRTIO_BLK_T_GET_ID
+                        bytes = vringh_iov_push_iotlb(&vq->vring, &vq->in_iov, vdpasim_blk_id, VIRTIO_BLK_ID_BYTES)
+                    case VIRTIO_BLK_T_FLUSH:
+                        break
+                    case VIRTIO_BLK_T_DISCARD:
+                    case VIRTIO_BLK_T_WRITE_ZEROES:
+                        struct virtio_blk_discard_write_zeroes range
+                        bytes = vringh_iov_pull_iotlb(&vq->vring, &vq->out_iov, &range, to_pull) -> vring -> range
+                        vdpasim_blk_check_range(vdpasim, sector, num_sectors, VDPASIM_BLK_DWZ_MAX_SECTORS)
+                        memset(blk->buffer + offset, 0, num_sectors << SECTOR_SHIFT) -> reset blk buffer
+                smp_wmb()
+                local_bh_disable
+                if (vringh_need_notify_iotlb(&vq->vring) > 0)
+                    vringh_notify(&vq->vring)
+                        vrh->notify(vrh)
+                local_bh_enable()
+        if (reschedule)
+            vdpasim_schedule_work
     simdev = vdpasim_create(&dev_attr, config)
         ops = &vdpasim_batch_config_ops
         or ops = &vdpasim_config_ops
-        vdpa = __vdpa_alloc_device(NULL, ops, dev_attr->ngroups, dev_attr->nas, dev_attr->alloc_size, dev_attr->name, use_va)
+        vdpa = __vdpa_alloc_device(NULL, ops, dev_attr->ngroups, dev_attr->nas, dev_attr->alloc_size, dev_attr->name, use_va) -> allocate and initilaize a vDPA device
+            vdev->dev.bus = &vdpa_bus
+            vdev->config = config -> ops
+            device_initialize(&vdev->dev)
         kthread_init_work(&vdpasim->work, vdpasim_work_fn)
         vdpasim->worker = kthread_create_worker(0, "vDPA sim worker: %s", dev_attr->name)
+        if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64)))
         vdpasim->vqs = kcalloc(dev_attr->nvqs
         vdpasim->iommu = kmalloc_array(vdpasim->dev_attr.nas, sizeof(*vdpasim->iommu), GFP_KERNEL)
-        vhost_iotlb_init
-        vhost_iotlb_add_range
-        vringh_set_iotlb
+        vdpasim->iommu_pt = kmalloc_array(vdpasim->dev_attr.nas, sizeof(*vdpasim->iommu_pt), GFP_KERNEL)
+        for (i = 0; i < vdpasim->dev_attr.nas; i++)
+            vhost_iotlb_init(&vdpasim->iommu[i], max_iotlb_entries, 0) -> 2048 -> initialize a vhost IOTLB
+            vhost_iotlb_add_range                vdpasim->iommu_pt[i] = true
+        for (i = 0; i < dev_attr->nvqs; i++)
+            vringh_set_iotlb(&vdpasim->vqs[i].vring, &vdpasim->iommu[0], &vdpasim->iommu_lock) -> initialize a vringh for a ring with IOTLB, associated vring and iotlb
     blk = sim_to_blk(simdev)
     blk->shared_backend = shared_backend
     blk->buffer = kvzalloc
@@ -13439,19 +13618,29 @@ static const struct vdpa_config_ops vdpasim_config_ops = {
         vq->desc_addr = desc_area;
         vq->driver_addr = driver_area
         vq->device_addr = device_area
-	.set_vq_num             = vdpasim_set_vq_num,
-	.kick_vq                = vdpasim_kick_vq, -> vdpasim_schedule_work(vdpasim) -> vdpasim_work_fn
-        vdpasim->dev_attr.work_fn(vdpasim) -> vdpasim_blk_work
+	.set_vq_num             = vdpasim_set_vq_num, -> vq->num = num
+	.kick_vq                = vdpasim_kick_vq, -> vdpasim_schedule_work(vdpasim) -> vdpasim_work_fn -> 关键函数, 当用户态Guest准备好IO BUF后通知VQ后执行此IO处理函数
+        vdpasim->dev_attr.work_fn(vdpasim) -> vdpasim_blk_work -> handle IO
 	.set_vq_cb              = vdpasim_set_vq_cb,
+        vq->cb = cb->callback
+        vq->private = cb->private
 	.set_vq_ready           = vdpasim_set_vq_ready,
+        vdpasim_queue_ready(vdpasim, idx)
+            vq->vring.last_avail_idx = last_avail_idx;
+            vq->vring.last_used_idx = last_avail_idx
+            vq->vring.notify = vdpasim_vq_notify
+                vq->cb(vq->private)
 	.get_vq_ready           = vdpasim_get_vq_ready,
 	.set_vq_state           = vdpasim_set_vq_state,
+        vrh->last_avail_idx = state->split.avail_index
 	.get_vendor_vq_stats    = vdpasim_get_vq_stats,
 	.get_vq_state           = vdpasim_get_vq_state,
-	.get_vq_align           = vdpasim_get_vq_align,
+	.get_vq_align           = vdpasim_get_vq_align, -> #define VDPASIM_QUEUE_ALIGN PAGE_SIZE -> 4K
 	.get_vq_group           = vdpasim_get_vq_group,
 	.get_device_features    = vdpasim_get_device_features,
+        vdpasim->dev_attr.supported_features
 	.get_backend_features   = vdpasim_get_backend_features,
+        BIT_ULL(VHOST_BACKEND_F_ENABLE_AFTER_DRIVER_OK)
 	.set_driver_features    = vdpasim_set_driver_features,
 	.get_driver_features    = vdpasim_get_driver_features,
 	.set_config_cb          = vdpasim_set_config_cb,
@@ -13463,8 +13652,27 @@ static const struct vdpa_config_ops vdpasim_config_ops = {
         vdpasim->status = status
 	.reset			= vdpasim_reset,
 	.compat_reset		= vdpasim_compat_reset,
+        vdpasim_do_reset(vdpasim, flags)
+            for (i = 0; i < vdpasim->dev_attr.nvqs; i++)
+                vdpasim_vq_reset(vdpasim, &vdpasim->vqs[i])
+                    vq->ready = false;
+                    vq->desc_addr = 0;
+                    vq->driver_addr = 0;
+                    vq->device_addr = 0;
+                    vq->cb = NULL;
+                    vq->private = NULL;
+                    vringh_init_iotlb(&vq->vring, vdpasim->dev_attr.supported_features, VDPASIM_QUEUE_MAX, false, NULL, NULL, NULL);
+                    vq->vring.notify = NULL;
+                vringh_set_iotlb(&vdpasim->vqs[i].vring, &vdpasim->iommu[0], &vdpasim->iommu_lock)
+            for (i = 0; i < vdpasim->dev_attr.nas; i++)
+                vhost_iotlb_reset(&vdpasim->iommu[i])
+                vhost_iotlb_add_range(&vdpasim->iommu[i], 0, ULONG_MAX, 0, VHOST_MAP_RW)
 	.suspend		= vdpasim_suspend,
+        vdpasim->running = false
 	.resume			= vdpasim_resume,
+        if (vdpasim->pending_kick)
+            for (i = 0; i < vdpasim->dev_attr.nvqs; ++i)
+                vdpasim_kick_vq(vdpa, i)
 	.get_config_size        = vdpasim_get_config_size,
 	.get_config             = vdpasim_get_config,
 	.set_config             = vdpasim_set_config,
@@ -13475,11 +13683,14 @@ static const struct vdpa_config_ops vdpasim_config_ops = {
 	.dma_map                = vdpasim_dma_map,
         vhost_iotlb_add_range_ctx(&vdpasim->iommu[asid], iova, iova + size - 1, pa, perm, opaque)
 	.dma_unmap              = vdpasim_dma_unmap,
+        vhost_iotlb_reset(&vdpasim->iommu[asid])
+        vhost_iotlb_del_range(&vdpasim->iommu[asid], iova, iova + size - 1)
 	.reset_map              = vdpasim_reset_map,
 	.bind_mm		= vdpasim_bind_mm,
         mm_work.mm_to_bind = mm
         vdpasim_worker_change_mm_sync(vdpasim, &mm_work)
             vdpasim_mm_work_fn
+                vdpasim->mm_bound = mm_work->mm_to_bind
 	.unbind_mm		= vdpasim_unbind_mm,
 	.free                   = vdpasim_free,
 };
@@ -13816,10 +14027,13 @@ test\test.c
 bytedance, vduse, commit: https://github.com/ssbandjl/linux/commit/c8a6153b6c59d95c0e091f053f6f180952ade91e
 kernel_doc: https://docs.kernel.org/userspace-api/vduse.html
 vduse：在用户空间引入 VDUSE - vDPA 设备，此 VDUSE 驱动程序支持在用户空间实现软件模拟的 vDPA 设备。vDPA 设备由 /dev/vduse/control 上的 ioctl(VDUSE_CREATE_DEV) 创建。然后将字符设备接口 (/dev/vduse/$NAME) 导出到用户空间进行设备模拟。为了使设备模拟更安全，设备的控制路径在内核中处理。引入了一种消息机制来将一些数据平面相关的控制消息转发到用户空间。并且在数据路径中，DMA 缓冲区将通过不同的方式映射到用户空间地址空间，具体取决于 vDPA 设备所连接的 vDPA 总线。在 virtio-vdpa 情况下，使用基于 MMU 的软件 IOTLB 来实现这一点。在 vhost-vdpa 情况下，DMA 缓冲区位于用户空间内存区域中，可以通过传输 shmfd 将其共享给 VDUSE 用户空间进程。有关 VDUSE 设计和使用的更多详细信息，请参阅后续文档提交
+modprobe vduse
+insmod vduse.ko
 drivers/vdpa/vdpa_user/vduse_dev.c
 module_init(vduse_init)
     class_register(&vduse_class)
         .name = "vduse"
+        "vduse/%s"
     alloc_chrdev_region(&vduse_major, 0, VDUSE_DEV_MAX, "vduse")
     cdev_init(&vduse_ctrl_cdev, &vduse_ctrl_fops)
     cdev_add(&vduse_ctrl_cdev, vduse_major, 1)
@@ -13839,11 +14053,19 @@ module_init(vduse_init)
 static const struct file_operations vduse_ctrl_fops = {
 	.owner		= THIS_MODULE,
 	.open		= vduse_open,
+        control = kmalloc(sizeof(struct vduse_control), GFP_KERNEL)
+        file->private_data = control
 	.release	= vduse_release,
 	.unlocked_ioctl	= vduse_ioctl,
+        switch (cmd)
         case VDUSE_CREATE_DEV -> #define VDUSE_CREATE_DEV	_IOW(VDUSE_BASE, 0x02, struct vduse_dev_config)
             vduse_create_dev(&config, buf, control->api_version)
                 dev = vduse_dev_create()
+                    INIT_LIST_HEAD(&dev->send_list)
+                    INIT_LIST_HEAD(&dev->recv_list)
+                    INIT_WORK(&dev->inject, vduse_dev_irq_inject)
+                        dev->config_cb.callback(dev->config_cb.private)
+                dev->device_id = config->device_id <- from qemu -> vblk_exp->dev = vduse_dev_create(vblk_opts->name, VIRTIO_ID_BLOCK, 0,features, num_queues,sizeof(struct virtio_blk_config),(char *)&config, &vduse_blk_ops,vblk_exp)
                 dev->bounce_size = VDUSE_BOUNCE_SIZE -> 64MB
                 idr_alloc(&vduse_idr, dev, 1, VDUSE_DEV_MAX, GFP_KERNEL)
                 dev->dev = device_create_with_groups(&vduse_class, NULL, MKDEV(MAJOR(vduse_major), dev->minor), dev, vduse_dev_groups, "%s", config->name) -> new kernel -> creates a device and registers it with sysfs
@@ -13856,10 +14078,20 @@ static const struct file_operations vduse_ctrl_fops = {
                         INIT_WORK(&dev->vqs[i]->kick, vduse_vq_kick_work) -> vduse_vq_kick(vq)
                             if (vq->kickfd)
                                 eventfd_signal(vq->kickfd) -> vq->kickfd = ctx <- vduse_kickfd_setup
+                                    -> to qemu -> on_vduse_vq_kick
                             else
                                 vq->kicked = true
                         kobject_add(&dev->vqs[i]->kobj, &dev->dev->kobj, "vq%d", i)
                 __module_get(THIS_MODULE) -> 增加模块的引用计数
+        case VDUSE_DESTROY_DEV
+            name[VDUSE_NAME_MAX - 1] = '\0'
+            vduse_destroy_dev(name)
+                vduse_dev_reset(dev)
+                device_destroy(&vduse_class, MKDEV(MAJOR(vduse_major), dev->minor))
+                idr_remove(&vduse_idr, dev->minor)
+                vduse_dev_deinit_vqs(dev)
+                vduse_domain_destroy(dev->domain)
+                module_put(THIS_MODULE)
 	.compat_ioctl	= compat_ptr_ioctl,
 	.llseek		= noop_llseek,
 };
@@ -13872,10 +14104,45 @@ static const struct file_operations vduse_dev_fops = {
 	.write_iter	= vduse_dev_write_iter,
 	.poll		= vduse_dev_poll,
 	.unlocked_ioctl	= vduse_dev_ioctl,
-        case VDUSE_VQ_SETUP_KICKFD
+        case VDUSE_IOTLB_GET_FD -> those IOVA regions can be mapped into userspace
+            map = vhost_iotlb_itree_first(dev->domain->iotlb, entry.start, entry.last)
+            receive_fd(f, NULL, perm_to_file_flags(entry.perm))
+        case VDUSE_DEV_GET_FEATURES
+            ret = put_user(dev->driver_features, (u64 __user *)argp)
+        case VDUSE_DEV_SET_CONFIG
+            copy_from_user(dev->config + config.offset, argp + size, config.length)
+        case VDUSE_DEV_INJECT_CONFIG_IRQ
+             vduse_dev_queue_irq_work(dev, &dev->inject, IRQ_UNBOUND)
+        case VDUSE_VQ_SETUP
+            index = array_index_nospec(config.index, dev->vq_num)
+            dev->vqs[index]->num_max = config.max_size
+        case VDUSE_VQ_GET_INFO -> Get the specified virtqueue’s information with this ioctl, including the size, the IOVAs of descriptor table, available ring and used ring, the state and the ready status
+            vq = dev->vqs[index];
+            vq_info.desc_addr = vq->desc_addr;
+            vq_info.driver_addr = vq->driver_addr;
+            vq_info.device_addr = vq->device_addr;
+            vq_info.num = vq->num;
+        case VDUSE_VQ_SETUP_KICKFD -> Setup the kick eventfd for the specified virtqueues, The kick eventfd is used by VDUSE kernel module to notify userspace to consume the available ring. This is optional since userspace can choose to poll the available ring instead
             vduse_kickfd_setup(dev, &eventfd)
                 ctx = eventfd_ctx_fdget(eventfd->fd)
                 vq->kickfd = ctx
+        case VDUSE_VQ_INJECT_IRQ -> Inject an interrupt for specific virtqueue with this ioctl, after the used ring is filled
+            vduse_dev_queue_irq_work(dev, &dev->vqs[index]->inject,	dev->vqs[index]->irq_effective_cpu)
+                queue_work(vduse_irq_wq, irq_work)
+                or queue_work_on(irq_effective_cpu, vduse_irq_bound_wq, irq_work)
+        case VDUSE_IOTLB_REG_UMEM
+            vduse_dev_reg_umem(dev, umem.iova, umem.uaddr, umem.size)
+                npages = size >> PAGE_SHIFT;
+	            page_list = __vmalloc(array_size(npages, sizeof(struct page *)), GFP_KERNEL_ACCOUNT);
+	            umem = kzalloc(sizeof(*umem), GFP_KERNEL)
+                pinned = pin_user_pages(uaddr, npages, FOLL_LONGTERM | FOLL_WRITE, page_list) -> pin user pages in memory for use by other devices
+                vduse_domain_add_user_bounce_pages(dev->domain, page_list, pinned)
+                    memcpy_to_page(pages[i], 0, page_address(map->bounce_page), PAGE_SIZE)
+                mmgrab(current->mm)
+        case VDUSE_IOTLB_DEREG_UMEM
+            vduse_dev_dereg_umem(dev, umem.iova, umem.size)
+        case VDUSE_IOTLB_GET_INFO
+            map = vhost_iotlb_itree_first(dev->domain->iotlb, info.start, info.last)
 	.compat_ioctl	= compat_ptr_ioctl,
 	.llseek		= noop_llseek,
 };
@@ -13901,14 +14168,35 @@ static const struct vdpa_mgmtdev_ops vdpa_dev_mgmtdev_ops = {
 
 static const struct dma_map_ops vduse_dev_dma_ops = {
 	.map_page = vduse_dev_map_page,
+        vduse_domain_map_page(domain, page, offset, size, dir, attrs)
+            dma_addr_t iova = vduse_domain_alloc_iova(iovad, size, limit)
+                iova_pfn = alloc_iova_fast(iovad, iova_len, limit >> shift, true) -> allocates an iova from rcache -> 首先尝试从缓存中查找满足条件的 I/O 虚拟地址空间地址段，如果找到就成功返回；否则，调用 alloc_iova() 函数分配 IOVA 内存段，如果需要刷新缓存，则释放 CPU 缓存的所有 IOVA 范围
+                    iova_pfn = iova_rcache_get
+                    new_iova = alloc_iova(iovad, size, limit_pfn, true)
+                return (dma_addr_t)iova_pfn << shift
+            vduse_domain_init_bounce_map
+                vduse_iotlb_add_range(domain, 0, domain->bounce_size - 1, 0, VHOST_MAP_RW, domain->file, 0)
+                    map_file->file = get_file(file)
+                    vhost_iotlb_add_range_ctx
+            vduse_domain_map_bounce_page
+                map->bounce_page = alloc_page(GFP_ATOMIC)
+            vduse_domain_bounce
 	.unmap_page = vduse_dev_unmap_page,
 	.alloc = vduse_dev_alloc_coherent,
+        addr = vduse_domain_alloc_coherent(domain, size, (dma_addr_t *)&iova, flag, attrs)
+            dma_addr_t iova = vduse_domain_alloc_iova(iovad, size, limit)
+            alloc_pages_exact -> 分配精确数量的物理连续页面
+            vduse_iotlb_add_range virt_to_phys
+        *dma_addr = (dma_addr_t)iova
 	.free = vduse_dev_free_coherent,
 	.max_mapping_size = vduse_dev_max_mapping_size,
 };
 
 static const struct vdpa_config_ops vduse_vdpa_config_ops = {
 	.set_vq_address		= vduse_vdpa_set_vq_address,
+        vq->desc_addr = desc_area;
+        vq->driver_addr = driver_area;
+        vq->device_addr = device_area;
 	.kick_vq		= vduse_vdpa_kick_vq,
         schedule_work(&vq->kick)
         vduse_vq_kick(vq)
@@ -13933,6 +14221,10 @@ static const struct vdpa_config_ops vduse_vdpa_config_ops = {
 	.set_config		= vduse_vdpa_set_config,
 	.get_generation		= vduse_vdpa_get_generation,
 	.set_vq_affinity	= vduse_vdpa_set_vq_affinity,
+        if (cpu_mask)
+            cpumask_copy(&dev->vqs[idx]->irq_affinity, cpu_mask)
+        else
+            cpumask_setall(&dev->vqs[idx]->irq_affinity)
 	.get_vq_affinity	= vduse_vdpa_get_vq_affinity,
 	.reset			= vduse_vdpa_reset,
 	.set_map		= vduse_vdpa_set_map,
@@ -14060,6 +14352,11 @@ static const struct rb_augment_callbacks vhost_iotlb_itree_augment = {
     .rotate = vhost_iotlb_itree_augment_rotate 
 }; 
 
+
+
+INTERVAL_TREE_DEFINE(struct vhost_iotlb_map,
+		     rb, __u64, __subtree_last,
+		     START, LAST, static inline, vhost_iotlb_itree);
 static inline void vhost_iotlb_itree_insert(struct vhost_iotlb_map *node, struct rb_root_cached *root) { 
     struct rb_node **link = &root->rb_root.rb_node, 
     *rb_parent = NULL; 
@@ -14365,3 +14662,10 @@ remove kernel:
 dpkg --list | grep 5.4.0-25
 dpkg --list | grep kernel-image
 sudo apt --purge remove linux-headers_xxx
+
+
+
+
+
+
+
