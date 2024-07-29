@@ -11394,6 +11394,7 @@ static int virtblk_probe(struct virtio_device *vdev)
             virtio_cread(vdev, struct virtio_blk_config, capacity, &capacity)
             nblocks = DIV_ROUND_UP_ULL(capacity, queue_logical_block_size(q) >> 9)
             dev_notice(&vdev->dev, "[%s] %s%llu %d-byte logical blocks (%s/%s)\n", vblk->disk->disk_name, resize ? "new size: " : "", nblocks, queue_logical_block_size(q), cap_str_10,cap_str_2);
+                dmesg ref: [273680.379128] virtio_blk virtio0: [vda] 262144 512-byte logical blocks (134 MB/128 MiB)
             set_capacity_and_notify(vblk->disk, capacity)
     init_vq(vblk)
         virtio_cread_feature(vdev, VIRTIO_BLK_F_MQ, struct virtio_blk_config, num_queues, &num_vqs) -> /* 读取pci配置空间中的磁盘队列数 */
@@ -11911,6 +11912,10 @@ virtblk_probe
             while ((vbr = virtqueue_get_buf(vblk->vqs[qid].vq, &len)) -> virtqueue_get_buf_ctx -> virtqueue_get_buf_ctx_packed -> update ptr
                 struct request *req = blk_mq_rq_from_pdu(vbr)
                 blk_mq_complete_request(req)
+                    if (!blk_mq_complete_request_remote(rq))
+                            blk_mq_raise_softirq(rq)
+                                raise_softirq(BLOCK_SOFTIRQ) -> blk_done_softirq
+                        rq->q->mq_ops->complete(rq) -> virtblk_request_done
                 blk_mq_start_stopped_hw_queues(vblk->disk->queue, true)
     int virtio_find_vqs -> virtqueue 是客户机前端对于队列管理的数据结构，在客户机的linux内核中通过kmalloc_array进行分配。而队列的实体需要通过函数 virtio_find_vqs 查找或者生成，所以这里还把callback函数指定为virtblk_done，当buffer使用发生变化的时候，需要调用这个callback函数进行通知
         vdev->config->find_vqs(vdev, nvqs, vqs, callbacks, names, NULL, desc) -> static int vp_modern_find_vqs
@@ -11995,6 +12000,20 @@ static const struct blk_mq_ops virtio_mq_ops = {
 	.queue_rqs	= virtio_queue_rqs,
 	.commit_rqs	= virtio_commit_rqs,
 	.complete	= virtblk_request_done,
+        virtblk_unmap_data(req, vbr)
+            if (blk_rq_nr_phys_segments(req)) -> 发送到设备的物理段数。通常，这是提交者发送的不连续数据段数。但对于像丢弃这样的无数据命令，我们可能没有提交实际的数据段，但驱动程序可能必须添加自己的特殊有效负载。在这种情况下，我们仍然在这里返回 1，以便映射此特殊有效负载
+                    if (rq->rq_flags & RQF_SPECIAL_PAYLOAD) -> resturn 1
+                    return rq->nr_phys_segments
+                sg_free_table_chained(&vbr->sg_table, VIRTIO_BLK_INLINE_SG_CNT) -> virtio-blk：避免为数据预分配大 SGL，不再需要为 IO SGL 预分配大缓冲区。如果设备有大量深队列，则 sg 列表的预分配可能会消耗大量内存。对于 HW virtio-blk 设备，nr_hw_queues 可以是 64 或 128，每个队列的深度可能是 128。这意味着数据 SGL 的最终预分配很大。对于长度超过 2 个条目的列表，切换到 SGL 的运行时分配。这是 NVMe 驱动程序使用的方法，因此对于 virtio 块也应该是合理的。运行时 SGL 分配一直是传统 I/O 路径的情况，所以这并不是什么新鲜事。预分配的小 SGL 依赖于 SG_CHAIN，因此如果 ARCH 不支持 SG_CHAIN，则仅使用 SGL 的运行时分配。重新组织 IO 请求的设置以适应新的 sg 链机制。未看到性能下降（具有 16 个作业和 128 个 iodepth 的 fio libaio 引擎）：
+                    __sg_free_table(table, SG_CHUNK_SIZE, nents_first_chunk, sg_pool_free, table->orig_nents)
+        virtblk_cleanup_cmd(req)
+            kfree(bvec_virt(&req->special_vec))
+        blk_mq_end_request(req, status) -> virtio-blk：添加对分区块设备的支持，此补丁为内核 virtio-blk 驱动程序添加了对分区块设备 (ZBD) 的支持。此补丁随附了目前正在提议标准化的 virtio-blk ZBD 支持草案。草案的最新版本链接为 https://github.com/oasis-tcs/virtio-spec/issues/143 。实现这些协议扩展的 QEMU 分区设备代码由 Sam Li 开发，目前正在 QEMU 邮件列表中进行审核。引入了许多 virtblk 请求结构更改，以适应特定于分区块设备的功能，最重要的是，为将设备中的分区附加扇区值连同请求状态一起传回驱动程序腾出空间。补丁中的区域特定代码受到 drivers/nvme/host/zns.c 中 NVMe ZNS 代码的很大影响，但它更简单，因为提议的 virtio ZBD 草案仅涵盖与 Linux 块层提供的区域功能相关的区域设备功能。包括以下修复：virtio-blk：修复没有 CONFIG_BLK_DEV_ZONED 的探测在没有 CONFIG_BLK_DEV_ZONED 的情况下构建时，VIRTIO_BLK_F_ZONED 被排除在驱动程序功能数组之外。因此，virtio_has_feature 在 vi​​rtio_check_driver_offered_feature 中发生恐慌，因为这在设计上会验证我们正在检查的功能是否列在功能数组中。要修复，请用存根替换对 virtio_has_feature 的调用 -> block：引入新的块状态代码类型，目前我们在块层中使用普通的 Linux errno 值，虽然我们接受任何错误，但其中一些具有重载的魔法含义。此补丁反而引入了一个新的 blk_status_t 值，该值包含块层特定的状态代码并明确解释其含义。目前提供了从以前的特殊含义转换的帮助程序，但我怀疑我们想从长远来看摆脱它们 - 那些具有 errno 输入（例如网络）的驱动程序通常会得到不知道特殊块层重载的 errnos，同样将它们返回到用户空间通常会返回一些严格来说对文件系统操作不正确的东西，但这留待以后再做练习。目前，错误集是一个非常有限的集合，与以前重载的 errno 值非常接近，但有一些容易实现的改进方法。 blk_status_t (ab) 使用稀疏 __bitwise 注释来进行稀疏类型检查，这样我们就可以轻松捕获传递错误值的地方
+            blk_update_request(rq, error, blk_rq_bytes(rq))
+            __blk_mq_end_request(rq, error)
+                blk_mq_sched_completed_request
+                blk_mq_finish_request
+                    q->elevator->type->ops.finish_request(rq)
 	.map_queues	= virtblk_map_queues,
 	.poll		= virtblk_poll, -> static int virtblk_poll(struct blk_mq_hw_ctx *hctx, struct io_comp_batch *iob)
 
@@ -12431,7 +12450,7 @@ static const struct file_operations vhost_vdpa_fops = {
 		        .last = v->range.last,
         case VHOST_VDPA_GET_CONFIG_SIZE:
 		r = vhost_vdpa_get_config_size(v, argp); -> size = ops->get_config_size(vdpa)
-        case VHOST_VDPA_GET_VQS_COUNT:
+        case VHOST_VDPA_GET_VQS_COUNT: -> vdpa: support exposing the count of vqs to userspace
             r = vhost_vdpa_get_vqs_count(v, argp);
                 copy_to_user(argp, &vdpa->nvqs, sizeof(vdpa->nvqs))
         case VHOST_VDPA_SUSPEND:
@@ -13674,6 +13693,7 @@ static const struct vdpa_config_ops vdpasim_config_ops = {
             for (i = 0; i < vdpasim->dev_attr.nvqs; ++i)
                 vdpasim_kick_vq(vdpa, i)
 	.get_config_size        = vdpasim_get_config_size,
+        vdpasim->dev_attr.config_size
 	.get_config             = vdpasim_get_config,
 	.set_config             = vdpasim_set_config,
         vdpasim->dev_attr.set_config(vdpasim, vdpasim->config) -> 中转
@@ -14664,8 +14684,118 @@ dpkg --list | grep kernel-image
 sudo apt --purge remove linux-headers_xxx
 
 
+vfio:
+/sys/bus/pci/drivers/vfio-pci
 
 
 
 
+
+add virtio_blk disk stack:
+[ 1209.382500] INFO: task systemd-udevd:154 blocked for more than 1087 seconds.
+[ 1209.382508]       Not tainted 5.15.0-117-generic #127~20.04.1-Ubuntu
+[ 1209.382511] "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+[ 1209.382512] task:systemd-udevd   state:D stack:    0 pid:  154 ppid:   136 flags:0x00004004
+[ 1209.382517] Call Trace:
+[ 1209.382519]  <TASK>
+[ 1209.382522]  __schedule+0x2cd/0x890
+[ 1209.382539]  ? submit_bh_wbc+0x18a/0x1c0
+[ 1209.382544]  schedule+0x69/0x110
+[ 1209.382548]  io_schedule+0x16/0x40
+[ 1209.382550]  wait_on_page_bit_common+0x16e/0x3b0
+[ 1209.382555]  ? scan_shadow_nodes+0x40/0x40
+[ 1209.382559]  ? filemap_invalidate_unlock_two+0x50/0x50
+[ 1209.382562]  do_read_cache_page+0x1e0/0x410
+[ 1209.382565]  read_cache_page+0x12/0x20
+[ 1209.382568]  read_part_sector+0x3b/0x100
+[ 1209.382573]  read_lba+0xfa/0x220
+[ 1209.382576]  find_valid_gpt+0xe0/0x6d0
+[ 1209.382578]  ? vmap_small_pages_range_noflush+0x315/0x480
+[ 1209.382584]  ? find_valid_gpt+0x6d0/0x6d0
+[ 1209.382586]  efi_partition+0x7a/0x370
+[ 1209.382588]  ? snprintf+0x49/0x70
+[ 1209.382594]  ? find_valid_gpt+0x6d0/0x6d0
+[ 1209.382595]  check_partition+0x15a/0x2a0
+[ 1209.382599]  bdev_disk_changed+0xea/0x250
+[ 1209.382603]  blkdev_get_whole+0x7b/0x90
+[ 1209.382607]  blkdev_get_by_dev+0xd6/0x2d0
+[ 1209.382609]  device_add_disk+0x3a3/0x400
+[ 1209.382613]  virtblk_probe+0x4a3/0x805 [virtio_blk]
+[ 1209.382629]  ? virtio_add_status+0x3d/0x50
+[ 1209.382635]  virtio_dev_probe+0x195/0x230
+[ 1209.382637]  really_probe.part.0+0xcb/0x380
+[ 1209.382640]  really_probe+0x40/0x80
+[ 1209.382641]  __driver_probe_device+0xe8/0x140
+[ 1209.382643]  driver_probe_device+0x23/0xb0
+[ 1209.382645]  __driver_attach+0xc5/0x180
+[ 1209.382647]  ? __device_attach_driver+0x140/0x140
+[ 1209.382649]  bus_for_each_dev+0x7e/0xd0
+[ 1209.382654]  driver_attach+0x1e/0x30
+[ 1209.382657]  bus_add_driver+0x178/0x220
+[ 1209.382661]  driver_register+0x74/0xe0
+[ 1209.382663]  register_virtio_driver+0x20/0x40
+[ 1209.382670]  init+0x56/0x1000 [virtio_blk]
+[ 1209.382673]  ? 0xffffffffc0123000
+[ 1209.382675]  do_one_initcall+0x48/0x1e0
+[ 1209.382680]  ? __cond_resched+0x19/0x40
+[ 1209.382683]  ? kmem_cache_alloc_trace+0x15a/0x420
+[ 1209.382688]  do_init_module+0x52/0x230
+[ 1209.382694]  load_module+0x12ae/0x1520
+[ 1209.382699]  __do_sys_finit_module+0xbf/0x120
+[ 1209.382702]  ? __do_sys_finit_module+0xbf/0x120
+[ 1209.382707]  __x64_sys_finit_module+0x1a/0x20
+[ 1209.382708]  x64_sys_call+0x1ac3/0x1fa0
+[ 1209.382712]  do_syscall_64+0x54/0xb0
+[ 1209.382716]  ? syscall_exit_to_user_mode+0x2c/0x50
+[ 1209.382718]  ? x64_sys_call+0x41b/0x1fa0
+[ 1209.382722]  ? do_syscall_64+0x61/0xb0
+[ 1209.382725]  ? irqentry_exit_to_user_mode+0xe/0x20
+[ 1209.382727]  ? irqentry_exit+0x1d/0x30
+[ 1209.382729]  ? exc_page_fault+0x89/0x170
+[ 1209.382731]  entry_SYSCALL_64_after_hwframe+0x6c/0xd6
+[ 1209.382735] RIP: 0033:0x7f25b21c973d
+[ 1209.382737] RSP: 002b:00007ffd3f3204e8 EFLAGS: 00000246 ORIG_RAX: 0000000000000139
+[ 1209.382740] RAX: ffffffffffffffda RBX: 000055bacfdb7420 RCX: 00007f25b21c973d
+[ 1209.382741] RDX: 0000000000000000 RSI: 00007f25b20a9ded RDI: 0000000000000005
+[ 1209.382743] RBP: 0000000000020000 R08: 0000000000000000 R09: 0000000000000000
+[ 1209.382744] R10: 0000000000000005 R11: 0000000000000246 R12: 00007f25b20a9ded
+[ 1209.382745] R13: 0000000000000000 R14: 000055bacfdb74e0 R15: 000055bacfdb7420
+[ 1209.382748]  </TASK>
+
+
+
+VHOST_USER_SLAVE_CONFIG_CHANGE_MSG
+    config_changed_irq
+    virtio_config_changed
+VHOST_USER_SLAVE_VRING_HOST_NOTIFIER_MSG
+
+
+
+
+[ 1245.197074] ---- virtqueue_kick_prepare virtio_queue_rq() /root/xb/linux-5.15.113/drivers/block/virtio_blk.c:360
+[ 1245.197204] ---- virtblk_done() /root/xb/linux-5.15.113/drivers/block/virtio_blk.c:271
+[ 1245.197206] CPU: 0 PID: 517 Comm: in:imklog Tainted: G           OE     5.15.0-117-generic #127~20.04.1-Ubuntu
+[ 1245.197208] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.16.3-0-ga6ed6b701f0a-prebuilt.qemu.org 04/01/2014
+[ 1245.197210] Call Trace:
+[ 1245.197211]  <TASK>
+[ 1245.197212]  dump_stack_lvl+0x4a/0x63
+[ 1245.197214]  dump_stack+0x10/0x16
+[ 1245.197216]  virtblk_done+0x62/0x114 [virtio_blk]
+[ 1245.197220]  vring_interrupt+0xa7/0x120
+[ 1245.197222]  __handle_irq_event_percpu+0x42/0x170 -> action->handler(irq, action->dev_id)
+[ 1245.197226]  handle_irq_event_percpu+0x33/0x80
+[ 1245.197229]  handle_irq_event+0x3b/0x60
+[ 1245.197232]  handle_edge_irq+0x93/0x1c0
+[ 1245.197234]  __common_interrupt+0x52/0xe0
+[ 1245.197237]  common_interrupt+0x45/0xa0
+[ 1245.197239]  asm_common_interrupt+0x27/0x40 -> DECLARE_IDTENTRY_IRQ(X86_TRAP_OTHER,	common_interrupt);
+[ 1245.197242] RIP: 0033:0x7f5391915377
+[ 1245.197243] Code: 00 4c 01 c3 48 89 1d 08 ce 11 00 83 f8 ff 0f 85 07 fe ff ff 45 31 c0 e9 58 ff ff ff 0f 1f 80 00 00 00 00 0f b7 0d 09 ce 11 00 <48> 69 c9 80 51 01 00 49 01 c8 e9 62 fe ff ff 66 2e 0f 1f 84 00 00
+[ 1245.197245] RSP: 002b:00007f5391153258 EFLAGS: 00000246
+[ 1245.197247] RAX: 00000000000007e8 RBX: 0000000000000014 RCX: 0000000000000000
+[ 1245.197248] RDX: 0000000000000001 RSI: 00007f5391153340 RDI: 0000000066a7aeff
+[ 1245.197250] RBP: 0000000000007080 R08: 0000000065920080 R09: 0000000000000000
+[ 1245.197251] R10: 00000000000001f9 R11: 2ce33e6c02ce33e7 R12: 00007f5391a30430
+[ 1245.197252] R13: 00007f5391153340 R14: 000000000000001d R15: 00007f53911556e4
+[ 1245.197254]  </TASK>
 
