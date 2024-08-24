@@ -311,6 +311,54 @@ static struct pci_driver ice_driver = {
 #endif /* CONFIG_PM */
 	.shutdown = ice_shutdown,
 	.sriov_configure = ice_sriov_configure,
+        ice_check_sriov_allowed
+            test_bit(ICE_FLAG_SRIOV_CAPABLE, pf->flags)
+            ice_is_safe_mode(pf)
+            ice_pf_state_is_nominal
+                bitmap_set(check_bits, 0, ICE_STATE_NOMINAL_CHECK_BITS) -> 当检查 PF 是否处于正常操作状态时，需要检查列表开头分组的位。将检查ICE_STATE_NOMINAL_CHECK_BITS 之前的位。如果您需要添加一个位来考虑正常操作状态，则必须将其添加到 ICE_STATE_NOMINAL_CHECK_BITS 之前。未经适当考虑，请勿移动此条目的位置
+                bitmap_intersects(pf->state, check_bits, ICE_STATE_NBITS) -> 求交集
+        pci_vfs_assigned -> return guest vf num
+        ice_pci_sriov_ena
+            ice_ena_vfs(pf, num_vfs)
+                pf->sriov_irq_bm = bitmap_zalloc(total_vectors, GFP_KERNEL)
+                pci_enable_sriov(pf->pdev, num_vfs)
+                ice_set_per_vf_res(pf, num_vfs)
+                    ice_sriov_set_msix_res(pf, num_msix_per_vf * num_vfs)
+                ice_create_vf_entries(pf, num_vfs)
+                    ice_initialize_vf_entry(vf)
+                        ice_mbx_init_vf_info(&pf->hw, &vf->mbx_info)
+                            list_add(&vf_info->list_entry, &snap->mbx_vf)
+                    ice_vc_set_default_allowlist
+                ice_eswitch_reserve_cp_queues(pf, num_vfs)
+                    pf->eswitch.qs.to_reach = pf->eswitch.qs.value + change
+                ice_start_vfs(pf)
+                    ice_for_each_vf(pf, bkt, vf)
+                        retval = ice_init_vf_vsi_res(vf)
+                            vf->first_vector_idx = ice_sriov_get_irqs(pf, vf->num_msix)
+                            vsi = ice_vf_vsi_setup(vf)
+                                vsi = ice_vsi_setup(pf, &params)
+                                    vsi = ice_vsi_alloc(pf)
+                                        vsi = devm_kzalloc(dev
+                                        pf->next_vsi = ice_get_free_slot
+                                    ice_vsi_cfg
+                                        ice_vsi_cfg_def
+                                            ice_vsi_alloc_def
+                                        ice_vsi_cfg_tc_lan
+                                            ice_cfg_vsi_lan
+                                    if (!ice_is_safe_mode(pf) && vsi->type == ICE_VSI_PF) -> 添加交换机规则以丢弃所有 Tx 流控制帧，查找，来自 VSI 的类型为 ETHERTYPE，并限制恶意 VF 发送 PAUSE 或 PFC 帧。如果启用，FW 仍然可以发送 FC 帧。该规则为 PF VSI 添加一次以创建适当的配方，因为 VSI/VSI 列表被丢弃操作忽略...还添加规则以处理 LLDP Tx 数据包。需要丢弃 Tx LLDP 数据包，以便 VF 无法发送 LLDP 数据包来重新配置 HW 中的 DCB 设置
+                                        ice_fltr_add_eth(vsi, ETH_P_PAUSE, ICE_FLTR_TX,ICE_DROP_PACKET)
+                                        ice_cfg_sw_lldp(vsi, true, true)
+                                    if (!vsi->agg_node)
+                                        ice_set_agg_vsi(vsi)
+                            ice_vf_init_host_cfg(vf, vsi)
+                                eth_broadcast_addr
+                                ice_fltr_add_mac
+                                ice_vsi_apply_spoofchk
+                        retval = ice_eswitch_attach(pf, vf)
+                        ice_ena_vf_mappings(vf)
+                        wr32(hw, VFGEN_RSTAT(vf->vf_id), VIRTCHNL_VFR_VFACTIVE)
+                ice_irq_dynamic_ena(hw, NULL, NULL)
+            set_bit(ICE_FLAG_SRIOV_ENA, pf->flags)
 	.sriov_get_vf_total_msix = ice_sriov_get_vf_total_msix,
 	.sriov_set_msix_vec_count = ice_sriov_set_msix_vec_count,
 	.err_handler = &ice_pci_err_handler
@@ -724,6 +772,7 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
                     mpfs->bitmap = bitmap_zalloc(l2table_size, GFP_KERNEL)
                 mlx5_sriov_init -> net/mlx5_core：添加基本 sriov 支持 此补丁为 mlx5 支持的设备添加了 SRIOV 基本支持。 PF 和 VF 使用相同的驱动程序； VF 由驱动程序通过添加到 pci 表条目的标志 MLX5_PCI_DEV_IS_VF 来识别。 像往常一样，通过将值写入 PF 设备的 sriov_numvs sysfs 文件来创建虚拟函数。 实例化 VF 后，虚拟机管理程序上的驱动程序将探测它们。 人们可以通过 /sys/bus/pci/drivers/mlx5_core/unbind 优雅地解除它们的绑定。 添加 mlx5_wait_for_vf_pages() 是为了确保当 VF 在没有执行正确拆卸的情况下死亡时，虚拟机管理程序驱动程序会等待，直到返回在虚拟机管理程序中分配的用于维持其操作的所有页面。 为了使 VF 能够运行，PF 需要为其调用enable_hca。 这可以在通过调用 pci_enable_sriov 创建 VF 之前完成。 如果卸载 PF 的驱动程序时有分配给 VM 的 VF，则所有 VF 都会出现系统错误，并且 PF 驱动程序卸载干净； 在这种情况下，不会调用 pci_disable_sriov，并且运行 lspci 时将显示设备。 重新加载 PF 驱动程序后，它将同步其数据结构，以维护其 VF 上的状态
                     pci_sriov_get_totalvfs
+                        dev->sriov->driver_max_VFs
                     mlx5_get_max_vfs
                     pci_num_vf
                     mlx5_core_ec_sriov_enabled
@@ -810,6 +859,9 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
                         mlx5_eswitch_enable -> net/mlx5：E-switch，保护 eswitch 模式更改 目前，eswitch 模式更改是从以下 2 个不同的执行上下文中发生的。 1. sriov sysfs 启用/禁用 2. devlink eswitch set 命令 两者都需要以同步方式访问 eswitch 相关数据结构。 在没有任何同步的情况下，存在以下竞争条件。 通过 devlink eswitch 模式更改启用/禁用 SR-IOV：
                         mlx5_get_default_msix_vec_count
                         mlx5_set_msix_vec_count
+                            ec_vf_function = mlx5_core_ec_sriov_enabled(dev)
+                            vport = mlx5_core_func_to_vport(dev, function_id, ec_vf_function)
+                            MLX5_SET(set_hca_cap_in, hca_cap, opcode, MLX5_CMD_OP_SET_HCA_CAP)
                         sriov_restore_guids
                 mlx5_sf_dev_table_create
                 mlx5_devlink_traps_register
@@ -3227,6 +3279,19 @@ static struct pci_driver mlx5_core_driver = {
     .shutdown	= shutdown,
     .err_handler	= &mlx5_err_handler,
     .sriov_configure   = mlx5_core_sriov_configure, / 支持sriov功能需要实现的函数 /
+        mlx5_sriov_enable(pdev, num_vfs)
+            mlx5_device_enable_sriov
+                mlx5_eswitch_enable
+                mlx5_core_enable_hca
+                mlx5_set_msix_vec_count
+                vport_num = mlx5_core_ec_sriov_enabled(dev)
+                mlx5_core_ec_vf_vport_base
+                sriov_restore_guids
+                    struct mlx5_hca_vport_context *in
+                    in->node_guid = sriov->vfs_ctx[vf].node_guid
+                    in->port_guid = sriov->vfs_ctx[vf].port_guid
+                    mlx5_core_modify_hca_vport_context(dev, 1, 1, func_id, in)
+            pci_enable_sriov
     .sriov_get_vf_total_msix = mlx5_sriov_get_vf_total_msix, //  PF 驱动程序回调以获取可用于分发到VF 的MSI-X 向量的总数
     .sriov_set_msix_vec_count = mlx5_core_sriov_set_msix_vec_count, // PF 驱动程序回调以更改 VF 上的 MSI-X 向量的数量
 };
@@ -8898,11 +8963,12 @@ Firmware Management Protocol (FMP), fpm
 
 vfio, Documentation/driver-api/vfio.rst
 echo 1 | sudo tee /sys/module/vfio_pci/parameters/enable_sriov
+drivers/vfio/pci/vfio_pci.c
 modprobe vfio-pci enable_sriov=1 -> module_init(vfio_pci_init) -> vfio/pci：将 pci_driver 代码从 vfio_pci_core.c 中拆分出来，将 vfio_pci 驱动程序拆分为两个逻辑部分，即实现“对任何 PCI 设备的通用 VFIO 支持”的“struct pci_driver”（vfio_pci.c）和代码库（ vfio_pci_core.c），帮助在 PCI 设备之上实现 struct vfio_device。 vfio_pci.ko 继续在 sysfs 下提供相同的接口，此更改不会对功能产生影响。 以下补丁将把 vfio_pci 和 vfio_pci_core 变成一个单独的模块。 这是为了允许另一个模块提供 pci_driver 并允许该模块自定义 VFIO 的设置方式、注入其自己的操作以及轻松扩展供应商特定的功能。 此时，vfio_pci_core 仍然包含许多混合到其中的 vfio_pci 功能。 后续补丁将移出更多大型物品，但需要另一个清理系列才能清除所有物品
     vfio_pci_core_set_params
     pci_register_driver(&vfio_pci_driver)
     vfio_pci_fill_ids()
-    pci_add_dynid(&vfio_pci_driver, vendor, device, subvendor, subdevice, class, class_mask, 0) -> 将新的 PCI 设备 ID 添加到此驱动程序并重新探测设备
+        pci_add_dynid(&vfio_pci_driver, vendor, device, subvendor, subdevice, class, class_mask, 0) -> 将新的 PCI 设备 ID 添加到此驱动程序并重新探测设备
 
 
 static struct pci_driver vfio_pci_driver = {
@@ -8915,8 +8981,10 @@ static struct pci_driver vfio_pci_driver = {
 	.driver_managed_dma	= true,
 };
 
-vfio_pci_probe
+vfio_pci_probe -> vfio_add_group_dev 添加自己的ops，同时生成一个dev，qemu通过 /dev/vfio 获取这个dev
+    struct vfio_pci_core_device *vdev
     vfio_pci_is_denylisted
+        vfio_pci_dev_in_denylist
     vdev = vfio_alloc_device(vfio_pci_core_device, vdev, &pdev->dev, &vfio_pci_ops) -> container_of(_vfio_alloc_device
         vfio_init_device(device, dev, ops) -> vfio：添加统一 vfio_device 生命周期的帮助程序，其想法是让 vfio 核心管理 vfio_device 生命周期，而不是重复跨驱动程序的逻辑。 这也是将struct device添加到vfio_device的准备步骤。 新的助手对和 vfio_device 中的 kref： - vfio_alloc_device() - vfio_put_device() 驱动程序可以注册 @init/@release 回调来管理包装 vfio_device 的任何私有状态。 然而，vfio-ccw 不适合这个模型，因为它的私有结构混合了父级和 mdev 信息，因此生命周期混乱，因此必须在 vfio 设备的生命周期之外分配/释放。 根据之前的讨论，IBM 人员不会在短期内解决这个问题。 不必等待这些修改，而是引入另一个帮助程序 vfio_init_device()，以便 ccw 可以调用它来初始化预分配的 vfio_device。 ccw 技巧的进一步含义是 vfio_device 无法在 vfio 核心中统一释放。 相反，需要*每个*驱动程序来实现@release并释放内部的vfio_device。 那么ccw可以自行选择延迟免费。 另一个技巧是 kvzalloc() 用于满足 gvt 的需要，gvt 使用 vzalloc()，而所有其他都使用 kzalloc()。 因此，驱动程序应该调用帮助程序 vfio_free_device() 来释放 vfio_device，而不是假设 kfree() 或 vfree() 是适用的。 稍后，一旦 ccw 混乱得到修复，我们就可以删除这些技巧并完全处理 vfio 核心中的结构分配/释放。 所有现有用法转换为新模型后，现有 vfio_{un}init_group_dev() 将被弃用
             ida_alloc_max
@@ -9010,18 +9078,66 @@ static const struct vfio_device_ops vfio_pci_ops = {
             vfio_pci_ioctl_ioeventfd
                 vfio_pci_ioeventfd
                     vfio_virqfd_enable(ioeventfd, vfio_pci_ioeventfd_handler, vfio_pci_ioeventfd_thread, NULL,&ioeventfd->virqfd, fd)
+                        INIT_WORK(&virqfd->shutdown, virqfd_shutdown)
+                        INIT_WORK(&virqfd->inject, virqfd_inject)
+                            virqfd->thread(virqfd->opaque, virqfd->data)
+                        init_poll_funcptr(&virqfd->pt, virqfd_ptable_queue_proc)
+                        events = vfs_poll(irqfd.file, &virqfd->pt)
+                        handler(opaque, data)
                     list_add(&ioeventfd->next, &vdev->ioeventfds_list)
+        case VFIO_DEVICE_SET_IRQS
+            vfio_pci_ioctl_set_irqs(vdev, uarg)
+                struct vfio_irq_set hdr
+                max = vfio_pci_get_irq_count(vdev, hdr.index)
+                    if (irq_type == VFIO_PCI_INTX_IRQ_INDEX)
+                        pci_read_config_byte(vdev->pdev, PCI_INTERRUPT_PIN, &pin)
+                    else if (irq_type == VFIO_PCI_MSI_IRQ_INDEX)
+                        pos = vdev->pdev->msi_cap
+                        pci_read_config_word(vdev->pdev, pos + PCI_MSI_FLAGS, &flags)
+                    else if (irq_type == VFIO_PCI_MSIX_IRQ_INDEX)
+                        pos = vdev->pdev->msix_cap
+                        pci_read_config_word(vdev->pdev, pos + PCI_MSIX_FLAGS, &flags)
+                vfio_set_irqs_validate_and_prepare(&hdr, max, VFIO_PCI_NUM_IRQS, &data_size)
+                vfio_pci_set_irqs_ioctl(vdev, hdr.flags, hdr.index, hdr.start, hdr.count, data)
+                    case VFIO_IRQ_SET_ACTION_TRIGGER
+                        vfio_pci_set_msi_trigger
+                            vfio_msi_enable
+                                pci_alloc_irq_vectors(pdev, 1, nvec, flag)
+                            vfio_msi_set_block(vdev, start, count, fds, msix)
+                                vfio_msi_set_vector_signal(vdev, j, fd, msix)
+                                    irq = pci_irq_vector(pdev, vector)
+                                    trigger = eventfd_ctx_fdget(fd)
+                                    request_irq(irq, vfio_msihandler, 0, ctx->name, trigger) -> toggle eventfd，进而引起producer状态变化，最终导致consumer状态变化
+                                        eventfd_signal(trigger)
+                                            eventfd_signal_mask(ctx, 0)
+                                                wake_up_locked_poll(&ctx->wqh, EPOLLIN | mask)
+                                    irq_bypass_register_producer(&ctx->producer)
 	.device_feature = vfio_pci_core_ioctl_feature,
 	.read		= vfio_pci_core_read,
 	.write		= vfio_pci_core_write,
 	.mmap		= vfio_pci_core_mmap,
+        pci_request_selected_regions
+        vdev->barmap[index] = pci_iomap(pdev, index, 0)
+        vma->vm_private_data = vdev
 	.request	= vfio_pci_core_request,
 	.match		= vfio_pci_core_match,
 	.bind_iommufd	= vfio_iommufd_physical_bind,
+        idev = iommufd_device_bind(ictx, vdev->dev, out_device_id)
+            iommufd_get_group
+            iommu_group_has_isolated_msi
+            iommu_device_claim_dma_owner
+            iommufd_selftest_is_mock_dev
+            iommufd_object_finalize
 	.unbind_iommufd	= vfio_iommufd_physical_unbind,
 	.attach_ioas	= vfio_iommufd_physical_attach_ioas,
 	.detach_ioas	= vfio_iommufd_physical_detach_ioas,
 };
+
+
+
+
+vfio_disable_interrupts
+
 
 
 pci, Documentation/PCI/pci.rst
@@ -10255,12 +10371,60 @@ static struct miscdevice vfio_dev = {
 static const struct file_operations vfio_fops = {
 	.owner		= THIS_MODULE,
 	.open		= vfio_fops_open,
+        struct vfio_container *container
+        container = kzalloc(sizeof(*container)
+        INIT_LIST_HEAD(&container->group_list)
 	.release	= vfio_fops_release,
 	.unlocked_ioctl	= vfio_fops_unl_ioctl,
+        switch (cmd)
+        case VFIO_SET_IOMMU
+            vfio_ioctl_set_iommu(container, arg)
+                list_for_each_entry(driver, &vfio.iommu_drivers_list, vfio_next)
+                    driver->ops->ioctl(NULL, VFIO_CHECK_EXTENSION, arg)
+                    data = driver->ops->open(arg)
+                    __vfio_container_attach_groups
+                        driver->ops->attach_group
+        default
+            if (driver)
+                ret = driver->ops->ioctl(data, cmd, arg) -> passthrough
 	.compat_ioctl	= compat_ptr_ioctl,
 };
 
 
+static const struct vfio_iommu_driver_ops vfio_iommu_driver_ops_type1 = {
+	.name			= "vfio-iommu-type1",
+	.owner			= THIS_MODULE,
+	.open			= vfio_iommu_type1_open,
+	.release		= vfio_iommu_type1_release,
+	.ioctl			= vfio_iommu_type1_ioctl,
+        case VFIO_IOMMU_GET_INFO
+            vfio_iommu_type1_get_info
+                vfio_iommu_migration_build_caps
+                    cap_mig.header.id = VFIO_IOMMU_TYPE1_INFO_CAP_MIGRATION
+                vfio_iommu_dma_avail_build_caps
+                vfio_iommu_iova_build_caps
+                    vfio_iommu_iova_add_cap
+                vfio_info_cap_shift
+        case VFIO_IOMMU_MAP_DMA
+            vfio_iommu_type1_map_dma
+                vfio_dma_do_map(iommu, &map)
+	.attach_group		= vfio_iommu_type1_attach_group,
+        vfio_iommu_find_iommu_group(iommu, iommu_group)
+        iommu_group_for_each_dev(iommu_group, &domain->domain,vfio_iommu_domain_alloc)
+        iommu_enable_nesting
+        iommu_attach_group -> __iommu_attach_group
+            dev = iommu_group_first_dev(group)
+            __iommu_group_set_domain
+                __iommu_attach_device
+                    domain->ops->attach_dev(domain, dev)
+	.detach_group		= vfio_iommu_type1_detach_group,
+	.pin_pages		= vfio_iommu_type1_pin_pages,
+	.unpin_pages		= vfio_iommu_type1_unpin_pages,
+	.register_device	= vfio_iommu_type1_register_device,
+	.unregister_device	= vfio_iommu_type1_unregister_device,
+	.dma_rw			= vfio_iommu_type1_dma_rw,
+	.group_iommu_domain	= vfio_iommu_type1_group_iommu_domain,
+};
 
 
 static const struct vfio_iommu_driver_ops vfio_noiommu_ops = {
@@ -10274,8 +10438,7 @@ static const struct vfio_iommu_driver_ops vfio_noiommu_ops = {
 };
 
 
-vfio_fops_open
-    INIT_LIST_HEAD(&container->group_list)
+
 
 
 
@@ -10331,9 +10494,9 @@ vfio_group_fops_unl_ioctl
                                         for (i = 0; i < PCI_STD_NUM_BARS; i++) -> 6
                                             dummy_res->resource.name = "vfio sub-page reserved"
                                     eeh_dev_open -> eeh_dev_open - 增加 PE 的直通设备计数，@pdev：PCI 设备 增加指定 PE 的直通设备计数。 结果，在 PE 上检测到的 EEH 错误将不会被报告。 PE 所有者将负责检测和恢复 -> Extended Error Handling -> 基于 IBM POWER 的 pSeries 和 iSeries 计算机包括 PCI 总线控制器芯片，这些芯片具有检测和报告各种 PCI 总线错误情况的扩展功能。 这些功能的名称为“EEH”，即“扩展错误处理”。 EEH 硬件功能允许清除 PCI 总线错误并“重新启动”PCI 卡，而无需重新启动操作系统。 这与传统的 PCI 错误处理相反，在传统 PCI 错误处理中，PCI 芯片直接连接到 CPU，错误会导致 CPU 机器检查/检查停止条件，从而完全停止 CPU。 另一种“传统”技术是忽略此类错误，这可能导致用户数据或内核数据的数据损坏、适配器挂起/无响应或系统崩溃/锁定。 因此，EEH 背后的想法是，通过保护操作系统免受 PCI 错误的影响，并赋予操作系统“重新启动”/恢复各个 PCI 设备的能力，操作系统可以变得更加可靠和健壮。 其他供应商基于 PCI-E 规范的未来系统可能包含类似的功能, ref, https://android.googlesource.com/kernel/common/+/bcmdhd-3.10/Documentation/powerpc/eeh-pci-error-recovery.txt
-    vfio_group_ioctl_get_status
+    case VFIO_GROUP_GET_STATUS -> vfio_group_ioctl_get_status
         iommu_group_dma_owner_claimed ->  Query group dma ownership status -> 多个设备可以放置在同一个 IOMMU 组中，因为它们无法相互隔离。 这些设备必须完全受内核控制或用户空间控制，不能混合。 这在 iommu 核心中添加了 dma 所有权管理，并公开了设备驱动程序和设备用户空间分配框架（即 VFIO）的多个接口，以便可以在一开始就检测到用户和内核控制的 dma 之间的任何冲突。 面向设备驱动程序的接口是 int iommu_device_use_default_domain(struct device *dev); void iommu_device_unuse_default_domain(struct device *dev); 通过调用 iommu_device_use_default_domain()，设备驱动程序告诉 iommu 层设备 dma 是通过内核 DMA API 处理的。 iommu 层将管理 IOVA 并使用默认域进行 DMA 地址转换。 面向设备用户空间分配框架的接口是 int iommu_group_claim_dma_owner(struct iommu_group *group, void *owner); 无效 iommu_group_release_dma_owner(struct iommu_group *group); bool iommu_group_dma_owner_claimed(struct iommu_group *group); 如果 DMA 所有者声明接口返回失败，则必须禁止设备用户空间分配
-    vfio_group_ioctl_set_container
+    case VFIO_GROUP_SET_CONTAINER -> vfio_group_ioctl_set_container
         f = fdget(fd)
         container = vfio_container_from_file(f.file)
         vfio_container_attach_group
@@ -10354,7 +10517,7 @@ vfio_group_fops_unl_ioctl
                 INIT_LIST_HEAD(&ioas->hwpt_list) -> iommufd：添加一个硬件页表对象，hw_pagetable 对象将内部结构 iommu_domain 暴露给用户空间。 当任何 DMA 设备连接到 IOAS 以通过 iommu 驱动程序控制 io 页表时，需要 iommu_domain。 为了与 VFIO 兼容，当 DMA 设备连接到 IOAS 时，会自动创建 hw_pagetable。 如果兼容的 iommu_domain 已存在，则与其关联的 hw_pagetable 将用于附件。 在最初的系列中，hw_pagetable 对象没有 iommufd uAPI。 下一个补丁提供面向驱动程序的 IO 页表附加 API，允许驱动程序接受 IOAS 或 hw_pagetable ID，并让驱动程序返回从 IOAS 自动选择的 hw_pagetable ID。 期望驱动程序将通过其自己的 FD 提供 uAPI，以将其设备附加到 iommufd。 这允许用户空间了解设备到 iommu_domains 的映射并覆盖自动连接。 未来的硬件特定接口将允许用户空间使用带有 IOMMU 驱动程序特定参数的 iommu_domains 创建 hw_pagetable 对象。 该基础设施将允许将这些域链接到 IOAS 和设备
             iommufd_object_finalize -> 允许并发访问该对象，一旦另一个线程可以看到该对象指针，就可以防止对象销毁。 除了特殊的仅内核对象之外，没有内核方法可以可靠地销毁单个对象。 因此，所有创建对象的 API 都必须使用 iommufd_object_abort() 来处理错误，并且只有在对象创建不会失败时才调用 iommufd_object_finalize()
                 old = xa_store(&ictx->objects, obj->id, obj, GFP_KERNEL)
-    vfio_group_ioctl_unset_container
+    case VFIO_GROUP_UNSET_CONTAINER -> vfio_group_ioctl_unset_container
         vfio_group_detach_container
             driver->ops->detach_group(container->iommu_data,
 
@@ -10365,81 +10528,6 @@ vfio_group_fops_open
     struct vfio_group *group
     group->opened_file = filep
     filep->private_data = group
-
-================================
-vfio code demo:
-int container, group, device, i;
-struct vfio_group_status group_status =
-                                { .argsz = sizeof(group_status) };
-struct vfio_iommu_type1_info iommu_info = { .argsz = sizeof(iommu_info) };
-struct vfio_iommu_type1_dma_map dma_map = { .argsz = sizeof(dma_map) };
-struct vfio_device_info device_info = { .argsz = sizeof(device_info) };
-
-/* Create a new container */
-container = open("/dev/vfio/vfio", O_RDWR);
-
-if (ioctl(container, VFIO_GET_API_VERSION) != VFIO_API_VERSION)
-        /* Unknown API version */
-
-if (!ioctl(container, VFIO_CHECK_EXTENSION, VFIO_TYPE1_IOMMU))
-        /* Doesn't support the IOMMU driver we want. */
-
-/* Open the group */
-group = open("/dev/vfio/26", O_RDWR);
-
-/* Test the group is viable and available */
-ioctl(group, VFIO_GROUP_GET_STATUS, &group_status);
-
-if (!(group_status.flags & VFIO_GROUP_FLAGS_VIABLE))
-        /* Group is not viable (ie, not all devices bound for vfio) */
-
-/* Add the group to the container */
-ioctl(group, VFIO_GROUP_SET_CONTAINER, &container);
-
-/* Enable the IOMMU model we want */
-ioctl(container, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU);
-
-/* Get addition IOMMU info */
-ioctl(container, VFIO_IOMMU_GET_INFO, &iommu_info);
-
-/* Allocate some space and setup a DMA mapping */
-dma_map.vaddr = mmap(0, 1024 * 1024, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
-dma_map.size = 1024 * 1024;
-dma_map.iova = 0; /* 1MB starting at 0x0 from device view */
-dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
-
-ioctl(container, VFIO_IOMMU_MAP_DMA, &dma_map);
-
-/* Get a file descriptor for the device */
-device = ioctl(group, VFIO_GROUP_GET_DEVICE_FD, "0000:06:0d.0");
-
-/* Test and setup the device */
-ioctl(device, VFIO_DEVICE_GET_INFO, &device_info);
-
-for (i = 0; i < device_info.num_regions; i++) {
-        struct vfio_region_info reg = { .argsz = sizeof(reg) };
-
-        reg.index = i;
-
-        ioctl(device, VFIO_DEVICE_GET_REGION_INFO, &reg);
-
-        /* Setup mappings... read/write offsets, mmaps
-         * For PCI devices, config space is a region */
-}
-
-for (i = 0; i < device_info.num_irqs; i++) {
-        struct vfio_irq_info irq = { .argsz = sizeof(irq) };
-
-        irq.index = i;
-
-        ioctl(device, VFIO_DEVICE_GET_IRQ_INFO, &irq);
-
-        /* Setup IRQs... eventfds, VFIO_DEVICE_SET_IRQS */
-}
-
-/* Gratuitous device reset and go... */
-ioctl(device, VFIO_DEVICE_RESET);
 
 
 struct vfio_device_bind_iommufd bind = {
@@ -11194,14 +11282,11 @@ static struct ib_client umad_client = {
 virtio,
 core_initcall(virtio_init)
     bus_register(&virtio_bus)
-<<<<<<< HEAD
 
 
 
 
 
-=======
->>>>>>> 2c88d9b9bbe74f6e9a883167fced67ae68d59c77
 static struct bus_type virtio_bus = {
 	.name  = "virtio",
 	.match = virtio_dev_match,
@@ -11242,6 +11327,7 @@ subsys_initcall(pci_subsys_init);
 								pci_setup_device
 									pci_read_bases
 										__pci_read_base	// 读取bar空间大小
+                            pci_device_add(dev, bus)
 
 
 resource代表一个资源，可以是一段IO地址区间，或者Mem地址区间，总线树上每枚举一个设备，Host bridge就根据设备的BAR空间大小分配合适的资源给这个PCI设备用，这里的资源就是IO或者内存空间的物理地址。PCI设备BAR寄存器的值就是从这里申请得来的。申请的流程如下
@@ -11479,7 +11565,25 @@ kvm_vm_ioctl(KVM_IOEVENTFD)
                 slots = __kvm_memslots(kvm, as_id)
                 old = id_to_memslot(slots, id)
                 kvm_set_memslot(kvm, old, NULL, KVM_MR_DELETE)
-
+    ...
+    case KVM_IRQFD
+        kvm_irqfd(kvm, &data)
+            if (args->flags & KVM_IRQFD_FLAG_DEASSIGN)
+                kvm_irqfd_deassign(kvm, args)
+            kvm_irqfd_assign(kvm, args)
+                INIT_WORK(&irqfd->inject, irqfd_inject);
+                    virqfd->thread(virqfd->opaque, virqfd->data)
+                INIT_WORK(&irqfd->shutdown, irqfd_shutdown)
+                eventfd = eventfd_ctx_fileget(f.file)
+                init_waitqueue_func_entry(&irqfd->wait, irqfd_wakeup)
+                init_poll_funcptr(&irqfd->pt, irqfd_ptable_queue_proc)
+                irqfd_update(kvm, irqfd)
+                events = vfs_poll(f.file, &irqfd->pt)
+                schedule_work(&irqfd->inject)
+                #ifdef CONFIG_HAVE_KVM_IRQ_BYPASS
+                    irqfd->consumer.add_producer = kvm_arch_irq_bypass_add_producer;
+                    irqfd->consumer.del_producer = kvm_arch_irq_bypass_del_producer;
+                    irq_bypass_register_consumer(&irqfd->consumer)
 
 # MMIO处理流程中（handle_ept_misconfig）最后会调用到ioeventfd_write通知QEMU。
 /* MMIO/PIO writes trigger an event if the addr/val match */
@@ -11931,10 +12035,12 @@ virtblk_probe
                 blk_mq_start_stopped_hw_queues(vblk->disk->queue, true)
     int virtio_find_vqs -> virtqueue 是客户机前端对于队列管理的数据结构，在客户机的linux内核中通过kmalloc_array进行分配。而队列的实体需要通过函数 virtio_find_vqs 查找或者生成，所以这里还把callback函数指定为virtblk_done，当buffer使用发生变化的时候，需要调用这个callback函数进行通知
         vdev->config->find_vqs(vdev, nvqs, vqs, callbacks, names, NULL, desc) -> static int vp_modern_find_vqs
-            vp_find_vqs(vdev, nvqs, vqs, callbacks, names, ctx, desc)
+            vp_find_vqs(vdev, nvqs, vqs, callbacks, names, ctx, desc) -> Try MSI-X with one vector per queue
                 vp_find_vqs_msix true
                     vp_request_msix_vectors
                         pci_alloc_irq_vectors_affinity(vp_dev->pci_dev, nvectors, nvectors, flags, desc)
+                            struct irq_affinity msi_default_affd = {0}
+                            affd = &msi_default_affd -> desc = NULL or {0}
                         request_irq(pci_irq_vector(vp_dev->pci_dev, v), vp_config_changed, 0, vp_dev->msix_names[v], vp_dev)
                         vp_dev->config_vector(vp_dev, v)
                         request_irq(pci_irq_vector(vp_dev->pci_dev, v), vp_vring_interrupt, 0, vp_dev->msix_names[v], vp_dev)
@@ -11942,6 +12048,8 @@ virtblk_probe
                         notify = vp_notify_with_data
                         or notify = vp_notify
                         vring_create_virtqueue -> create the vring
+                            if (virtio_has_feature(vdev, VIRTIO_F_RING_PACKED))
+                                vring_create_virtqueue_packed -> default
                             vring_create_virtqueue_split
                                 vring_init
                                 __vring_new_virtqueue
@@ -12051,6 +12159,8 @@ virtio_queue_rq
             virtqueue_add(_vq, sgs, total_sg, out_sgs, in_sgs, data, NULL, gfp)
     virtqueue_kick_prepare(vblk->vqs[qid].vq)
         virtqueue_kick_prepare_packed
+            needs_kick = vring_need_event(event_idx, new, old) -> virtio_ring：利用打包环中的事件 IDX，利用打包环中的 EVENT_IDX 功能在可用时抑制事件
+                return (__u16)(new_idx - event_idx - 1) < (__u16)(new_idx - old) -> old是add_sg之前的avail.idx，而new是当前的avail.idx, 理解为当前可用buffer小于原来可用buffer时, 需要通知后端 ->  old表示上次kick后的avail.idx，new是当前的avail.idx，两者的差值就是vq->num_added，也就是自上次kick后端后前端又积累的desc chain数量。另外vq->event是在vq初始化的时候设置的 -> 后端处理的位置event_idx超过了old，表示后端QEMU处理的速度够快，索引返回true，通知(kick)后端，通知后端有新的avail 逻辑buf，请你继续处理 -> 后端处理的位置event_idx落后于上次添加avail ring的位置，说明后端处理较慢，返回false，那么前端就先不通知(kick)，积攒一下，反正后端正处理不过来，下次退出的时候，让后端一起尽情处理
         or virtqueue_kick_prepare_split
     virtqueue_notify(vblk->vqs[qid].vq) -> bool virtqueue_notify(struct virtqueue *_vq) -> vm kernel notify qemu
         vq->notify(_vq)) -> 
@@ -12584,6 +12694,9 @@ static int virtio_vdpa_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
                     vring_alloc_queue_packed(&vring_packed, vdev, num, dma_dev)
                     vq->notify = notify
                     vq->indirect = virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC)
+                        virtio_check_driver_offered_feature(vdev, fbit)
+                        __virtio_test_bit(vdev, fbit)
+                            vdev->features & BIT_ULL(fbit)
                     vring_alloc_state_extra_packed(&vring_packed)
                     virtqueue_vring_init_packed(&vring_packed, !!callback)
                     virtqueue_init(vq, num)
@@ -12792,6 +12905,8 @@ make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
 
 
 驱动/模块初始化顺序
+core_initcall 的函数比 subsys_initcall 的函数执行地更早
+
 core_initcall(fn) --->.initcall1.init  
 postcore_initcall(fn) --->.initcall2.init  
 arch_initcall(fn) --->.initcall3.init  
@@ -13574,7 +13689,13 @@ static int vdpasim_blk_dev_add(struct vdpa_mgmt_dev *mdev, const char *name, con
         blk_config->capacity = cpu_to_vdpasim64(vdpasim, VDPASIM_BLK_CAPACITY) -> 0x40000 -> print(0x40000) 262144 * 512 = 134217728 = 128MB -> lsblk vda    252:0    0   128M  0 block:virtio:vdpa
         blk_config->size_max = cpu_to_vdpasim32(vdpasim, VDPASIM_BLK_SIZE_MAX) -> 4096
         blk_config->seg_max = cpu_to_vdpasim32(vdpasim, VDPASIM_BLK_SEG_MAX) -> 32
+        blk_config->num_queues = cpu_to_vdpasim16(vdpasim, VDPASIM_BLK_VQ_NUM)
         blk_config->blk_size = cpu_to_vdpasim32(vdpasim, SECTOR_SIZE) -> 1<<9 = 512
+        blk_config->discard_sector_alignment
+        blk_config->max_discard_sectors
+        blk_config->max_discard_seg
+        blk_config->max_write_zeroes_sectors
+        blk_config->max_write_zeroes_seg
         ...
     dev_attr.work_fn = vdpasim_blk_work
         for (i = 0; i < VDPASIM_BLK_VQ_NUM; i++)
@@ -13707,6 +13828,8 @@ static const struct vdpa_config_ops vdpasim_config_ops = {
 	.get_config_size        = vdpasim_get_config_size,
         vdpasim->dev_attr.config_size
 	.get_config             = vdpasim_get_config,
+        vdpasim->dev_attr.get_config(vdpasim, vdpasim->config)
+        memcpy(buf, vdpasim->config + offset, len)
 	.set_config             = vdpasim_set_config,
         vdpasim->dev_attr.set_config(vdpasim, vdpasim->config) -> 中转
 	.get_generation         = vdpasim_get_generation,
@@ -14810,4 +14933,238 @@ VHOST_USER_SLAVE_VRING_HOST_NOTIFIER_MSG
 [ 1245.197251] R10: 00000000000001f9 R11: 2ce33e6c02ce33e7 R12: 00007f5391a30430
 [ 1245.197252] R13: 00007f5391153340 R14: 000000000000001d R15: 00007f53911556e4
 [ 1245.197254]  </TASK>
+
+
+
+
+irq:
+u32	ndst: Notification Destination -> VM：VMX：将已发布的中断支持提取到单独的文件中，提取已发布的中断代码，以便可以将其重新用于信任域扩展 (TDX)，这需要已发布的中断并且可以几乎逐字逐句地使用 KVM VMX 的实现。TDX 与原始 VMX 有很大不同，因此非常希望在单独的文件中实现 TDX 的核心，即通过将 TDX 支持推入 vmx.c 来重用已发布的中断代码会很麻烦
+struct vcpu_vmx {
+    /* Posted interrupt descriptor */
+    struct pi_desc pi_desc;
+}
+
+
+remove/unregister blk dev:
+unregister_virtio_device
+    device_unregister(&dev->dev)
+        device_del(dev) -> device_del - 从系统中删除设备。，@dev：设备。这是设备注销序列的第一部分。这会从我们在此处控制的列表中删除设备，将其从在 device_add() 中添加的其他驱动程序模型子系统中移除，并将其从 kobject 层次结构中移除。注意：这应该手动调用 _iff_ device_add() 也是手动调用的
+            kill_device(dev)
+            bus_notify(dev, BUS_NOTIFY_DEL_DEVICE)
+            device_remove_file(dev, &dev_attr_uevent)
+        put_device(dev)
+
+
+
+
+
+英特尔 MIC 用户空间守护进程的示例实现。此补丁引入了一个示例用户空间守护进程，该守护进程在主机上实现 virtio 设备后端。守护进程通过与英特尔 MIC 主机驱动程序通信来创建/删除/配置 virtio 设备后端。当前支持的 virtio 设备包括 virtio net、virtio console 和 virtio block。Virtio net 支持 TSO/GSO。守护进程还监控卡关闭状态并采取适当的措施，例如在卡关闭和崩溃时终止 virtio 后端并重置卡
+https://github.com/torvalds/linux/commit/8d49751580db804a02caf6a5b7cebe2ff26c0d7e
+Intel MIC X100 设备是一种 PCIe 规格的附加协处理器卡，基于运行 Linux 操作系统的 Intel 众核 (MIC) 架构。它是平台中的 PCIe 端点，因此实现了三个必需的标准地址空间，即配置、内存和 I/O。主机操作系统加载设备驱动程序，这通常是 PCIe 设备的典型做法。卡本身在重置后运行引导程序，将控制权转移到从主机驱动程序下载的卡操作系统。英特尔提供的卡操作系统是一个 Linux 内核，针对 X100 设备进行了修改。由于它是 PCIe 卡，因此它无法托管用于网络、存储和控制台的硬件设备。我们在 X100 协处理器上提供这些设备，从而为应用程序提供可自启动的等效环境。我们的解决方案的一个主要优点是它利用了标准 virtio 框架来处理网络、磁盘和控制台设备，尽管在我们的案例中，virtio 框架是在 PCIe 总线上使用的。以下是上述各种组件的框图。 virtio 后端位于主机上，而不是卡上，因为与 MIC 相比，主机的单线程性能更好，主机能够使用 MIC DMA 引擎启动卡上的 DMA，而且 virtio 块存储后端只能位于主机上
+
+
+
+
+virtio_create_blk failed:
+[17038.583717] Call Trace:
+[17038.584581]  __schedule+0x2e3/0x740
+[17038.585243]  schedule+0x42/0xb0
+[17038.585864]  io_schedule+0x16/0x40
+[17038.586482]  do_read_cache_page+0x407/0x860
+[17038.587099]  ? file_fdatawait_range+0x30/0x30
+[17038.587720]  read_cache_page+0x12/0x20
+[17038.588512]  read_dev_sector+0x27/0xd0
+[17038.589139]  read_lba+0xbd/0x220
+[17038.589727]  ? kmem_cache_alloc_trace+0x177/0x240
+[17038.590314]  efi_partition+0x1e0/0x700
+[17038.590887]  ? vsnprintf+0x39e/0x4e0
+[17038.591454]  ? snprintf+0x49/0x60
+[17038.592014]  check_partition+0x154/0x250
+[17038.592983]  rescan_partitions+0xae/0x280
+
+
+vfio_pci_core_ioctl
+    case VFIO_DEVICE_GET_REGION_INFO
+        vfio_pci_ioctl_get_region_info
+
+
+
+iommu:
+static LIST_HEAD(iommu_device_list);
+
+
+arm_smmu_device_probe
+    iommu_device_register(&smmu->iommu, &arm_smmu_ops, dev)
+        iommu->ops = ops
+        list_add_tail(&iommu->list, &iommu_device_list)
+
+device tree, dts file:
+fvp-base-revc.dts
+interrupt-names = "eventq", "gerror", "priq", "cmdq-sync"
+
+
+echo 2 > /sys/bus/pci/devices/0000:5e:00.0/sriov_numvfs
+sriov_numvfs_store
+    kstrtou16(buf, 0, &num_vfs) -> to num
+    num_vfs > pci_sriov_get_totalvfs(pdev)
+    ret = pdev->driver->sriov_configure(pdev, num_vfs)
+
+
+igb：PCI-Express 82575 千兆以太网驱动程序，我们很高兴向 Linux 社区宣布推出一款新的千兆以太网产品及其驱动程序。该产品是 Intel(R) 82575 千兆以太网适配器系列。物理适配器将很快向公众推出。这些适配器目前有 2 端口和 4 端口版本（铜 PHY）。其他变体将在稍后推出。82575 芯片组支持显著不同的功能，需要新的驱动程序。描述符格式（就像 ixgbe 驱动程序一样）不同。该设备可以使用多个 MSI-X 向量和多个队列进行发送和接收。与 e1000 支持的设备相比，这使我们能够专门优化一些驱动程序代码。此版本的 igb 驱动程序 no lnger 使用假网络设备并合并每个环的 napi_struct 成员来执行多队列轮询。默认情况下启用多队列，驱动程序仅支持 NAPI 模式。此版本中所有命名空间冲突也应该消失。寄存器宏已被压缩以提高可读性
+https://github.com/torvalds/linux/commit/9d5c824399dea881779d78a6c147288bf2dccb6b
+module_init(igb_init_module);
+    pci_register_driver(&igb_driver)
+static struct pci_driver igb_driver = {
+	.name     = igb_driver_name,
+	.id_table = igb_pci_tbl,
+	.probe    = igb_probe,
+        pci_enable_device_mem
+        dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))
+        pci_request_mem_regions(pdev, igb_driver_name)
+        netdev = alloc_etherdev_mq(sizeof(struct igb_adapter), IGB_MAX_TX_QUEUES)
+        adapter->io_addr = pci_iomap(pdev, 0, 0)
+        netdev->netdev_ops = &igb_netdev_ops
+        igb_set_ethtool_ops(netdev)
+        ei->get_invariants(hw) -> 初始化特定倾斜常数
+        igb_sw_init
+        igb_get_bus_info_pcie
+        igb_check_reset_block
+        adapter->en_mng_pt = igb_enable_mng_pass_thru(hw)
+        hw->mac.ops.reset_hw(hw)
+        switch (hw->mac.type)
+        hw->nvm.ops.validate(hw)
+        eth_platform_get_mac_address
+        eth_hw_addr_set
+        igb_set_default_mac_filter
+        igb_set_fw_version
+        timer_setup(&adapter->watchdog_timer, igb_watchdog, 0);
+        timer_setup(&adapter->phy_info_timer, igb_update_phy_info, 0);
+        INIT_WORK(&adapter->reset_task, igb_reset_task);
+        INIT_WORK(&adapter->watchdog_task, igb_watchdog_task);
+        igb_validate_mdi_setting
+        hw->nvm.ops.read
+        device_set_wakeup_enable
+        igb_reset(adapter)
+        igb_init_i2c
+        igb_get_hw_control
+        register_netdev(netdev)
+        netif_carrier_off
+        igb_setup_dca
+        igb_init_mas
+        igb_ptp_init
+        dev_pm_set_driver_flags(&pdev->dev, DPM_FLAG_NO_DIRECT_COMPLETE)
+        pm_runtime_put_noidle
+	.remove   = igb_remove,
+#ifdef CONFIG_PM
+	.driver.pm = &igb_pm_ops,
+#endif
+	.shutdown = igb_shutdown,
+	.sriov_configure = igb_pci_sriov_configure,
+        if (num_vfs == 0)
+            igb_disable_sriov(dev, true)
+        else
+            igb_enable_sriov(dev, num_vfs, true)
+                for (i = 0; i < adapter->vfs_allocated_count; i++)
+                    igb_vf_configure(adapter, i)
+                        igb_set_vf_mac(adapter, vf, mac_addr)
+                igb_sriov_reinit
+                    igb_clear_interrupt_scheme
+                    igb_init_queue_configuration
+                        igb_set_flag_queue_pairs
+                    igb_init_interrupt_scheme
+                        igb_set_interrupt_capability
+                            pci_enable_msix_range(adapter->pdev, adapter->msix_entries, numvecs, numvecs)
+                        igb_alloc_q_vectors
+                            igb_alloc_q_vector
+                        igb_cache_ring_register
+                    netif_running
+                        igb_open(netdev) -> init irq
+                pci_enable_sriov(pdev, adapter->vfs_allocated_count)
+	.err_handler = &igb_err_handler
+};
+
+
+pci_device_add
+    pci_configure_device(dev)
+    device_initialize(&dev->dev)
+    dma_set_max_seg_size(&dev->dev, 65536);
+    dma_set_seg_boundary(&dev->dev, 0xffffffff)
+    pcie_failed_link_retrain
+    pci_fixup_device
+    pci_reassigndev_resource_alignment
+    pci_init_capabilities
+        pci_ea_init
+        pci_msi_init
+        pci_msix_init
+        pci_allocate_cap_save_buffers
+        pci_pm_init(dev);		/* Power Management */
+        pci_vpd_init(dev);		/* Vital Product Data */
+        pci_configure_ari(dev);		/* Alternative Routing-ID Forwarding */
+        pci_iov_init(dev);		/* Single Root I/O Virtualization */
+            sriov_init
+                iov->driver_max_VFs = total
+        pci_ats_init(dev);		/* Address Translation Services */
+        pci_pri_init(dev);		/* Page Request Interface */
+        pci_pasid_init(dev);		/* Process Address Space ID */
+        pci_acs_init(dev);		/* Access Control Services */
+        pci_ptm_init(dev);		/* Precision Time Measurement */
+        pci_aer_init(dev);		/* Advanced Error Reporting */
+        pci_dpc_init(dev);		/* Downstream Port Containment */
+        pci_rcec_init(dev);		/* Root Complex Event Collector */
+        pci_doe_init(dev);		/* Data Object Exchange */
+        pcie_report_downtraining(dev);
+        pci_init_reset_methods(dev);
+    list_add_tail(&dev->bus_list, &bus->devices)
+    pci_set_msi_domain(dev)
+    ret = device_add(&dev->dev)
+
+
+
+
+igb_open -> __igb_open
+    igb_request_irq
+        igb_request_msix
+            request_irq(adapter->msix_entries[vector].vector, igb_msix_other, 0, netdev->name, adapter)
+            request_irq(adapter->msix_entries[vector].vector, igb_msix_ring, 0, q_vector->name, q_vector)
+                napi_schedule(&q_vector->napi)
+
+
+
+
+
+static const struct net_device_ops igb_netdev_ops = {
+	.ndo_open		= igb_open,
+	.ndo_stop		= igb_close,
+	.ndo_start_xmit		= igb_xmit_frame,
+        igb_xmit_frame_ring(skb, igb_tx_queue_mapping(adapter, skb))
+            first = &tx_ring->tx_buffer_info[tx_ring->next_to_use]
+            igb_tx_map(tx_ring, first, hdr_len)
+                dma = dma_map_single(tx_ring->dev, skb->data, size, DMA_TO_DEVICE)
+                tx_desc->read.buffer_addr = cpu_to_le64(dma)
+                dma = skb_frag_dma_map(tx_ring->dev, frag, 0, size, DMA_TO_DEVICE)
+                writel(i, tx_ring->tail)
+                tx_ring->next_to_use = i
+	.ndo_get_stats64	= igb_get_stats64,
+	.ndo_set_rx_mode	= igb_set_rx_mode,
+	.ndo_set_mac_address	= igb_set_mac,
+	.ndo_change_mtu		= igb_change_mtu,
+	.ndo_eth_ioctl		= igb_ioctl,
+	.ndo_tx_timeout		= igb_tx_timeout,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_vlan_rx_add_vid	= igb_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid	= igb_vlan_rx_kill_vid,
+	.ndo_set_vf_mac		= igb_ndo_set_vf_mac,
+	.ndo_set_vf_vlan	= igb_ndo_set_vf_vlan,
+	.ndo_set_vf_rate	= igb_ndo_set_vf_bw,
+	.ndo_set_vf_spoofchk	= igb_ndo_set_vf_spoofchk,
+	.ndo_set_vf_trust	= igb_ndo_set_vf_trust,
+	.ndo_get_vf_config	= igb_ndo_get_vf_config,
+	.ndo_fix_features	= igb_fix_features,
+	.ndo_set_features	= igb_set_features,
+	.ndo_fdb_add		= igb_ndo_fdb_add,
+	.ndo_features_check	= igb_features_check,
+	.ndo_setup_tc		= igb_setup_tc,
+	.ndo_bpf		= igb_xdp,
+	.ndo_xdp_xmit		= igb_xdp_xmit,
+};
 
