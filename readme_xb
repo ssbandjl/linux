@@ -15168,3 +15168,77 @@ static const struct net_device_ops igb_netdev_ops = {
 	.ndo_xdp_xmit		= igb_xdp_xmit,
 };
 
+linux mce的一些相关内容和用户态监控的设计方法
+https://www.cnblogs.com/10087622blog/p/9790128.html
+mce_notify_irq
+    pr_info(HW_ERR "Machine check events logged\n")
+
+/var/log/mcelog
+
+
+PCI 设备的前64字节寄存器布局
+/**
+ *
+ *   0x0  0x1  0x2  0x3   0x4  0x5  0x6  0x7  0x8  0x9 0xa 0xb   0xc  0xd  0xe  0xf
+ *  +---------+---------+---------+---------+----+-------------+----+----+----+----+
+ *  |  vender |  device |   cmd   |  state  |ver |    class    |    |    |    |BIST|
+ *  |    ID   |    ID   |register | register| ID |    NO       |    |    |    |    |  0x00
+ *  +---------+---------+---------+---------+----+-------------+----+----+----+----+
+ *  |     base Addr0    |     base Addr1    |     base Addr2   |     base Addr3    |
+ *  |                   |                   |                  |                   |  0x10
+ *  +-------------------+-------------------+------------------+---------+---------+
+ *  |     base Addr4    |     base Addr5    |     Cardbus      | subsys  |  subsys |
+ *  |                   |                   |     CIS pointer  |venderID |venderID |  0x20
+ *  +-------------------+-------------------+------------------+----+----+----+----+
+ *  |     extend ROM    |               reserved               |irq |irq | Min| Max|
+ *  |     base Addr     |                                      |Line|pin | Gnt| Lat|  0x30
+ *  +-------------------+-------------------+------------------+----+----+----+----+
+ *
+ *  荣涛 2021年8月31日15:14:58
+ */
+
+
+
+uio:
+uio_cif.c
+ref: https://github.com/Johannes4Linux/pcittl32io_uio.git
+
+
+forlinx@ok3588:~$ lspci -s 01:00.3 -vvv
+01:00.3 Ethernet controller: Xilinx Corporation Device 9638
+	Subsystem: Xilinx Corporation Device 0007
+	Control: I/O- Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx-
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0
+	Region 0: Memory at 906000000 (64-bit, prefetchable) [size=32M]
+	Region 2: Memory at 908060000 (64-bit, prefetchable) [size=64K]
+	Region 4: Memory at 908070000 (64-bit, prefetchable) [size=64K]
+	Capabilities: <access denied>
+	Kernel driver in use: igb_uio
+
+
+modprobe uio_pci_generic
+echo "8086 10f5" > /sys/bus/pci/drivers/uio_pci_generic/new_id
+
+module_pci_driver(uio_pci_driver) -> probe
+    pcim_enable_device(pdev)
+    gdev = devm_kzalloc
+    gdev->info.handler = irqhandler
+    uiomem = &gdev->info.mem[0]
+    for (i = 0; i < MAX_UIO_MAPS; ++i) -> 5
+        struct resource *r = &pdev->resource[i]
+        uiomem->memtype = UIO_MEM_PHYS
+        uiomem->addr = r->start & PAGE_MASK
+    devm_uio_register_device(&pdev->dev, &gdev->info) -> __devm_uio_register_device -> __uio_register_device
+        dev_set_name(&idev->dev, "uio%d", idev->minor)
+        device_add(&idev->dev)
+        uio_dev_add_attributes(idev)
+            for (mi = 0; mi < MAX_UIO_MAPS; mi++)
+                mem = &idev->info->mem[mi]
+                idev->map_dir = kobject_create_and_add("maps", &idev->dev.kobj)
+            for (pi = 0; pi < MAX_UIO_PORT_REGIONS; pi++)
+                port = &idev->info->port[pi]
+                idev->portio_dir = kobject_create_and_add("portio",
+        request_irq(info->irq, uio_interrupt, info->irq_flags, info->name, idev)
+            idev->info->handler(irq, idev->info) -> irqhandler
+
