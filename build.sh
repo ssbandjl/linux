@@ -18,3 +18,10 @@ make -j64
 
 # make -j64
 # objcopy --only-keep-debug vmlinux kernel.sym
+
+
+# build module, driver
+make clean
+cd drivers/scsi/
+make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+# make -C ../../ M=$(pwd) modules
