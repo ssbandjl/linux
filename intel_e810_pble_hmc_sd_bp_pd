@@ -1,0 +1,34 @@
+struct irdma_hmc_pble_rsrc {
+	u32 unallocated_pble;
+	struct mutex pble_mutex_lock; /* protect PBLE resource */
+	struct irdma_sc_dev *dev;
+	u64 fpm_base_addr;
+	u64 next_fpm_addr;
+	struct irdma_pble_prm pinfo;
+	u64 allocdpbles;
+	u64 freedpbles;
+	u32 stats_direct_sds;
+	u32 stats_paged_sds;
+	u64 stats_alloc_ok;
+	u64 stats_alloc_fail;
+	u64 stats_alloc_freed;
+	u64 stats_lvl1;
+	u64 stats_lvl2;
+};
+
+struct irdma_pble_prm {
+	struct list_head clist;
+	spinlock_t prm_lock; /* protect prm bitmap */
+	u64 total_pble_alloc;
+	u64 free_pble_cnt;
+	u8 pble_shift;
+};
+
+...
+static int irdma_hmc_setup(struct irdma_pci_f *rf)
+    status = irdma_cfg_fpm_val(&rf->sc_dev, qpcnt)
+
+
+status = irdma_hmc_init_pble(&rf->sc_dev, rf->pble_rsrc)
+
+use -> irdma_reg_user_mr_type_mem

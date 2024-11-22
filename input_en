@@ -1,0 +1,1 @@
+virtio: use virtio accessor to access packed event, We used to access packed descriptor event and off_wrap via address_space_{write|read}_cached(). When we hit the cache, memcpy() is used which is not atomic which may lead a wrong value to be read or wrote.  This patch fixes this by switching to use virito_{stw|lduw}_phys_cached() to make sure the access is atomic
