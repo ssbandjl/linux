@@ -359,22 +359,55 @@ static const struct blk_mq_ops nvme_rdma_mq_ops = {
 };
 static blk_status_t nvme_rdma_queue_rq
 	nvme_check_ready -> 对于我们无法发送到设备的状态，默认操作是使其忙碌并在控制器状态恢复后重试。 但是，如果控制器正在删除，或者任何内容被标记为快速故障或 nvme 多路径，则会立即失败。 注意：用于初始化控制器的命令将被标记为快速故障。 注意：nvme cli/ioctl 命令被标记为故障快速
-	req->sqe.dma = ib_dma_map_single(dev, req->sqe.data
-	ib_dma_mapping_error
-	ib_dma_sync_single_for_cpu
+	req->sqe.dma = ib_dma_map_single(dev, req->sqe.data, sizeof(struct nvme_command), DMA_TO_DEVICE)
+	ib_dma_mapping_error(dev, req->sqe.dma) -> check a DMA addr for error
+	ib_dma_sync_single_for_cpu(dev, sqe->dma, sizeof(struct nvme_command), DMA_TO_DEVICE) -> Prepare DMA region to be accessed by CPU
+        dma_sync_single_for_cpu(dev->dma_device, addr, size, dir)
 	nvme_setup_cmd
 	nvme_start_request(rq)
         if (rq->cmd_flags & REQ_NVME_MPATH) -> 多路径下发请求
             nvme_mpath_start_request(rq)
         
 	nvme_rdma_map_data
+        nvme_rdma_dma_map_req(ibdev, rq, &count, &pi_count)
+            ret = sg_alloc_table_chained(&req->data_sgl.sg_table, blk_rq_nr_phys_segments(rq), req->data_sgl.sg_table.sgl, NVME_INLINE_SG_CNT) -> nvme-rdma：引入 nvme_rdma_sgl 结构从 struct nvme_rdma_request 中删除 first_sgl 指针，改用指针算法。如果存在内联散点列表，则该列表将位于 nvme_rdma_request 之后。此补丁是添加 PI 支持的准备工作
+            req->data_sgl.nents = blk_rq_map_sg(rq->q, rq, req->data_sgl.sg_table.sgl)
+            *count = ib_dma_map_sg(ibdev, req->data_sgl.sg_table.sgl, req->data_sgl.nents, rq_dma_dir(rq)) -> Map a scatter/gather list to DMA addresses
+                ib_dma_map_sg_attrs(dev, sg, nents, direction, 0)
+            if (blk_integrity_rq(rq))
+                req->metadata_sgl->sg_table.sgl = (struct scatterlist *)(req->metadata_sgl + 1)
+                *pi_count = ib_dma_map_sg(ibdev, req->metadata_sgl->sg_table.sgl, req->metadata_sgl->nents, rq_dma_dir(rq))
+        if (req->use_sig_mr) -> nvme-rdma：添加元数据/T10-PI 支持 对于功能强大的 HCA（例如 ConnectX-5/ConnectX-6），这将允许端到端保护信息传递和 NVMe over RDMA 传输验证。元数据卸载支持已通过新的 RDMA 签名动词 API 实现，并且已为功能强大的控制器启用
+            ret = nvme_rdma_map_sg_pi(queue, req, c, count, pi_count)
+                req->mr = ib_mr_pool_get(queue->qp, &queue->qp->sig_mrs)
+                nr = ib_map_mr_sg_pi(req->mr, sgl->sg_table.sgl, count, NULL, req->metadata_sgl->sg_table.sgl, pi_count, NULL, SZ_4K)
+                    mr->device->ops.map_mr_sg_pi
+                nvme_rdma_set_sig_attrs
+                    nvme_rdma_set_sig_domain
+                        domain->sig_type = IB_SIG_TYPE_T10_DIF
+                        domain->sig.dif.bg_type = IB_T10DIF_CRC
+                nvme_rdma_set_prot_checks
+                    *mask |= IB_SIG_CHECK_REFTAG
+                    *mask |= IB_SIG_CHECK_GUARD
+                ib_update_fast_reg_key
+                req->reg_cqe.done = nvme_rdma_sig_done
+                wr->wr.opcode = IB_WR_REG_MR_INTEGRITY
+        if (count <= dev->num_inline_segments)
+            nvme_rdma_map_sg_inline
+        nvme_rdma_map_sg_fr(queue, req, c, count)
+            req->mr = ib_mr_pool_get(queue->qp, &queue->qp->rdma_mrs)
+            nr = ib_map_mr_sg(req->mr, req->data_sgl.sg_table.sgl, count, NULL, SZ_4K)
+            ib_update_fast_reg_key(req->mr, ib_inc_rkey(req->mr->rkey))
+            req->reg_cqe.done = nvme_rdma_memreg_done
+            req->reg_wr.wr.opcode = IB_WR_REG_MR
 	ib_dma_sync_single_for_device
 	nvme_rdma_post_send <- drivers/nvme/host/rdma.c
 		wr.opcode     = IB_WR_SEND -> 发送端产生发送完成事件: IBV_WC_SEND, 接收端产生接收完成事件: IBV_WC_RECV, 在spdk_tgt端产生 RDMA_WR_TYPE_SEND 的类型 -> rdma_wr = (struct spdk_nvmf_rdma_wr *)wc[i].wr_id -> IBV_WC_RECV
 		ib_post_send -> nvme_host驱动提交工作请求WR到队列, cpu敲门铃, DMA硬件拷贝和传输数据到tgt端, host生成发送完成事件(...), tgt端生成接收完成事件(...)
 
 
-
+#define rq_dma_dir(rq) \
+	(op_is_write(req_op(rq)) ? DMA_TO_DEVICE : DMA_FROM_DEVICE)
 
 
 三条链：current->bio_list存储在当前线程的所有bio; plug->mq_list使能plug/unplug机制时存放在缓存池的bio；若定义IO调度层，IO请求会发送到scheduler list中；若没有定义IO调度层，IO请求会发送到ctx->rq_lists
@@ -2102,7 +2135,7 @@ static ssize_t nvmf_dev_write
 									ring = kcalloc(ib_queue_size
 									nvme_rdma_alloc_qe
 										ib_dma_map_single -> 将内核虚拟地址映射为 -> DMA地址
-											dma_map_single
+											dma_map_single(dev->dma_device, cpu_addr, size, direction)
 								pages_per_mr = nvme_rdma_get_max_fr_pages
 								ib_mr_pool_init ?
 								NVME_RDMA_Q_TR_READY
