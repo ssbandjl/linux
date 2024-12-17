@@ -1,0 +1,3359 @@
+SCSI: https://docs.kernel.org/driver-api/scsi.html
+Linux仓库: https://github.com/ssbandjl/linux.git
+bio下发流程: https://blog.csdn.net/flyingnosky/article/details/121362813
+io路径: https://zhuanlan.zhihu.com/p/545906763
+用户态与内核态通信netlink: https://gist.github.com/lflish/15e85da8bb9200794255439d0563b195
+实现rfc3720(iscsi): https://github.com/ssbandjl/linux/commit/39e84790d3b65a4af1ea1fb0d8f06c3ad75304b3
+管理内核模块,红帽: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/managing_monitoring_and_updating_the_kernel/managing-kernel-modules_managing-monitoring-and-updating-the-kernel
+存储技术原理: file:///D:/xb/project/c/%E5%AD%98%E5%82%A8%E6%8A%80%E6%9C%AF%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90_%E5%9F%BA%E4%BA%8ELinux%202.6%E5%86%85%E6%A0%B8%E6%BA%90%E4%BB%A3%E7%A0%81.pdf
+内核定时器: 
+bpftrace: 
+spec: 官方指南: https://rpm-packaging-guide.github.io/, 
+io路径分析: https://codeantenna.com/a/ADadbOp8tQ
+编译内核参考: https://wiki.centos.org/HowTos/Custom_Kernel
+spec文件: 构建rpm包和spec基础: https://www.cnblogs.com/michael-xiang/p/10480809.html, 官方指南: https://rpm-packaging-guide.github.io/, 
+kdir: https://stackoverflow.com/questions/59366772/what-does-the-kernel-compile-rule-exact-mean
+kernel makefile: https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
+Linux模块文件如何编译到内核和独立编译成模块: https://z.itpub.net/article/detail/090A31801416081BC9D0781C05AC91AA
+安装源码: https://wiki.centos.org/HowTos/I_need_the_Kernel_Source
+编译内核模块: https://wiki.centos.org/HowTos/BuildingKernelModules
+dm-verity简介 ——（1）: https://www.cnblogs.com/hellokitty2/p/12364836.html
+管理工具源码_lvm_dmsetup: https://sourceware.org/dm/
+多路径参考: https://www.cnblogs.com/D-Tec/archive/2013/03/01/2938969.html
+uevent:
+https://www.cnblogs.com/arnoldlu/p/11246204.html
+device_mapper_uevent: https://docs.kernel.org/admin-guide/device-mapper/dm-uevent.html
+用udev动态管理内核设备: https://documentation.suse.com/sles/12-SP5/html/SLES-all/cha-udev.html
+linux设备模型: https://linux-kernel-labs.github.io/refs/pull/183/merge/labs/device_model.html
+
+nvmeof设备实现: https://runsisi.com/2021/10/17/nvme-of/
+
+io路径_多队列: https://blog.csdn.net/hu1610552336/article/details/111464548
+
+
+
+
+
+
+
+监听ring_buffer日志: dmesg -w
+
+git tag -d v5.10
+
+nvme
+static struct blk_mq_ops nvme_mq_ops -> struct blk_mq_ops 
+static const struct blk_mq_ops bsg_mq_ops = {
+	.queue_rq		= bsg_queue_rq,
+	.init_request		= bsg_init_rq,
+	.exit_request		= bsg_exit_rq,
+	.complete		= bsg_complete,
+	.timeout		= bsg_timeout,
+};
+
+驱动目录: drivers/nvme/Makefile
+参考: https://mp.weixin.qq.com/s/GKVIY_NOXDfUCOho4zBMzw
+Kconfig 文件的作用是：
+1.控制make menuconfig时， 出现的配置选项；
+2.根据用户配置界面的选择，将配置结果保存在.config 配置文件（该文件将提供给Makefile使用，用以决定要编译的内核组件以及如何编译）
+
+drivers/nvme/host/core.c
+module_init(nvme_core_init) -> static int __init nvme_core_init(void)
+alloc_chrdev_region nvme
+class_create("nvme")
+
+drivers/nvme/target/rdma.c
+static int __init nvmet_rdma_init(void)
+ib_register_client -> drivers/infiniband/core/device.c -> int ib_register_client -> IB 驱动程序的上层用户可以使用 ib_register_client() 来注册 IB 设备添加和删除的回调。 添加 IB 设备时，将调用每个已注册客户端的 add 方法（按照客户端注册的顺序），而当删除设备时，将调用每个客户端的 remove 方法（按照客户端注册的相反顺序）。 另外，调用ib_register_client()时，客户端会收到所有已经注册的设备的add回调
+nvmet_register_transport -> int nvmet_register_transport
+	down_write
+	up_write
+
+EXPORT_SYMBOL(ib_register_client) 导出符号表
+
+multi_path:
+drivers/md/md.c
+drivers/md/md-multipath.c
+
+
+dm_early_create - 在早期启动时创建映射设备。
+@dmi：包含要创建的设备映射的主要信息。
+@spec_array：指向 struct dm_target_spec 的指针数组。 描述设备的映射表。
+@target_params_array：包含特定目标参数的字符串数组。不要将 struct dm_target_spec 和每个目标的参数嵌入在 struct dm_ioctl 的末尾（如在普通 ioctl 中执行的那样），而是将它们作为参数传递，因此调用者不需要序列化它们。 Spec_array 和 target_params_array 的大小由下式给出
+@dmi->目标计数。
+该函数应该在早期启动时调用，因此不需要用于防止并发加载的锁定机制
+
+
+long vfs_ioctl
+error = filp->f_op->unlocked_ioctl(filp, cmd, arg)
+static const struct file_operations _ctl_fops
+.unlocked_ioctl	 = dm_ctl_ioctl
+static long dm_ctl_ioctl
+static int ctl_ioctl
+static ioctl_fn lookup_ioctl(unsigned int cmd, int *ioctl_flags)
+	{DM_DEV_CREATE_CMD, IOCTL_FLAGS_NO_PARAMS | IOCTL_FLAGS_ISSUE_GLOBAL_EVENT, dev_create},
+static int dev_create
+int dm_create
+dm.c -> static struct mapped_device *alloc_dev(int minor) -> 分配并初始化具有给定次要的空白设备
+	...
+	md->disk->fops = &dm_blk_dops
+	...
+
+
+.map = multipath_map_bio -> static int multipath_map_bio
+
+static void process_queued_bios
+
+drivers/md/dm-rq.c -> md=multiple_device 多路径设备, md=device_mapper 设备映射
+static const struct blk_mq_ops dm_mq_ops = {
+	.queue_rq = dm_mq_queue_rq,
+	.complete = dm_softirq_done,
+	.init_request = dm_mq_init_request,
+};
+static blk_status_t dm_mq_queue_rq -> blk-mq 新的多队列块IO排队机制, struct request -> 尝试将引用的字段放在同一个缓存行中
+	dm_start_request(md, rq)
+		void blk_mq_start_request(struct request *rq) -> 设备驱动程序使用的函数来通知块层现在将处理请求，因此 blk 层可以进行适当的初始化，例如启动超时计时器
+			trace_block_rq_issue(rq) -> 下发io到驱动, Linux下block层的监控工具blktrace, https://blog.csdn.net/hs794502825/article/details/8541235, linux跟踪系统, https://elinux.org/Kernel_Trace_Systems
+			test_bit(QUEUE_FLAG_STATS, &q->queue_flags) -> int test_bit(nr, void *addr) 原子的返回addr位所指对象nr位
+			blk_add_timer(rq) -> 启动单个请求超时计时器
+				mod_timer(&q->timeout, expiry) -> timer_setup(&q->timeout, blk_rq_timed_out_timer, 0)
+			WRITE_ONCE(rq->bio->bi_cookie, blk_rq_to_qc(rq)) -> Linux内核中的READ_ONCE和WRITE_ONCE宏, https://zhuanlan.zhihu.com/p/344256943, 缓存一致性: https://blog.csdn.net/zxp_cpinfo/article/details/53523697, 所以就出现了缓存一致性协议。最出名的就是Intel 的MESI协议，MESI协议保证了每个缓存中使用的共享变量的副本是一致的。它核心的思想是：当CPU写数据时，如果发现操作的变量是共享变量，即在其他CPU中也存在该变量的副本，会发出信号通知其他CPU将该变量的缓存行置为无效状态，因此当其他CPU需要读取这个变量时，发现自己缓存中缓存该变量的缓存行是无效的，那么它就会从内存重新读取
+		dm_get(md)
+	init_tio(tio, rq, md) -> target_io
+	map_request(tio) -> 映射请求 -> static int map_request(struct dm_rq_target_io *tio)
+		ti->type->clone_and_map_rq -> static int multipath_clone_and_map
+			Do we need to select a new pgpath? 我们是否需要选择一个新的优先级组路径?
+			pgpath = choose_pgpath(m, nr_bytes) -> Switchgroup消息传递到内核，会修改内核multipath对象的current_pgpath=NULL和nextpg，failback消息传递到内核，会调用 fail_path 方法修改内核multipath对象的 current_pgpath=NULL，之后的读写请求到multipath_target的map_io时就会选择的新的路径
+				choose_path_in_pg -> dm mpath：消除 IO 快速路径中自旋锁的使用,此提交的主要动机是提高大型 NUMA 系统上 DM 多路径的可扩展性，其中 m->lock 自旋锁争用已被证明是真正快速存储的严重瓶颈在此提交中利用了使用 lockless_dereference() 以原子方式读取指针的能力。 但是所有指针写入仍然受到 m->lock 自旋锁的保护（这很好，因为这些现在都发生在慢速路径中）以下函数在其快速路径中不再需要 m->lock 自旋锁：multipath_busy()、__multipath_map() 和 do_end_io()并且 Choose_pgpath() 被修改为_不_更新 m->current_pgpath 除非它也切换路径组。 这样做是为了避免每次 __multipath_map() 调用 Choose_pgpath() 时都需要获取 m->lock。 但是如果通过fail_path()失败，m->current_pgpath将被重置
+					path = pg->ps.type->select_path(&pg->ps, nr_bytes) -> static struct dm_path *st_select_path -> st_compare_load
+			clone = blk_mq_alloc_request
+				blk_mq_alloc_cached_request
+			pgpath->pg->ps.type->start_io -> static int st_start_io -> 调用路径线算法的 start_io 函数, 如果成功则返回 DM_MAPIO_REMAPPED, 表明映射成功，通知DM框架重新投递请求, dm mpath：添加服务时间负载均衡器，此补丁添加了一个面向服务时间的动态负载均衡器 dm-service-time，它为传入 I/O 选择估计服务时间最短的路径。 通过将进行中的 I/O 大小除以每条路径的性能值来估计服务时间。性能值可以在表加载时作为表参数给出。 如果未给出性能值，则所有路径均被视为相同, 参考流程: https://my.oschina.net/LastRitter/blog/1541330
+				atomic_add(nr_bytes, &pi->in_flight_size) -> 在 IO 开始与结束时，分别增减该路径正在处理的 IO 字节数 -> sz1 = atomic_read(&pi1->in_flight_size) <- static int st_compare_load
+		case DM_MAPIO_REMAPPED -> 映射成功
+		setup_clone -> dm：始终将请求分配推迟给 request_queue 的所有者, 如果底层设备是 blk-mq 设备，则 DM 已在底层设备的 request_queue 上调用 blk_mq_alloc_request,  但现在我们允许驱动程序分配额外的数据并提前初始化它，我们需要对所有驱动程序执行相同的操作。 这样做并在块层中使用新的 cmd_size 基础设施极大地简化了 dm-rq 和 mpath 代码，并且还应该使 SQ 和 MQ 设备与 SQ 或 MQ 设备映射器表的任意组合成为可能，作为进一步的步骤
+			blk_rq_prep_clone dm_rq_bio_constructor
+			clone->end_io = end_clone_request
+		trace_block_rq_remap 
+		blk_insert_cloned_request(clone) -> #ifdef CONFIG_BLK_MQ_STACKING -> blk-mq：使 blk-mq 堆栈代码可选，堆栈 blk-mq 驱动程序的代码仅由 dm-multipath 使用，并且最好保持这种方式。 使其可选并且仅由设备映射器选择，以便构建机器人更容易捕获滥用行为，例如在最后一个合并窗口中的 ufs 驱动程序中滑入的滥用行为。 另一个积极的副作用是，内核构建时没有设备映射器也会缩小一点
+			if (blk_rq_sectors(rq) > max_sectors) -> 如果实际支持 Write Same/Zero，SCSI 设备没有一个好的返回方法。 如果设备拒绝非读/写命令（丢弃、写入相同内容等），则低级设备驱动程序会将相关队列限制设置为 0，以防止 blk-lib 发出更多违规操作。 在重置队列限制之前排队的命令需要使用 BLK_STS_NOTSUPP 完成，以避免 I/O 错误传播到上层
+			blk_account_io_start(rq)
+				blk_do_io_stat
+				update_io_ticks
+			blk_mq_run_dispatch_ops -> blk_mq_request_issue_directly -> rcu -> 读文件过程, 禁用调度器: https://blog.csdn.net/jasonactions/article/details/109614350
+				if (blk_mq_hctx_stopped(hctx) || blk_queue_quiesced(rq->q)) -> 队列禁止
+				__blk_mq_issue_directly
+					ret = q->mq_ops->queue_rq(hctx, &bd) -> 内核block层Multi queue多队列的一次优化实践: https://blog.csdn.net/hu1610552336/article/details/121072592
+
+
+
+
+
+
+
+choose_path_in_pg
+	path = pg->ps.type->select_path(&pg->ps, nr_bytes)
+	static struct dm_path *st_select_path
+		static int st_compare_load
+
+
+
+dm-mpath.c -> static int fail_path #路径故障
+	pgpath->pg->ps.type->fail_path(&pgpath->pg->ps, &pgpath->path) -> .fail_path	= st_fail_path -> static void st_fail_path
+		list_move(&pi->list, &s->failed_paths)
+	DMWARN("%s: Failing path %s." ...
+	m->current_pgpath = NULL -> 将当前路径清空
+	dm_path_uevent(DM_UEVENT_PATH_FAILED -> 此补丁添加了对失败路径和恢复路径的 dm_path_event 的调用 -> void dm_path_uevent -> _dm_uevent_type_names[] -> {DM_UEVENT_PATH_FAILED, KOBJ_CHANGE, "PATH_FAILED"}
+		dm_build_path_uevent
+		dm_uevent_add -> void dm_uevent_add -> list_add(elist, &md->uevent_list) -> 挂链表
+		dm_send_uevents -> void dm_send_uevents
+			dm_copy_name_and_uuid
+			kobject_uevent_env 发送uevent, kobject_uevent这个函数原型如下，就是向用户空间发送uevent，可以理解为驱动（内核态）向用户（用户态）发送了一个KOBJ_ADD
+				kobject_uevent_net_broadcast -> 参考热拔插原理, todo...
+	queue_work(dm_mpath_wq, &m->trigger_event) -> 触发一个event以唤起用户态的对该Multipath事件的监听线程, 用户态(multipath-tools)关键字: PATH_FAILED
+	enable_nopath_timeout(m)
+		mod_timer(&m->nopath_timer
+
+
+
+	schedule_work
+
+static int __multipath_map_bio
+	__map_bio(m, bio)
+	bio_set_dev(bio, pgpath->path.dev->bdev)
+	pgpath->pg->ps.type->start_io(&pgpath->pg->ps -> static int st_start_io
+
+
+bpftrace -e 'kprobe:st_start_io{ printf("bt:%s\n", kstack); }'
+st_start_io+1
+multipath_clone_and_map+373
+dm_mq_queue_rq+264
+blk_mq_dispatch_rq_list+291
+__blk_mq_do_dispatch_sched+356
+__blk_mq_sched_dispatch_requests+309
+blk_mq_sched_dispatch_requests+48
+__blk_mq_run_hw_queue+81
+__blk_mq_delay_run_hw_queue+321
+blk_mq_sched_insert_requests+106
+blk_mq_flush_plug_list+281
+blk_flush_plug_list+215
+blk_finish_plug+33
+ext4_writepages+769
+do_writepages+65
+__filemap_fdatawrite_range+199
+ext4_release_file+108
+__fput+155
+task_work_run+123
+exit_to_user_mode_prepare+335
+syscall_exit_to_user_mode+60
+entry_SYSCALL_64_after_hwframe+68
+
+
+
+static struct pgpath *__map_bio
+static struct pgpath *choose_pgpath
+choose_path_in_pg
+	pg->ps.type->select_path(&pg->ps, nr_bytes)
+
+
+
+#########################################
+tee<<EOF>write.c
+#include <stdio.h>
+#include <stdlib.h>
+
+int main() {
+    char sentence[1000] = "hello,world";
+    // creating file pointer to work with files
+    FILE *fptr;
+    // opening file in writing mode
+    fptr = fopen("write.txt", "w");
+    // exiting program 
+    if (fptr == NULL) {
+        printf("Error!");
+        exit(1);
+    }
+    fprintf(fptr, "%s", sentence);
+    fclose(fptr);
+    return 0;
+}
+EOF
+gcc -o write write.c && ./write
+
+#########################################
+
+热拔插: 热插拔：在不重启系统的情况下，增减硬件设备。本文主要介绍linux下的热插拔 https://www.cnblogs.com/tzj-kernel/p/15307231.html
+热插拔：实现了驱动向用户态通知设备插拔
+（1）外设插入，硬件中断响应
+（2）总线发现新的设备，驱动probe 再调用device_add(设备驱动？？)
+（3）device_add调用kobject_uevent(, KOBJ_ADD)，向用户空间广播新设备加入事件通知；这里发出通知的方式，就是netlink；
+（4）用户空间运行的daemon(udev)收到event事件广播；
+（5）udev根据消息和环境变量，查询sysfs中的/sys的变化，按照规则(/etc/udev/rules.d/*)，在/dev目录下自动创建设备节点；
+（6）运行 /sbin/hotplug 脚本
+kobject_uevent_env--》kobject_uevent_net_broadcast--》uevent_net_broadcast_untagged或者uevent_net_broadcast_tagged--》netlink_broadcast，实际上就是将buf中的内容发送到用户空间，用户空间udev监听到此消息，则解析
+/sys/kernel/uevent_helper
+
+内核 uevents 和 udev 
+必需的设备信息由 sysfs 文件系统导出。对于内核检测到并已初始化的设备，将创建一个带有该设备名称的目录。它包含带有特定于设备属性的属性文件。
+每次添加或删除设备时，内核都会发送 uevent 来向 udev 通知更改。一旦启动，udev 守护程序便会读取并分析 /usr/lib/udev/rules.d/*.rules 和 /etc/udev/rules.d/*.rules 文件中的所有规则，并将它们保留在内存中。如果更改、添加或去除了规则文件，守护程序可以使用 udevadm control --reload 命令重新装载这些规则在内存中的表示。有关 udev 规则及其语法的更多细节，请参见第 22.6 节 “使用 udev 规则影响内核设备事件处理”。每个接收到的事件都根据所提供的规则集进行匹配。这些规则可以增加或更改事件环境键、为要创建的设备节点请求特定名称、添加指向该节点的符号链接或者添加设备节点创建后运行的程序。从内核 netlink 套接字接收驱动程序核心 uevent
+事件处理: https://documentation.suse.com/zh-cn/sles/15-SP1/html/SLES-all/cha-udev.html
+udev rule: ls -alh /usr/lib/udev/rules.d/
+cat /usr/lib/udev/rules.d/62-multipath.rules
+
+
+
+
+uevent设计: https://github.com/ssbandjl/linux/commit/7a8c3d3b92883798e4ead21dd48c16db0ec0ff6f
+device-mapper uevent代码为device-mapper增加了创建和发送kobject uevents（uevents）的能力。 以前的设备映射器事件只能通过 ioctl 接口获得。 uevents 接口的优点是事件包含环境属性，为事件提供增加的上下文，避免在收到事件后查询设备映射器设备的状态
+由 udevmonitor 捕获的生成的 uevent 示例
+
+
+insert_work(pwq, work, worklist, work_flags)
+
+dm_init_init
+	dm_early_create
+__bind
+dm_table_event_callback(t, event_callback, md)
+event_fn
+dm_table_event
+trigger_event
+
+
+io_path, io路径
+static const struct block_device_operations dm_blk_dops = {
+	.submit_bio = dm_submit_bio,  -> static void dm_submit_bio
+
+映射设备区分两种类型：基于通用块层请求的映射设备和基于块设备驱动层请求的映射设备, dm_request_based 函数判断映射设备是否是基于块设备驱动层请求的映射设备，如果是，则返回1；否则返回0。这种判断是根据映射设备的请求队列中是否设置了QUEUE_FLAG_STACKABLE标志作出的，而这个标志在创建映射设备时根据映射表的类型设定
+static void dm_submit_bio
+	dm_get_live_table_bio
+	DMF_BLOCK_IO_FOR_SUSPEND 设备挂起时,io入队
+	queue_io(md, bio)
+		queue_work(md->wq, &md->work)
+	dm_split_and_process_bio(md, map, bio) -> 分割io提交给目标设备
+
+dm_split_and_process_bio
+	__split_and_process_bio 选择正确的策略来处理非flush bio
+		dm_table_find_target
+		__map_bio -> static void __map_bio -> 映射io
+			ti->type->map(ti, clone) -> .map = multipath_map_bio -> static int __multipath_map_bio -> bio_set_dev(bio, pgpath->path.dev->bdev) -> pgpath->pg->ps.type->start_io -> 查看DeviceMapper映射表 dmsetup table -> mpatha: 0 209715200 multipath 0 0 1 1 service-time 0 1 2 8:16 1 1 -> 根据路径的吞吐量以及未完成的字节数选择负荷较轻的路径 -> static struct path_selector_type st_ps
+	bio_trim
+	trace_block_split
+	bio_inc_remaining
+	submit_bio_noacct -> void submit_bio_noacct(struct bio *bio) ->  为 I/O 重新提交 bio 到块设备层 bio 描述内存和设备上的位置。 这是 submit_bio() 的一个版本，只能用于通过堆叠块驱动程序重新提交给较低级别驱动程序的 I/O。 块层的所有文件系统和其他上层用户应该使用 submit_bio() 代替, bio 在节流之前已经被检查过，所以在从节流队列中调度它之前不需要再次检查它。 为此目的添加 submit_bio_noacct_nocheck() 的助手
+		bio_list_add -> kernel会将同一进程的bio统一放到current->bio_list暂时存储，submit bio时从bio_list中一个一个取出进行submit
+		__submit_bio_noacct_mq
+		submit_bio_noacct_nocheck -> __submit_bio_noacct(bio) -> 确实可以通过递归调用 submit_bio_noacct 添加更多的 bios
+			__submit_bio(bio)
+				blk_mq_submit_bio -> void blk_mq_submit_bio -> 向块设备提交bio, 会执行调度,合并等操作
+					blk_mq_bio_to_request
+					blk_queue_bounce -> 弹跳
+					__bio_split_to_limits
+					blk_mq_bio_to_request(rq, bio, nr_segs) -> request
+					blk_mq_insert_request(rq, 0)
+						blk_mq_request_bypass_insert
+						list_add(&rq->queuelist, &ctx->rq_lists[hctx->type])
+						q->elevator->type->ops.insert_requests(hctx, &list, flags)
+					blk_mq_run_hw_queue(hctx, true) -> void blk_mq_run_hw_queue
+					blk_mq_try_issue_directly
+						blk_mq_run_hw_queue
+							blk_mq_delay_run_hw_queue -> 异步延迟执行, 内核支持同步和异步两种方式发送request，在hctx中维护了一个delayed_work，用于异步方式往disk发送request，避免进程由于磁盘性能问题阻塞
+								kblockd_mod_delayed_work_on(blk_mq_hctx_next_cpu(hctx), &hctx->run_work -> blk_mq_run_work_fn -> static void blk_mq_run_work_fn
+								...
+						blk_mq_get_budget_and_tag
+						__blk_mq_issue_directly
+							ret = q->mq_ops->queue_rq(hctx, &bd)
+				disk->fops->submit_bio(bio) -> static void dm_submit_bio -> device_mapper io
+
+
+static void blk_mq_run_work_fn
+	blk_mq_run_dispatch_ops(hctx->queue, blk_mq_sched_dispatch_requests(hctx)) -> 返回 -EAGAIN 表明 hctx->dispatch 不为空，我们必须再次运行以避免刷新不足
+		if (__blk_mq_sched_dispatch_requests(hctx) == -EAGAIN) -> 如果调度列表中没有剩余请求，则仅向调度程序询问请求。 这是为了避免由于设备队列深度较低而导致我们只调度一部分可用请求的情况。 一旦我们从 IOscheduler 中取出请求，我们就无法再对它们进行合并或排序。 因此，最好尽可能长时间地将它们留在那里。 将硬件队列标记为在这种情况下需要重新启动。如果调度列表上没有任何内容或者我们能够从调度列表中调度，我们希望从调度程序进行调度
+			blk_mq_flush_busy_ctxs(hctx, &rq_list)
+			blk_mq_dispatch_rq_list(hctx, &rq_list, 0) -> 发送给磁盘 -> stap -l 'kernel.function("blk_mq_dispatch_rq_list")'
+				ret = q->mq_ops->queue_rq(hctx, &bd) -> .queue_rq
+
+
+
+
+blk_mq_plug_issue_direct
+blk_add_rq_to_plug
+
+blk_mq_requeue_request
+	blk_mq_sched_requeue_request
+		e->type->ops.requeue_request(rq) -> requeue_request = 
+
+blk_mq_submit_bio
+blk_mq_run_hw_queue
+__blk_mq_sched_dispatch_requests
+
+
+nvme落盘io流程, iopath
+static const struct blk_mq_ops nvme_rdma_mq_ops = {
+	.queue_rq	= nvme_rdma_queue_rq,
+	.complete	= nvme_rdma_complete_rq,
+	.init_request	= nvme_rdma_init_request,
+	.exit_request	= nvme_rdma_exit_request,
+	.init_hctx	= nvme_rdma_init_hctx,
+	.timeout	= nvme_rdma_timeout,
+	.map_queues	= nvme_rdma_map_queues,
+	.poll		= nvme_rdma_poll,
+};
+static blk_status_t nvme_rdma_queue_rq
+	nvme_check_ready -> 对于我们无法发送到设备的状态，默认操作是使其忙碌并在控制器状态恢复后重试。 但是，如果控制器正在删除，或者任何内容被标记为快速故障或 nvme 多路径，则会立即失败。 注意：用于初始化控制器的命令将被标记为快速故障。 注意：nvme cli/ioctl 命令被标记为故障快速
+	req->sqe.dma = ib_dma_map_single(dev, req->sqe.data, sizeof(struct nvme_command), DMA_TO_DEVICE)
+	ib_dma_mapping_error(dev, req->sqe.dma) -> check a DMA addr for error
+	ib_dma_sync_single_for_cpu(dev, sqe->dma, sizeof(struct nvme_command), DMA_TO_DEVICE) -> Prepare DMA region to be accessed by CPU
+        dma_sync_single_for_cpu(dev->dma_device, addr, size, dir)
+	nvme_setup_cmd
+	nvme_start_request(rq)
+        if (rq->cmd_flags & REQ_NVME_MPATH) -> 多路径下发请求
+            nvme_mpath_start_request(rq)
+        
+	nvme_rdma_map_data
+        nvme_rdma_dma_map_req(ibdev, rq, &count, &pi_count)
+            ret = sg_alloc_table_chained(&req->data_sgl.sg_table, blk_rq_nr_phys_segments(rq), req->data_sgl.sg_table.sgl, NVME_INLINE_SG_CNT) -> nvme-rdma：引入 nvme_rdma_sgl 结构从 struct nvme_rdma_request 中删除 first_sgl 指针，改用指针算法。如果存在内联散点列表，则该列表将位于 nvme_rdma_request 之后。此补丁是添加 PI 支持的准备工作
+            req->data_sgl.nents = blk_rq_map_sg(rq->q, rq, req->data_sgl.sg_table.sgl)
+            *count = ib_dma_map_sg(ibdev, req->data_sgl.sg_table.sgl, req->data_sgl.nents, rq_dma_dir(rq)) -> Map a scatter/gather list to DMA addresses
+                ib_dma_map_sg_attrs(dev, sg, nents, direction, 0)
+            if (blk_integrity_rq(rq))
+                req->metadata_sgl->sg_table.sgl = (struct scatterlist *)(req->metadata_sgl + 1)
+                *pi_count = ib_dma_map_sg(ibdev, req->metadata_sgl->sg_table.sgl, req->metadata_sgl->nents, rq_dma_dir(rq))
+        if (req->use_sig_mr) -> nvme-rdma：添加元数据/T10-PI 支持 对于功能强大的 HCA（例如 ConnectX-5/ConnectX-6），这将允许端到端保护信息传递和 NVMe over RDMA 传输验证。元数据卸载支持已通过新的 RDMA 签名动词 API 实现，并且已为功能强大的控制器启用
+            ret = nvme_rdma_map_sg_pi(queue, req, c, count, pi_count)
+                req->mr = ib_mr_pool_get(queue->qp, &queue->qp->sig_mrs)
+                nr = ib_map_mr_sg_pi(req->mr, sgl->sg_table.sgl, count, NULL, req->metadata_sgl->sg_table.sgl, pi_count, NULL, SZ_4K)
+                    mr->device->ops.map_mr_sg_pi
+                nvme_rdma_set_sig_attrs
+                    nvme_rdma_set_sig_domain
+                        domain->sig_type = IB_SIG_TYPE_T10_DIF
+                        domain->sig.dif.bg_type = IB_T10DIF_CRC
+                nvme_rdma_set_prot_checks
+                    *mask |= IB_SIG_CHECK_REFTAG
+                    *mask |= IB_SIG_CHECK_GUARD
+                ib_update_fast_reg_key
+                req->reg_cqe.done = nvme_rdma_sig_done
+                wr->wr.opcode = IB_WR_REG_MR_INTEGRITY
+        if (count <= dev->num_inline_segments)
+            nvme_rdma_map_sg_inline
+        nvme_rdma_map_sg_fr(queue, req, c, count)
+            req->mr = ib_mr_pool_get(queue->qp, &queue->qp->rdma_mrs)
+            nr = ib_map_mr_sg(req->mr, req->data_sgl.sg_table.sgl, count, NULL, SZ_4K)
+            ib_update_fast_reg_key(req->mr, ib_inc_rkey(req->mr->rkey))
+            req->reg_cqe.done = nvme_rdma_memreg_done
+            req->reg_wr.wr.opcode = IB_WR_REG_MR
+	ib_dma_sync_single_for_device
+	nvme_rdma_post_send <- drivers/nvme/host/rdma.c
+		wr.opcode     = IB_WR_SEND -> 发送端产生发送完成事件: IBV_WC_SEND, 接收端产生接收完成事件: IBV_WC_RECV, 在spdk_tgt端产生 RDMA_WR_TYPE_SEND 的类型 -> rdma_wr = (struct spdk_nvmf_rdma_wr *)wc[i].wr_id -> IBV_WC_RECV
+		ib_post_send -> nvme_host驱动提交工作请求WR到队列, cpu敲门铃, DMA硬件拷贝和传输数据到tgt端, host生成发送完成事件(...), tgt端生成接收完成事件(...)
+
+
+#define rq_dma_dir(rq) \
+	(op_is_write(req_op(rq)) ? DMA_TO_DEVICE : DMA_FROM_DEVICE)
+
+
+三条链：current->bio_list存储在当前线程的所有bio; plug->mq_list使能plug/unplug机制时存放在缓存池的bio；若定义IO调度层，IO请求会发送到scheduler list中；若没有定义IO调度层，IO请求会发送到ctx->rq_lists
+每个线程若已经在执行blk_mq_submit_bio()，将新下发BIO链入到线程current->bio_list;
+依次处理current->list中的每个bio；
+若bio中存在数据在高端内存区，在低端内存区分配内存，将高端内存区数据拷贝到新分配的内存区，称为bounce过程，后面单独一节介绍；
+检查请求队列中的bio，若过大进行切分，称BIO的切分；
+尝试将bio合并到plug->mq_list中，然后尝试合并到IO调度层链表或ctx->rq_lists中；
+若没有合并，分配新的request；
+若定义plug，且没达到冲刷数目，加入到plug->mq_list；若达到冲刷数目，将冲刷下发（plug/unplug机制）；
+若定义IO调度器，往IO调度器中插入新的request（对于机械硬盘，通过IO调度层座合并和排序，有利于提高性能）;
+若 没有定义IO调度器，可以直接下发（对于较快的硬盘如nvme盘，进入调度层可能会浪费时间，跳过IO调度层有利于性能提升）
+（1）bounce过程
+（2）bio的切分和合并
+（3）IO请求和tag的分配
+（4）plug/unplug机制
+（5）IO调度器
+（4）其他
+
+
+app读写io:
+int main()
+{
+       char buff[128] = {0};
+       int fd = open("/var/pilgrimtao.txt", O_CREAT|O_RDWR);
+​
+       write(fd, "pilgrimtao is cool", 18);
+       pread(fd, buff, 128, 0);
+       printf("%s\n", buff);
+​
+       close(fd);
+       return 0;
+}
+
+
+文件系统:
+读 -> SYSCALL_DEFINE3(read, ...) -> ksys_read -> vfs_read -> read_iter -> xfs_file_read_iter
+写 -> SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter ->write_iter -> xfs_file_write_iter
+
+磁盘(disk)的访问模式有三种 BUFFERED、DIRECT、DAX。前面提到的由于page cache存在可以避免耗时的磁盘通信就是BUFFERED访问模式的集中体现；但是如果我要求用户的write请求要实时存储到磁盘里，不能只在内存中更新，那么此时我便需要DIRECT模式；大家可能听说过flash分为两种nand flash和nor flash，nor flash可以像ram一样直接通过地址线和数据线访问，不需要整块整块的刷，对于这种场景我们采用DAX模式。所以file_operations的read_iter和write_iter回调函数首先就需要根据不同的标志判断采用哪种访问模式
+kernel在2020年12月的patch中提出了folio的概念，我们可以把folio简单理解为一段连续内存，一个或多个page的集合，他和page的关系如图
+代码参考：xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_write_iter -> iomap_write_begin -> __filemap_get_folio -> filemap_alloc_folio
+
+读取磁盘inode代码参考：iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead -> xfs_buf_readahead_map -> xfs_buf_read_map -> xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> submit_bio
+
+代码参考： xfs_file_read_iter -> xfs_file_buffered_read -> generic_file_read_iter -> filemap_read -> filemap_get_pages -> filemap_create_folio -> filemap_alloc_folio -> folio_alloc
+filemap_get_pages -> filemap_readahead -> page_cache_async_ra -> ondemand_readahead -> do_page_cache_ra -> page_cache_ra_unbounded -> filemap_alloc_folio/filemap_add_folio
+
+xfs_file_read_iter -> xfs_file_buffered_read -> generic_file_read_iter -> filemap_read -> copy_folio_to_iter(offset)
+
+filemap_get_pages -> filemap_readahead -> page_cache_async_ra -> ondemand_readahead -> do_page_cache_ra -> page_cache_ra_unbounded -> read_pages -> aops.readahead -> xfs_vm_readahead -> iomap_readahead -> iomap_iter -> ops.iomap_begin（xfs文件系统维护的回调函数）
+
+iomap_readahead -> iomap_readahead_iter -> iomap_readpage_iter -> bio_alloc/bio_add_folio
+
+代码参考：iomap_readahead -> iomap_iter -> ops.iomap_begin（xfs文件系统维护的回调函数）
+
+代码参考：
+sys_read：ondemand_readahead -> do_page_cache_ra -> page_cache_ra_unbounded -> xa_load（在sys_read流程中，因为一开始就会把所有的folio都拿到，不是一个一个拿的）
+iomap_readahead_iter -> readahead_folio
+sys_write：
+xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_write_iter -> iomap_write_begin -> __filemap_get_folio -> mapping_get_entry/filemap_add_folio （在sys_write流程，是用完一个folio，再申请新的folio）
+
+
+代码参考：
+sys_read：iomap_readpage_iter -> bio_add_folio -> __bio_try_merge_page
+sys_write：xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_write_iter -> iomap_write_begin -> __iomap_write_begin -> iomap_read_folio_sync -> bio_init/bio_add_folio （一个bio只有一个bio_vec）
+
+
+bpf: bpf.h
+
+syscall 系统调用: linux/syscalls.h
+
+
+iscsi:
+ko:
+[root@n73 linux-5.10.182]# find . -name "*.ko"|grep scsi
+./drivers/firmware/iscsi_ibft.ko
+./drivers/message/fusion/mptscsih.ko
+./drivers/scsi/aacraid/aacraid.ko
+./drivers/scsi/aic7xxx/aic79xx.ko
+./drivers/scsi/arcmsr/arcmsr.ko
+./drivers/scsi/be2iscsi/be2iscsi.ko
+./drivers/scsi/bfa/bfa.ko
+./drivers/scsi/bnx2fc/bnx2fc.ko
+./drivers/scsi/bnx2i/bnx2i.ko
+./drivers/scsi/csiostor/csiostor.ko
+./drivers/scsi/cxgbi/cxgb3i/cxgb3i.ko
+./drivers/scsi/cxgbi/cxgb4i/cxgb4i.ko
+./drivers/scsi/cxgbi/libcxgbi.ko
+./drivers/scsi/fcoe/fcoe.ko
+./drivers/scsi/fcoe/libfcoe.ko
+./drivers/scsi/fnic/fnic.ko
+./drivers/scsi/isci/isci.ko
+./drivers/scsi/libfc/libfc.ko
+./drivers/scsi/libsas/libsas.ko
+./drivers/scsi/lpfc/lpfc.ko
+./drivers/scsi/megaraid/megaraid_sas.ko
+./drivers/scsi/mpt3sas/mpt3sas.ko
+./drivers/scsi/mvsas/mvsas.ko
+./drivers/scsi/pm8001/pm80xx.ko
+./drivers/scsi/qedf/qedf.ko
+./drivers/scsi/qedi/qedi.ko
+./drivers/scsi/qla2xxx/qla2xxx.ko
+./drivers/scsi/qla2xxx/tcm_qla2xxx.ko
+./drivers/scsi/smartpqi/smartpqi.ko
+./drivers/scsi/ufs/ufshcd-core.ko
+./drivers/scsi/ufs/ufshcd-pci.ko
+./drivers/scsi/3w-9xxx.ko
+./drivers/scsi/3w-sas.ko
+./drivers/scsi/ch.ko
+./drivers/scsi/hpsa.ko
+./drivers/scsi/hv_storvsc.ko
+./drivers/scsi/mvumi.ko
+./drivers/scsi/pmcraid.ko
+./drivers/scsi/libiscsi_tcp.ko
+./drivers/scsi/scsi_debug.ko
+./drivers/scsi/raid_class.ko
+./drivers/scsi/scsi_transport_fc.ko
+./drivers/scsi/scsi_transport_spi.ko
+./drivers/scsi/scsi_transport_sas.ko
+./drivers/scsi/hptiop.ko
+./drivers/scsi/initio.ko
+./drivers/scsi/iscsi_tcp.ko
+./drivers/scsi/scsi_transport_srp.ko
+./drivers/scsi/sd_mod.ko
+./drivers/scsi/ses.ko
+./drivers/scsi/sg.ko
+./drivers/scsi/sr_mod.ko
+./drivers/scsi/st.ko
+./drivers/scsi/stex.ko
+./drivers/scsi/virtio_scsi.ko
+./drivers/scsi/vmw_pvscsi.ko
+./drivers/target/iscsi/cxgbit/cxgbit.ko
+./drivers/target/iscsi/iscsi_target_mod.ko
+./drivers/target/target_core_pscsi.ko
+
+磁盘驱动sd: ./drivers/scsi/sd_mod.ko
+通用驱动sg: ./drivers/scsi/sg.ko
+
+drivers/scsi/sd.h
+include/scsi/scsi_host.h
+struct scsi_host_template, Let it rip 分叉, 
+drivers/scsi/scsi.c -> subsys_initcall(init_scsi) -> init -> static int __init init_scsi -> 驱动加载
+	scsi_init_procfs -> int __init scsi_init_procfs -> proc_mkdir("scsi", NULL) -> struct proc_dir_entry *proc_mkdir -> /proc/scsi -> device_info  scsi  sg -> 创建proc目录或文件: https://www.cnblogs.com/lialong1st/p/8317143.html
+		proc_create("scsi/scsi", 0, NULL, &scsi_scsi_proc_ops) -> static const struct proc_ops scsi_scsi_proc_ops -> struct proc_ops {
+	scsi_init_devinfo 动态设备信息列表 -> int __init scsi_init_devinfo -> SCSI_DEVINFO_GLOBAL = 0 -> 增强多个表的设备信息匹配 当前的 scsi_devinfo.c 匹配例程对全局黑名单使用单个表。 但是，我们也需要将特定传输列入黑名单（特别是一些使用 SPI 的磁带驱动器，它们对高速协议的响应不佳）。 不是为每个需要它的传输类开发单独的黑名单匹配，而是增强当前的列表匹配以允许多个列表
+		scsi_dev_info_add_list -> int scsi_dev_info_add_list -> scsi_devinfo_lookup_by_key(key) -> static LIST_HEAD(scsi_dev_info_list);
+			devinfo_table = kmalloc(sizeof(*devinfo_table), GFP_KERNEL) -> GFP_KERNEL - 允许后台和直接回收，并使用默认的页面分配器行为。这意味着廉价的分配请求基本上是不会失败的，但不能保证这种行为, get_free_page -> 
+			list_add_tail(&devinfo_table->node, &scsi_dev_info_list) -> 初始化,并加链表
+		scsi_dev_info_list_add_str
+			scsi_dev_info_list_add -> 
+		scsi_dev_info_list_add -> scsi_static_device_list[] __initdata -> 废弃表
+		proc_create("scsi/device_info", 0, NULL, &scsi_devinfo_proc_ops)
+	scsi_init_hosts 注册shost_class
+		int class_register(const struct class *cls) -> static struct class shost_class -> /sys/class/iscsi_host -> ls -alh /sys/class/scsi_* -> scsi_device/  scsi_disk/    scsi_generic/ scsi_host/
+			klist_init
+			kset_init
+			lockdep_register_key(key) -> class_create() 用作围绕核心函数调用的宏包装器的一部分的静态分配的堆栈变量
+			kobject_set_name
+			cp->class = cls
+			kset_register
+			sysfs_create_groups
+				internal_create_group
+	scsi_sysfs_register -> static struct class sdev_class
+		bus_register(&scsi_bus_type)
+		class_register(&sdev_class)
+	scsi_netlink_init -> scsi_netlink_init(void)
+		struct netlink_kernel_cfg cfg
+		.input	= scsi_nl_rcv_msg
+		netlink_kernel_create(&init_net, NETLINK_SCSITRANSPORT
+
+
+
+
+static struct pci_driver isci_pci_driver = {
+	.name		= DRV_NAME,
+	.id_table	= isci_id_table,
+	.probe		= isci_pci_probe,
+	.remove		= isci_pci_remove,
+	.driver.pm      = &isci_pm_ops,
+};
+isci_pci_probe
+isci_host_alloc
+scsi_host_alloc -> bpftrace -> struct Scsi_Host *scsi_host_alloc
+	shost->ehandler = kthread_run(scsi_error_handler -> scsi_error_handler -> int scsi_error_handler -> 错误恢复, 内核线程,所有主机(host) -> drivers/scsi/scsi_error.c
+		scsi_restart_operations(shost) -> static void scsi_restart_operations
+		shost->transportt->eh_strategy_handler(shost)
+			
+
+scsi_remove_host -> 模块卸载
+
+Linux打印内核函数调用栈 dump_stack, krpobe, systemtap, ftrace, qemu等等, bpftrace, perf调性能
+
+
+void blk_finish_plug
+bpftrace -e 'tracepoint:block:block_rq_insert { printf("Block I/O by %s\n", kstack); }'
+Block I/O by 
+        __elv_add_request+259
+        blk_flush_plug_list+320
+        blk_finish_plug+20
+        _xfs_buf_ioapply+820
+        __xfs_buf_submit+114
+        xlog_bdstrat+55
+        xlog_sync+742
+        xlog_state_release_iclog+123
+        xfs_log_force_lsn+497
+        xfs_file_fsync+253
+        do_fsync+85
+        sys_fsync+16
+        system_call_fastpath+37
+
+lsmod|grep sd_mod
+modinfo sd_mod
+make clean; make; rmmod sd_mod.ko; insmod sd_mod.ko
+
+install mod
+make -C /lib/modules/`uname -r`/build M=$PWD
+make -C /lib/modules/`uname -r`/build M=$PWD modules_install
+
+
+
+bpftrace -l | more
+
+#!/usr/local/bin/bpftrace
+tracepoint:syscalls:sys_enter_nanosleep
+{
+  printf("%s is sleeping.\n", comm);
+}
+
+bpftrace -e 'kprobe:do_sys_open { printf("opening: %s\n", str(arg1)); }'
+bpftrace -e 'kprobe:ip_output { @[kstack] = count(); }'
+
+bpftrace -e 'kprobe:scsi_error_handler { printf("bt:%s\n", kstack); }'
+
+动态跟踪事件: bpftrace -e 'kprobe:scsi_host_set_state { printf("bt:%s\n", kstack); }'
+bt:
+        scsi_host_set_state+1
+        scsi_remove_host+155
+        iscsi_host_remove+120
+        iscsi_sw_tcp_session_destroy+85 -> .destroy_session	= iscsi_sw_tcp_session_destroy
+        iscsi_if_recv_msg+3382 -> ISCSI_UEVENT_DESTROY_SESSION
+        iscsi_if_rx+202  调用 netlink_unicast 是将消息发送到内核 netlink 套接字的唯一路径。 但是，不幸的是，它也用于向用户发送数据
+        netlink_unicast+421
+        netlink_sendmsg+539
+        sock_sendmsg+91
+        ____sys_sendmsg+451
+        ___sys_sendmsg+124
+        __sys_sendmsg+87
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+				
+断开会话:
+iscsiadm -m node --logoutall=all
+ISCSI_UEVENT_DESTROY_SESSION
+transport->destroy_session(session) -> iscsi_sw_tcp_session_destroy
+	if (scsi_host_set_state(shost, SHOST_CANCEL))
+
+rfc:
+7. iSCSI Error Handling and Recovery ..............................92
+bpftrace -e 't:syscalls:sys_enter_execve { printf("%s called %s\n", comm, str(args->filename)); }'
+
+查看所有事件: bpftrace -l|grep scsi
+
+static int isci_pci_probe
+isci_pci_init
+isci_host_alloc
+scsi_scan_host -> void scsi_scan_host
+
+sd_spinup_disk
+	scsi_execute_cmd TEST_UNIT_READY START_UNIT
+
+scsi_execute_req 
+blk_execute_rq -> blk_status_t blk_execute_rq -> 底层调用高层(scci -> blk)
+
+
+错误恢复:
+● int (* eh_abort_handler) (struct scsi_cmnd *);
+● int (* eh_device_reset_handler) (struct scsi_cmnd *);
+● int (* eh_target_reset_handler) (struct scsi_cmnd *);
+● int (* eh_bus_reset_handler) (struct scsi_cmnd *);
+● int (* eh_host_reset_handler) (struct scsi_cmnd *);
+
+scsi_eh_scmd_add
+scsi_eh_abort_cmds
+scsi_eh_flush_done_q
+
+__blk_run_queue
+scsi_send_eh_cmnd
+
+查看会话: iscsiadm --mode session
+连接: iscsiadm -m node -T iqn.2018-01.com.h3c.onestor:622a4b9193bb4ee68cdb6cae6b76cc74 -p 172.16.156.3:3260 -l
+bt:
+        scsi_host_set_state+1
+        scsi_add_host_with_dma.cold.9+294
+        iscsi_sw_tcp_session_create+130
+        iscsi_if_create_session+48 -> iscsi_if_create_session(struct iscsi_internal *priv  -> ISCSI_UEVENT_CREATE_SESSION
+        iscsi_if_recv_msg+1109 -> iscsi_if_recv_msg(struct sk_buff *skb
+        iscsi_if_rx+202 -> .input	= iscsi_if_rx
+        netlink_unicast+421 -> int netlink_unicast
+        netlink_sendmsg+539
+        sock_sendmsg+91
+        ____sys_sendmsg+451
+        ___sys_sendmsg+124
+        __sys_sendmsg+87
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+
+
+netlink_kernel_create(&init_net, NETLINK_ISCSI, &cfg) -> netlink_kernel_create(struct net *net, int unit, struct netlink_kernel_cfg *cfg) ->input：为内核模块定义的netlink消息处理函数，当有消 息到达这个netlink socket时，该input函数指针就会被引用，且只有此函数返回时，调用者的sendmsg才能返回
+	nlk_sk(sk)->netlink_rcv = cfg->input -> nlk->netlink_rcv(skb) <- static int netlink_unicast_kernel
+
+
+netlink_unicast
+	netlink_unicast_kernel
+        fail_path+1
+        multipath_message+342 -> .message = multipath_message
+        target_message+627
+        ctl_ioctl+431
+        dm_ctl_ioctl+10
+        __x64_sys_ioctl+132
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+
+int dm_register_target(struct target_type *tt)
+
+static ioctl_fn lookup_ioctl
+{DM_TARGET_MSG_CMD, 0, target_message} -> static int target_message -> 由lvm发送给内核态 -> libdm/libdevmapper.h -> DM_DEVICE_TARGET_MSG -> 17
+	ti->type->message(ti, argc, argv, result, maxlen) -> static int multipath_message
+		action = fail_path;
+		action_dev(m, dev, action) -> static int action_dev
+			action(pgpath) -> static int fail_path
+
+
+Documentation/kbuild/modules.rst
+
+cp /lib/modules/`uname -r`/build/Makefile ./Makefile_current
+
+CONFIG_PREEMPT_BUILD=y
+此选项通过使所有内核代码（不在关键部分中执行）可抢占来减少内核的延迟。 这允许通过允许低优先级进程被非自愿地抢占来对交互事件做出反应，即使它在内核模式下执行系统调用，否则不会到达自然抢占点。 这允许应用程序即使在系统处于负载下时也能更“流畅”地运行，但代价是吞吐量略低，内核代码的运行时开销也很小。
+如果您正在为延迟要求在毫秒范围内的桌面或嵌入式系统构建内核，请选择此选项
+
+
+动态跟踪事件: bpftrace -e 'kprobe:scsi_host_set_state { printf("bt:%s\n", kstack); }'
+bt:
+        scsi_host_set_state+1
+        scsi_remove_host+155
+        iscsi_host_remove+120
+        iscsi_sw_tcp_session_destroy+85 -> .destroy_session	= iscsi_sw_tcp_session_destroy
+        iscsi_if_recv_msg+3382 -> ISCSI_UEVENT_DESTROY_SESSION
+        iscsi_if_rx+202
+        netlink_unicast+421
+        netlink_sendmsg+539
+        sock_sendmsg+91
+        ____sys_sendmsg+451
+        ___sys_sendmsg+124
+        __sys_sendmsg+87
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+				
+断开会话:
+iscsiadm -m node --logoutall=all
+ISCSI_UEVENT_DESTROY_SESSION
+transport->destroy_session(session) -> iscsi_sw_tcp_session_destroy
+
+rfc:
+7. iSCSI Error Handling and Recovery ..............................92
+bpftrace -e 't:syscalls:sys_enter_execve { printf("%s called %s\n", comm, str(args->filename)); }'
+
+查看所有事件: bpftrace -l|grep scsi
+
+
+
+
+
+故障处理
+ip set link xxx down (close 1 path) -> iscsi_check_transport_timeouts <- iscsi_conn_setup
+[12291.650194]  connection3:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4306948309, last ping 4306953344, now 4306958848 <- iscsi_conn_printk(KERN_ERR, conn, "ping timeout of
+[12291.650313]  connection3:0: detected conn error (1022) <- void iscsi_conn_error_event
+[12296.770199]  session3: session recovery timed out after 5 secs
+[12297.554572] device-mapper: multipath: 253:3: Failing path 8:16. <- static int fail_path
+static int fail_path
+
+
+drivers/scsi/libiscsi.c
+static void iscsi_check_transport_timeouts
+	struct iscsi_conn *conn = from_timer(conn, t, transport_timer) -> from_timer, 新版本内核对于void (*function)(struct timer_list *)处理函数的参数发生了变化，struct timer_list *定时器地址可以通过from_timer也就是container_of计算出传参进来的结构体首地址，这样来达到传参的目标
+	iscsi_has_ping_timed_out(conn)
+	iscsi_conn_failure(conn, ISCSI_ERR_NOP_TIMEDOUT) -> 连接超时, 故障处理, initiator -> tgt的ping超时
+		iscsi_set_conn_failed
+			set_bit(ISCSI_CONN_FLAG_SUSPEND_TX, &conn->flags) -> 挂起发送和接收
+			set_bit(ISCSI_CONN_FLAG_SUSPEND_RX, &conn->flags)
+		iscsi_conn_error_event(conn->cls_conn, err) -> 控制平面(上行)调用
+			case ISCSI_CONN_UP -> 连接状态为up(0)
+			test_and_set_bit ISCSI_CLS_CONN_BIT_CLEANUP
+			queue_work(iscsi_conn_cleanup_workq -> static void iscsi_cleanup_conn_work_fn -> 清理连接
+				iscsi_ep_disconnect(conn, false)
+					WRITE_ONCE(conn->state, ISCSI_CONN_FAILED) -> 将连接状态置为失败
+					session->transport->unbind_conn(conn, is_active) -> void iscsi_conn_unbind
+						iscsi_suspend_queue(conn)
+						void iscsi_suspend_tx
+							flush_work(&conn->xmitwork)
+						iscsi_set_conn_failed(conn)
+					session->transport->ep_disconnect(ep) -> static void iscsi_iser_ep_disconnect ?
+				iscsi_stop_conn(conn, STOP_CONN_RECOVER)
+					conn->transport->stop_conn(conn, flag) -> static void iscsi_sw_tcp_conn_stop
+						iscsi_suspend_tx
+						iscsi_sw_tcp_release_conn
+							kernel_sock_shutdown
+						iscsi_conn_stop
+							iscsi_block_session(session->cls_session)
+								queue_work(session->workq, &session->block_work) -> __iscsi_block_session
+									scsi_target_block(&session->dev)
+										starget_for_each_device device_block
+											scsi_internal_device_block
+												__scsi_internal_device_block_nowait
+													(scsi_device_set_state(sdev, SDEV_BLOCK)) -> 设置block状态后, 用户态multipathd检测到该状态 -> sdb: path state = blocked
+									queue_delayed_work(session->workq recovery_work -> 启动延迟任务 -> session_recovery_timedout
+										iscsi_alloc_session
+										INIT_DELAYED_WORK(&session->recovery_work, session_recovery_timedout)
+										session_recovery_timedout
+											scsi_target_unblock(&session->dev, SDEV_TRANSPORT_OFFLINE)
+											session->transport->session_recovery_timedout(session) -> void iscsi_session_recovery_timedout
+												wake_up(&session->ehwait) -> 会话状态: ISCSI_STATE_IN_RECOVERY -> wait_event_interruptible(session->ehwait -> sleep until a condition gets true: https://linuxtv.org/downloads/v4l-dvb-internals/device-drivers/API-wait-event-interruptible.html, 等待队列（Wait Queue）
+												int iscsi_eh_session_reset
+												...
+			iscsi_if_transport_lookup(conn->transport)
+			alloc_skb
+			__nlmsg_put
+			ev->type = ISCSI_KEVENT_CONN_ERROR -> 给用户态发事件(连接超时错误) -> 转到用户态处理
+			iscsi_multicast_skb
+				nlmsg_multicast
+					netlink_broadcast
+		return
+	iscsi_send_nopout
+
+
+
+iscsi_if_recv_msg -> struct iscsi_uevent *ev = nlmsg_data(nlh) -> (unsigned char *) nlh + NLMSG_HDRLEN
+	case ISCSI_UEVENT_SEND_PDU
+
+iscsi_if_recv_msg
+iscsi_if_transport_conn
+	switch (nlh->nlmsg_type)
+	case ISCSI_UEVENT_CREATE_CONN
+		iscsi_if_create_conn, 创建连接的时候设置的故障处理函数
+			iscsi_session_lookup
+			conn = transport->create_conn(session, ev->u.c_conn.cid)
+static struct iscsi_transport iscsi_sw_tcp_transport
+.create_conn		= iscsi_sw_tcp_conn_create, <- conn = transport->create_conn(session, ev->u.c_conn.cid)
+iscsi_sw_tcp_conn_create -> 创建TCP连接
+	iscsi_tcp_conn_setup
+		iscsi_conn_setup(struct iscsi_cls_session *cls_session
+			iscsi_alloc_conn
+			timer_setup(&conn->transport_timer, iscsi_check_transport_timeouts, 0) -> 作为 timer_setup 的 callback, 超时的时候执行回调, CONFIG_HZ=1000, jiffies=1/1000=1ms, jiffies回绕周期为：4294967295*5(ms)=248.5513480902778(天), mod_timer(&conn->transport_timer, 用于修改定时值，如果定时器还没有被激活，该函数可以激活定时器
+				void iscsi_conn_error_event
+				...
+			INIT_LIST_HEAD(&conn->mgmtqueue)
+			...
+			INIT_WORK(&conn->xmitwork, iscsi_xmitworker) -> 处理iscsi发送任务
+			__get_free_pages
+			err = iscsi_add_conn(cls_conn)
+				iscsi_dev_to_session
+				device_add
+				transport_register_device
+				list_add(&conn->conn_list, &connlist)
+	INIT_WORK(&conn->recvwork, iscsi_sw_tcp_recv_data_work)
+	tcp_sw_conn->queue_recv = iscsi_recv_from_iscsi_q
+	crypto_alloc_ahash
+	tcp_sw_conn->tx_hash = ahash_request_alloc
+	ahash_request_set_callback
+	tcp_sw_conn->rx_hash = ahash_request_alloc
+	return cls_conn
+
+
+超时处理:
+static int iscsi_nop_out_rsp -> 处理来自使用或用户空间的 nop 响应。 在 back_lock 下调用 -> 如果我们立即发送多个 PDU，目标可能会拒绝一些，而我们刚刚删除了拒绝通知。 这添加了处理 nop-out 拒绝的代码，因此，如果 nop-out 作为 ping 发送并被拒绝，我们不会将连接标记为不良。 相反，我们只是清理计时器，因为我们有 pdu 进行往返，所以我们知道连接良好
+	mod_timer(&conn->transport_timer, jiffies + conn->recv_timeout) -> 动态更改定时器(连接上的传输定时器)的到期时间，从而可更改定时器的执行顺序 -> iscsi_check_transport_timeouts
+		void iscsi_conn_error_event
+
+超时堆栈, 传输超时检测
+bpftrace -e 'kprobe:iscsi_check_transport_timeouts { printf("bt:%s\n", kstack); }'
+iscsi_check_transport_timeouts+1
+call_timer_fn+41
+run_timer_softirq+474
+__softirqentry_text_start+268
+asm_call_sysvec_on_stack+18
+do_softirq_own_stack+55
+irq_exit_rcu+243
+sysvec_apic_timer_interrupt+52
+asm_sysvec_apic_timer_interrupt+18
+native_safe_halt+14
+acpi_idle_do_entry+75
+acpi_idle_enter+90
+cpuidle_enter_state+145
+cpuidle_enter+41
+do_idle+636
+cpu_startup_entry+25
+start_secondary+280
+secondary_startup_64_no_verify+176
+
+
+如果收到消息, 公共接口
+iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
+	case ISCSI_UEVENT_SEND_PDU:
+	iscsi_if_transport_conn(transport, nlh) -> static int iscsi_if_transport_conn
+		case ISCSI_UEVENT_START_CONN
+		ev->r.retcode = transport->start_conn(conn)
+			启动连接 -> iscsi_conn_start
+				mod_timer(&conn->transport_timer -> 启动定时器
+			bpftrace -e 'kprobe:iscsi_conn_start { printf("bt:%s\n", kstack); }'
+			iscsi_conn_start+1
+			iscsi_if_recv_msg+3789
+			iscsi_if_rx+202
+			netlink_unicast+421
+			netlink_sendmsg+539
+			sock_sendmsg+91
+			____sys_sendmsg+451
+			___sys_sendmsg+124
+			__sys_sendmsg+87
+			do_syscall_64+51
+			entry_SYSCALL_64_after_hwframe+68
+
+
+
+
+
+
+ev->r.retcode =	transport->send_pdu( -> iscsi_conn_send_pdu -> (struct iscsi_hdr *)((char *)ev + sizeof(*ev))
+
+
+拷贝源码
+cd /lib/modules/5.10.38-21.hl10.el7.x86_64/build/include
+rsync -ravpl root@node2:/lib/modules/5.10.38-21.hl10.el7.x86_64/build/include/* .
+
+
+
+
+设置探测点: bpftrace -e 'kprobe:scsi_host_alloc { printf("bt:%s\n", kstack); }'
+断开会话: iscsiadm -m node --logoutall=all
+发现: iscsiadm -m discovery -t sendtargets -p 172.17.136.132
+连接: iscsiadm -m node -T iqn.2018-01.com.h3c.onestor:f2a23531433249f7bf2a6d01760fe755 -p 172.17.136.132:3260 -l
+触发堆栈:
+scsi_host_alloc+1
+iscsi_host_alloc+17
+iscsi_sw_tcp_session_create+50
+iscsi_if_create_session+48
+iscsi_if_recv_msg+1109
+iscsi_if_rx+202
+netlink_unicast+421
+netlink_sendmsg+539
+sock_sendmsg+91
+____sys_sendmsg+451
+___sys_sendmsg+124
+__sys_sendmsg+87
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68
+
+
+blkdev_get_by_dev
+blkdev_get_no_open
+blk_request_module
+	(*n)->probe(devt) -> static int nvme_probe
+		nvme_pci_alloc_dev
+		nvme_dev_map
+		nvme_setup_prp_pools
+		nvme_pci_alloc_iod_mempool
+		nvme_pci_enable
+		nvme_alloc_admin_tag_set
+			blk_mq_alloc_tag_set -> 设置多队列, 将cpu与硬件队列做映射: https://blog.csdn.net/hu1610552336/article/details/111464548
+				set->srcu = kmalloc(sizeof(*set->srcu), GFP_KERNEL)
+				ret = init_srcu_struct(set->srcu)
+				set->tags = kcalloc_node(set->nr_hw_queues
+				set->map[i].mq_map = kcalloc_node(nr_cpu_ids
+				blk_mq_update_queue_map(set)
+				ret = blk_mq_alloc_set_map_and_rqs(set)
+			ctrl->admin_q = blk_mq_init_queue(set) -> 添加通用助手来分配和拆除管理和 I/O 标记集，包括分配给它们的特殊队列
+				blk_mq_init_queue_data(set, NULL)
+					q = blk_alloc_queue(set->numa_node) -> 分配struct request_queue并初始化
+                        timer_setup(&q->timeout, blk_rq_timed_out_timer, 0) -> blk_mq_timeout_work
+                            kblockd_schedule_work
+                        INIT_WORK(&q->timeout_work, blk_timeout_work)
+					ret = blk_mq_init_allocated_queue(set, q) -> 分配每个CPU专属的软件队列，分配硬件队列，对二者做初始化，并建立软件队列和硬件队列关系
+                        if (blk_mq_alloc_ctxs(q))
+                        blk_mq_sysfs_init(q)
+                        xa_init(&q->hctx_table) -> master_banch
+                        blk_mq_realloc_hw_ctxs(set, q)
+                            for (i = 0; i < set->nr_hw_queues; i++)
+                                blk_mq_alloc_and_init_hctx
+                                ...
+                        INIT_WORK(&q->timeout_work, blk_mq_timeout_work) -> 超时任务
+                        blk_queue_rq_timeout(q, set->timeout ? set->timeout : 30 * HZ)
+						INIT_DELAYED_WORK(&q->requeue_work, blk_mq_requeue_work) -> 2021-06-09 Linux INIT_DELAYED_WORK 延时队列使用学习: https://blog.csdn.net/qq_37858386/article/details/117733197, linux内核工作队列使用总结: https://www.cnblogs.com/Suzkfly/p/10334456.html, 调度执行: queue_delayed_work
+                            blk_mq_insert_request
+                        blk_mq_init_cpu_queues(q, set->nr_hw_queues);
+                        blk_mq_add_queue_tag_set(set, q);
+                        blk_mq_map_swqueue(q);
+
+
+
+
+static int worker_thread -> 工作线程函数。 所有worker都属于一个worker_pool——可以是每个CPU的worker_pool，也可以是动态的未绑定的worker_pool。 这些工作人员处理所有工作项目，无论其具体目标工作队列如何。 唯一的例外是属于具有救援程序的工作队列的工作项，这将在救援程序线程（）中进行解释
+	process_one_work
+		blk_mq_requeue_work
+
+
+
+
+
+spi, scsi并行接口, 
+
+执行SCSI命令，如 INQUIRY 和 SPINUP ，它们的执行都调用了 scsi_execute_req -> scsi_execute_cmd ?  函数
+
+static int scsi_probe_lun
+	scsi_cmd[0] = INQUIRY
+
+
+static int scsi_vpd_inquiry
+	cmd[0] = INQUIRY
+
+Vital Product Data (VPD) , 重要产品数据, 
+
+int scsi_execute_cmd
+	scsi_alloc_request
+	blk_rq_map_kern
+	blk_mq_rq_to_pdu
+	blk_execute_rq
+
+
+
+块：将超时延迟到工作队列, 定时器上下文对于驱动程序执行任何有意义的中止操作不是很有用。 因此，不要从这个无用的上下文中调用驱动程序，而是尽快将其延迟到工作队列, 请注意，虽然 delayed_work 项目在这里似乎是正确的，但由于 blk_add_timer 中的魔法深入计时器内部，我不敢使用它。 但也许这会鼓励 Tejun 为工作队列 API 添加一个合理的 API，最终我们都会好起来的, 包含来自 Keith Bush 的重大更新：“此补丁删除同步超时工作，以便计时器可以在其自己的队列上开始冻结。计时器进入队列，因此计时器上下文只能开始冻结，但不能等待冻结
+static void blk_mq_timeout_work
+blk_mq_queue_tag_busy_iter(q, blk_mq_handle_expired, &expired)
+static bool blk_mq_handle_expired
+static void blk_mq_rq_timed_out
+ret = req->q->mq_ops->timeout(req)
+static const struct blk_mq_ops scsi_mq_ops
+.timeout	= scsi_timeout
+enum blk_eh_timer_return scsi_timeout
+static const struct scsi_host_template iscsi_sw_tcp_sht
+eh_timed_out
+.eh_timed_out		= iscsi_eh_cmd_timed_out,
+
+
+
+
+eh_strategy_handler
+
+scsi_eh_scmd_add
+scsi_unjam_host 取消干扰
+
+
+
+[root@node1 ~]# bpftrace -e 'kprobe:scsi_error_handler { printf("bt:%s\n", kstack); }'
+iscsiadm -m node -T iqn.2018-01.com.h3c.onestor:f2a23531433249f7bf2a6d01760fe755 -p 172.17.136.132:3260 -l -d 8
+scsi_error_handler+1
+kthread+278
+ret_from_fork+34
+
+
+IO路径-文件系统-系统调用, iopath, IO子系统全流程介绍: https://zhuanlan.zhihu.com/p/545906763, linux内核block层Multi queue多队列核心点分析: https://blog.csdn.net/hu1610552336/article/details/111464548
+深入理解 Linux 内核---访问文件: https://blog.csdn.net/u012319493/article/details/85331567, https://blog.csdn.net/weixin_40535588/article/details/120040142
+int main()
+{
+       char buff[128] = {0};
+       int fd = open("/var/pilgrimtao.txt", O_CREAT|O_RDWR);
+
+       write(fd, "pilgrimtao is cool", 18);
+       pread(fd, buff, 128, 0);
+       printf("%s\n", buff);
+
+       close(fd);
+       return 0;
+}
+
+IO路径-块层, linux v5.10, 
+SYSCALL_DEFINE3(write, ...) -> 
+    ksys_write -> 
+    vfs_write -> 
+    new_sync_write -> 
+    call_write_iter -> 
+    write_iter -> 
+    xfs_file_write_iter (.write_iter	= xfs_file_write_iter) -> 
+    xfs_file_buffered_write -> 
+    iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> 
+    xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead 预读 -> xfs_buf_readahead_map -> xfs_buf_read_map -> _xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> 由VFS -> 进入块层 -> submit_bio(bio) -> submit_bio_noacct -> submit_bio_noacct_nocheck -> __submit_bio_noacct_mq / __submit_bio_noacct -> __submit_bio -> blk_mq_submit_bio -> blk_add_rq_to_plug -> bio合并： blk_mq_submit_bio -> blk_mq_get_new_requests -> blk_mq_sched_bio_merge -> blk_bio_list_merge -> blk_attempt_bio_merge
+request插入ctx：blk_mq_submit_bio -> blk_mq_sched_insert_request (blk_mq_insert_request) -> __blk_mq_insert_request -> __blk_mq_insert_req_list -> list_add(&rq->queuelist, &ctx->rq_lists[type])
+取出request: blk_mq_run_hw_queue -> __ blk_mq_delay_run_hw_queue -> __ blk_mq_run_hw_queue -> blk_mq_sched_dispatch_requests -> __blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_ctx -> blk_mq_dequeue_from_ctx -> dispatch_rq_from_ctx -> __blk_mq_sched_dispatch_requests -> blk_mq_flush_busy_ctxs （取出）/ blk_mq_dispatch_rq_list （发送给磁盘）
+
+__submit_bio_noacct_mq -> 我们一次只希望一个 ->submit_bio 处于活动状态，否则堆栈设备的堆栈使用可能会出现问题。 使用 current->bio_list 收集 ->submit_bio 方法处于活动状态时提交的请求列表，然后在返回后处理它们
+
+IO路径, 块io, iscsi层, iopath, 
+bool blk_mq_dispatch_rq_list
+		ret = q->mq_ops->queue_rq(hctx, &bd) # 关键函数 queue_rq, IO请求入队列
+		.queue_rq	= scsi_queue_rq
+		static blk_status_t scsi_queue_rq( -> scsi处理流程: https://blog.csdn.net/marlos/article/details/131171560, 这个函数之后大致要完成的工作是，把队列中的request再转化为对硬件的command，接着下发command到硬件，完成io。也就是说，对于request的解析，一定是在command生成之前的。在上面代码的35行之前，是在做一些必要的检查，确保队列、硬件处于正常工作的状态，接着37行，出现一个关键的函数 scsi_prepare_cmd, 顾名思义，command可能会在这个函数中进行初始化
+			struct scsi_cmnd *cmd = blk_mq_rq_to_pdu(req) -> cmd已经填充了?
+			WARN_ON_ONCE(cmd->budget_token < 0) -> 预算令牌, scsi：blk-mq：从 .get_budget 回调中返回预算令牌 SCSI 使用全局原子变量来跟踪每个 LUN/请求队列的队列深度,当有很多 CPU 核心并且磁盘非常快时，这不能很好地扩展。 通过在 I/O 路径中的 sdev->device_busy 跟踪队列深度，观察到 IOPS 受到很大影响,从 .get_budget 回调中返回预算令牌。 预算令牌可以传递给驱动程序，这样我们就可以用 sbitmap_queue 替换原子变量，并以这种方式缓解缩放问题, 链接：https://lore.kernel.org/r/20210122023317.687987-9-ming.lei@redhat.com
+			ret = BLK_STS_RESOURCE -> 块：引入新的块状态代码类型目前我们在块层中使用标准的 Linux errno 值，虽然我们接受任何错误，但一些错误具有超载的魔法含义。 这个补丁引入了一个新的 blk_status_t 值，它包含块层特定的状态代码并明确解释它们的含义。 现在提供了与以前的特殊含义相互转换的助手，但我怀疑我们希望从长远来看摆脱它们——那些有错误输入（例如网络）的驱动程序通常会得到不知道特殊块层的错误 重载，并类似地将它们返回到用户空间通常会返回一些严格来说对于文件系统操作不正确的东西，但这留作以后的练习。目前错误集是一个非常有限的集合，与之前重载的 errno 值密切相关 , 但有一些低挂果来改进它。blk_status_t (ab) 使用稀疏的 __bitwise 注释来允许稀疏类型检查，这样我们就可以很容易地捕捉到传递错误值的地方
+			scsi_prepare_cmd -> static blk_status_t scsi_prepare_cmd(struct request *req)
+				struct scsi_cmnd
+				cmd->prot_op = SCSI_PROT_NORMAL 命令保护操作
+				return scsi_cmd_to_driver(cmd)->init_command(cmd) -> .init_command		= sd_init_command -> scsi_init_command -> static blk_status_t sd_init_command -> scsi层里面，高级驱动可不止sd一个，因此，我们可以猜测这个函数只是在做一些通用性的命令初始化，对于特异性的初始化，一定会转交sd驱动处理，所以直接看代码的66行，调用了对应cmd绑定驱动的init_command函数
+					case REQ_OP_WRITE
+					return sd_setup_read_write_cmnd(cmd)
+						bool write = rq_data_dir(rq) == WRITE
+						scsi_alloc_sgtables
+						dix = scsi_prot_sg_count(cmd) -> 数据保护
+						if (protect && sdkp->protection_type == T10_PI_TYPE2_PROTECTION) -> T10保护信息(T10 Protection Information (PI))
+						sd_setup_rw10_cmnd(cmd, write, lba, nr_blocks -> static blk_status_t sd_setup_rw10_cmnd -> 打印日志: SCSI_LOG_  -> SCSI_LOG_HLQUEUE -> [66521.609478] sd 6:0:0:0: [sda] tag#23 sd_setup_read_write_cmnd: block=893164736, count=8
+							cmd->cmd_len = 10
+			reason = scsi_dispatch_cmd(cmd) -> static int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
+				trace_scsi_dispatch_cmd_start(cmd)
+				rtn = host->hostt->queuecommand(host, cmd) -> .queuecommand           = iscsi_queuecommand, -> int iscsi_queuecommand
+					iscsi_session_chkready -> 检查会话通过iscsi_session_chkready进行。当会话状态不是ISCSI_SESSION_LOGGED_IN时，不适合处理scsi指令。链接检查通过链接是否存在、链接状态、链接可接收的命令窗口是否达到最大值。这几个方面判断
+					task = iscsi_alloc_task(conn, sc)
+					iscsi_prep_scsi_cmd_pdu(task)
+						ISCSI_DBG_SESSION
+					list_add_tail(&task->running, &conn->cmdqueue) -> 将任务插入命令队列 cmdqueue -> 由 iscsi_xmitworker 线程发送命令
+					iscsi_conn_queue_xmit(conn)
+			return BLK_STS_OK
+
+static void iscsi_xmitworker(struct work_struct *work)
+	do iscsi_data_xmit(conn)
+		iscsi_xmit_task
+			rc = conn->session->tt->xmit_task(task) -> .xmit_task		= iscsi_tcp_task_xmit 发送常规PDU任务
+				rc = session->tt->xmit_pdu(task) -> static int iscsi_sw_tcp_pdu_xmit
+					iscsi_sw_tcp_xmit
+						while (1) iscsi_sw_tcp_xmit_segment(tcp_conn, segment) 传输分段
+							tcp_sw_conn->sendpage(sk, sg_page(sg), offset
+						segment->done(tcp_conn, segment) 首选按页发送
+						kernel_sendmsg(sk, &msg, &iov, 1, copy) 其次降级为内核发送消息
+							iov_iter_kvec
+							sock_sendmsg(sock, msg)
+					memalloc_noreclaim_restore
+				iscsi_tcp_get_curr_r2t
+				conn->session->tt->alloc_pdu
+				iscsi_prep_data_out_pdu -> 初始化 Data-Out
+					hdr->ttt = r2t->ttt
+					hdr->opcode = ISCSI_OP_SCSI_DATA_OUT
+				rc = conn->session->tt->init_pdu
+			iscsi_put_task(task)
+
+iscsit_send_r2t
+
+
+/* SCSI Data Hdr */ -> 11.2.1.  Basic Header Segment (BHS)
+struct iscsi_data
+
+
+static int iscsi_if_transport_conn
+	.bind_conn		= iscsi_sw_tcp_conn_bind
+	iscsi_sw_tcp_conn_bind
+		static void iscsi_sw_tcp_conn_set_callbacks
+			sk->sk_data_ready = iscsi_sw_tcp_data_ready
+				iscsi_sw_tcp_recv_data(conn)
+					tcp_read_sock(sk, &rd_desc, iscsi_sw_tcp_recv) -> 该例程为希望以“sendfile”方式直接处理从 skbuffs 复制的例程提供了 tcp_recvmsg() 的替代方案
+						skb = tcp_recv_skb(sk, seq, &offset)
+							skb_peek
+							tcp_eat_recv_skb
+								skb_attempt_defer_free
+									defer_max = READ_ONCE(sysctl_skb_defer_max)
+									...
+					iscsi_tcp_segment_unmap(&tcp_conn->in.segment)
+
+
+
+bpftrace -e 'kprobe:sd_init_command{ printf("bt:%s\n", kstack); }'
+sd_init_command+1
+scsi_queue_rq+1478
+blk_mq_dispatch_rq_list+291
+__blk_mq_sched_dispatch_requests+201
+blk_mq_sched_dispatch_requests+48
+__blk_mq_run_hw_queue+81
+__blk_mq_delay_run_hw_queue+321
+blk_mq_run_hw_queues+52
+blk_mq_requeue_work+350
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+
+
+
+bpftrace -e 'kprobe:scsi_queue_rq { printf("bt:%s\n", kstack); }'
+scsi_queue_rq+1
+blk_mq_dispatch_rq_list+291
+__blk_mq_sched_dispatch_requests+201
+blk_mq_sched_dispatch_requests+48
+__blk_mq_run_hw_queue+81
+__blk_mq_delay_run_hw_queue+321
+blk_mq_run_hw_queues+52
+blk_mq_requeue_work+350
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+
+
+
+配置探测, 崩溃点
+#ifdef CONFIG_KPROBES
+	CRASHPOINT("INT_HARDWARE_ENTRY", "do_IRQ"),
+
+
+
+static void scsi_starved_list_run -> 只要 shost 正在接受命令并且队列不足，就调用 blk_run_queue。 scsi_request_fn 删除 queue_lock 并可以将我们添加回 starved_list。 host_lock 保护 starved_list 和 starved_entry。 scsi_request_fn 在检查或修改 starved_list 或 starved_entry 之前必须获得 host_lock
+
+
+include/scsi/scsi_cmnd.h
+
+last_sector_bug
+
+iscsi协议 -> include/scsi/iscsi_proto.h, scsi_proto.h -> /* defined in T10 SCSI Primary Commands-2 (SPC2) */ 变长命令 -> struct scsi_varlen_cdb_hdr
+/* iSCSI PDU Header */
+struct iscsi_scsi_req
+
+/* Extended CDB AHS */
+
+11.3.5. CDB - SCSI Command Descriptor Block ..............160
+
+
+queue_cmd_ring
+target_cmd_init_cdb
+scsi_command_size
+
+
+
+ceph内核接管块层IO:
+.queue_rq	= rbd_queue_rq -> static blk_status_t rbd_queue_rq
+	rbd_img_is_write
+	queue_work(rbd_wq, &img_req->work)
+
+
+printk(KERN_ALERT, "init_scsi %s:%d\n", __FILE__, __LINE__);
+
+
+SCSI Command, 命令
+
+
+
+unsigned char cmnd[32]; /* SCSI CDB */
+8 7 6 5 4 3 2 1 0
+#define WRITE_10              0x2a
+8 7 6 5 4 3 2 1 0
+8 7 6 5 4 3 2 1 0
+8 7 6 5 4 3 2 1 0
+8 7 6 5 4 3 2 1 0
+...
+
+
+开启日志:
+drivers/scsi/Kconfig
+config SCSI_LOGGING
+	bool "SCSI logging facility"
+
+开启日志: scsi_logging_level -s -a 3
+echo -1 > /proc/sys/dev/scsi/logging_level
+
+
+
+multipath, 多路径, https://blog.csdn.net/superyongzhe/article/details/126439055
+dm-mpath.c
+libdevicemapper
+加载模块
+module_init(dm_multipath_init) -> static int __init dm_multipath_init(void)
+	创建一个slab缓冲区，用于后续多路径中需要快速申请和释放内存的地方使用；
+	向DeviceMapper框架中注册多路径的Target Type；
+	申请两个工作队列，用于异步执行耗时的IO操作
+
+
+构造实例
+static int multipath_ctr
+
+
+更新模块, 比较简单的方法是把原来的 *.ko 文件直接替换，但这样有不好的地方，如果想换回来，比较麻烦
+cp libdrm/linux-core/drm.ko /lib/modules/`uname -r`/updates/
+depmod
+/sbin/modinfo drm
+
+
+查看路径(multipath -l/-ll)
+
+清空全部路径(multipath -F) -> dm_flush_maps
+
+
+
+
+md(multi_disk多磁盘)模块初始化
+subsys_initcall(md_init) -> static int __init md_init(void)
+
+
+
+dm, 栈式块设备层，其本质原理, 就在于重定向请求方式, dmsetup, drivers/md, 线性映射规则, 条带映射规则, 
+映射设备: struct mapped_device
+目标设备: struct dm_target
+映射表: struct dm_table
+映射目标: struct dm_target
+
+dm(device_mapper 设备映射虚拟层)模块初始化 -> drivers/md/dm.c
+module_init(dm_init) -> static int __init dm_init
+	r = _inits[i]() -> static int (*_inits[])
+	local_init,
+	dm_target_init,
+	dm_linear_init,
+	dm_stripe_init,
+	dm_io_init,
+	dm_kcopyd_init,
+	dm_interface_init -> 映射设备的创建, Device Mapper控制设备的名字为device-mapper，文件操作表为_ctrl_fops，它的主设备号为MISC字符设备的主设备号（10），次设备号由系统自动分配，用户空间库函数将相应为Device Mapper控制设备创建一个设备节点，其路径名为/dev/mapper/control, 用户空间管理工具通过Device Mapper控制设备实现对映射设备的管理操作。具体来讲，用户空间以/dev/mapper/control为参数调用系统调用open，获得控制设备的文件句柄，之后针以该文件句柄为参数调用ioctl，调用时还传入代表操作类型的I/O控制码, man dmsetup, 
+		misc_register(&_dm_misc)
+			dev = MKDEV(MISC_MAJOR, misc->minor)
+	dm_statistics_init,
+
+
+#define DM_DEV_CREATE    _IOWR(DM_IOCTL, DM_DEV_CREATE_CMD, struct dm_ioctl) -> 创建dm设备
+
+The userspace code (dmsetup and libdevmapper) is now maintained alongside the LVM2 source available from http://sourceware.org/lvm2/. To build / install it without LVM2 use 'make device-mapper' / 'make install_device-mapper'.
+
+iopath_dm, 7.5 映射设备的请求执行, 
+dm_request -> drivers/md/dm.c
+dm_make_request
+
+
+static const struct block_device_operations dm_blk_dops = {
+	.submit_bio = dm_submit_bio,
+	.poll_bio = dm_poll_bio,
+	.open = dm_blk_open,
+	.release = dm_blk_close,
+	.ioctl = dm_blk_ioctl,
+	.getgeo = dm_blk_getgeo,
+	.report_zones = dm_blk_report_zones,
+	.pr_ops = &dm_pr_ops,
+	.owner = THIS_MODULE
+};
+
+
+dm_submit_bio+1
+submit_bio_noacct+251
+submit_bio+67
+submit_bio_wait+84
+blkdev_issue_flush+89
+xfs_file_fsync+461
+do_fsync+56
+__x64_sys_fdatasync+19
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68
+
+
+
+____cacheline_aligned_in_smp, 作用是：在对称多处理器系统中，结构体的起始地址和长度都是一级缓存行长度的整数倍, 独占cache line, 对于数据结构中频繁访问的成员我们可以设置它独占cache line。为啥要让它独占呢，还是cache伪缓存问题，这个成员可能导致互相干架，频繁导入导出cache line。例如zone->lock和zone->lru_lock这两个频繁的锁，有助于提高获取锁的效率。在SMP系统中，自旋锁的争用会导致严重的cache line颠簸现象, 正如这些宏的字面意思，可以简单理解为按高速缓存行对齐, 
+https://github.com/ssbandjl/linux/commit/320ae51feed5c2f13664aa05a76bec198967e04d, blk-mq：新的多队列块 IO 排队机制 Linux 目前有两种块设备模型： - 经典的基于 request_fn 的方法，其中驱动程序使用 struct request 单元进行 IO。 块层提供各种帮助器功能，让驱动程序共享代码，例如标签管理、超时处理、排队等。“堆叠”方法，驱动程序挤在块层和 IO 提交者之间。 由于这会绕过 IO 堆栈，因此驱动程序通常必须自己管理所有内容。随着为新的高 IOPS 设备编写驱动程序，基于经典 request_fn 的驱动程序工作得不够好。 该设计可以追溯到 SMP 和高 IOPS 都还很少见的时候。 它在扩展到更大的机器时存在问题，并且当每个设备具有数十万 IOPS 时，即使在较小的机器上也会遇到扩展问题。因此，通常选择堆栈方法作为驱动程序的模型。 但这意味着每个人都必须重新发明一切，随之而来的是我们再次遇到共享方法解决的所有问题。此提交引入了 blk-mq，块多队列支持。 该设计以用于排队 IO 的每 CPU 队列为中心，然后向下汇集到 x 个硬件提交队列。两者之间可能有 1:1 映射，也可能是 N:M 映射。 这一切都取决于硬件支持的内容。blk-mq 提供各种辅助功能，其中包括： - 对请求标记的可扩展支持。 大多数设备需要能够唯一地标识驱动程序和硬件中的请求。 标记使用每个 cpu 缓存来释放标记，以实现缓存热重用。 - 超时处理，无需跟踪每个设备的请求。 基本上，如果请求失败，驱动程序应该能够收到通知。- 可选支持问题和提交队列之间的非 1:1 映射。 blk-mq 可以将 IO 完成重定向到所需位置。- 支持每个请求的有效负载。 驱动程序几乎总是需要将请求结构与某些驱动程序私有命令结构相关联。 驱动程序可以在初始化时告诉 blk-mq，然后任何传递给驱动程序的请求都将具有与之关联的所需内存大小。- 支持合并 IO 和插入。 堆叠模型没有得到这些。 即使对于高 IOPS 设备，合并顺序 IO 也会减少每个命令的开销，从而增加带宽。目前，这是作为潜在的第三种排队模型提供的，希望随着它的成熟，它可以取代经典模型和堆栈模型。 这将使我们回到只有 1 个用于块设备的真实模型，而将堆叠方法留给 dm/mddevices（正如最初预期的那样）。以下人员在此补丁中做出的贡献：
+Linux 以与 TLB 非常相似的方式管理 CPU 缓存。CPU 高速缓存与 TLB 高速缓存一样，利用了程序往往表现出引用局部性的事实。为了避免每次引用时都必须从主内存中获取数据，CPU 会在 CPU 高速缓存中缓存非常少量的数据。通常，有两个级别，称为 1 级和 2 级 CPU 缓存。2 级 CPU 缓存比 L1 缓存更大但速度更慢，但 Linux 只关心 1 级或 L1 缓存。CPU 缓存被组织成行。每行通常很小，通常为 32 字节，并且每行与其边界大小对齐。换句话说，32 字节的高速缓存行将在 32 字节的地址上对齐。对于 Linux，行的大小L1_CACHE_BYTES由每个体系结构定义。地址映射到缓存行的方式因体系结构而异，但映射分为三个标题，直接映射、关联映射和集合关联映射。直接映射是最简单的方法，其中每个内存块仅映射到一个可能的缓存行。通过关联映射，任何内存块都可以映射到任何缓存行。集合关联映射是一种混合方法，其中任何内存块都可以映射到任何行，但仅限于可用行的子集内。不管映射方案如何，它们都有一个共同点，靠近并与缓存大小对齐的地址很可能使用不同的行。因此，Linux 使用简单的技巧来尝试最大化缓存的使用经常访问的结构字段位于结构的开头，以增加只需要一行来寻址公共字段的机会；结构中不相关的项应尽量分开至少缓存大小字节，以避免 CPU 之间的错误共享；通用缓存中的对象（例如 mm_struct 缓存）与 L1 CPU 缓存对齐，以避免错误共享。如果 CPU 引用不在高速缓存中的地址，则会发生高速缓存未命中并从主内存中获取数据。缓存未命中的成本非常高，因为对缓存的引用通常可以在不到 10ns 的时间内执行，而对主内存的引用通常将花费 100ns 到 200ns。基本目标是尽可能多的缓存命中和尽可能少的缓存未命中。正如某些架构不会自动管理其 TLB 一样，某些架构也不会自动管理其 CPU 缓存。挂钩被放置在虚拟到物理映射发生变化的位置，例如在页表更新期间。CPU 高速缓存刷新应始终首先进行，因为当从高速缓存刷新虚拟地址时，某些 CPU 需要存在虚拟到物理映射
+
+addr2line -f -e /boot/vmlinuz-5.10.38-21.hl10.el7.x86_64.debug choose_pgpath+164
+line_num, 显示行号
+找符号表: [root@node1 kernel-alt-5.10.38-21.01.el7]# grep -rn 'multipath_clone_and_map'
+gdb "$(modinfo -n dm_mod)"
+[root@node1 rpmbuild]# gdb ~/rpmbuild/BUILD/kernel-alt-5.10.38-21.01.el7/linux-5.10.38-21.hl10.el7.x86_64/drivers/md/dm-mod.ko
+(gdb) list *(choose_pgpath+164)
+
+bpftrace -e 'kprobe:st_select_path{ printf("bt:%s\n", kstack); }'
+st_select_path+1
+choose_path_in_pg+44
+choose_pgpath+164
+multipath_clone_and_map+219
+dm_mq_queue_rq+264
+blk_mq_dispatch_rq_list+291
+__blk_mq_do_dispatch_sched+356
+__blk_mq_sched_dispatch_requests+309
+blk_mq_sched_dispatch_requests+48
+__blk_mq_run_hw_queue+81
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+st_select_path+1
+choose_path_in_pg+44
+choose_pgpath+164
+multipath_clone_and_map+219
+dm_mq_queue_rq+264
+blk_mq_dispatch_rq_list+291
+__blk_mq_do_dispatch_sched+356
+__blk_mq_sched_dispatch_requests+309
+blk_mq_sched_dispatch_requests+48
+__blk_mq_run_hw_queue+81
+__blk_mq_delay_run_hw_queue+321
+blk_mq_sched_insert_requests+106
+blk_mq_flush_plug_list+281
+blk_flush_plug_list+215
+blk_finish_plug+33
+__ext4_get_inode_loc+592
+__ext4_get_inode_loc_noinmem+52
+__ext4_iget+276
+ext4_lookup+274
+__lookup_slow+139
+walk_component+312
+path_lookupat.isra.43+103
+filename_lookup.part.57+160
+vfs_statx+114
+__do_sys_newstat+57
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68
+
+
+
+static void dm_softirq_done
+dm_done
+	rq_end_io(tio->ti, clone, error, &tio->info)
+
+
+static int __init blk_mq_init
+	open_softirq(BLOCK_SOFTIRQ, blk_done_softirq) -> static __latent_entropy void blk_done_softirq -> blk_complete_reqs
+		rq->q->mq_ops->complete(rq) -> 
+
+dm_softirq_done+1
+blk_done_softirq+185
+__softirqentry_text_start+268
+asm_call_sysvec_on_stack+18
+do_softirq_own_stack+55
+do_softirq.part.19+70
+__local_bh_enable_ip+120
+ip_finish_output2+429
+ip_output+109
+__ip_queue_xmit+335
+__tcp_transmit_skb+2565
+tcp_write_xmit+896
+__tcp_push_pending_frames+50
+tcp_sendmsg_locked+3053
+tcp_sendmsg+39
+sock_sendmsg+84
+sock_write_iter+151
+new_sync_write+412
+vfs_write+388
+ksys_write+181
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68
+
+
+
+TRACE_EVENT, 跟踪事件, TRACE_EVENT(block_rq_remap, 
+
+
+nvme -> module_init(nvme_init) -> static int __init nvme_init(void)
+	pci_register_driver
+
+
+blk_mq_get_driver_tag+1
+blk_mq_dispatch_rq_list+178
+__blk_mq_do_dispatch_sched+356
+__blk_mq_sched_dispatch_requests+309
+blk_mq_sched_dispatch_requests+48
+__blk_mq_run_hw_queue+81
+__blk_mq_delay_run_hw_queue+321
+blk_mq_sched_insert_requests+106
+blk_mq_flush_plug_list+281
+blk_flush_plug_list+215
+blk_finish_plug+33
+xfs_buf_delwri_submit_buffers+524
+xfsaild+923
+kthread+278
+ret_from_fork+34
+
+
+filter: block, dm, md
+
+这个work队列，好像是 blk_mq_kick 或者 blk_mq_delay_kick 函数启动的
+static int map_request
+dm_requeue_original_request
+dm_mq_delay_requeue_request
+__dm_mq_kick_requeue_list
+scsi_mq_requeue_cmd
+blk_mq_delay_kick_requeue_list
+  kblockd_mod_delayed_work_on(WORK_CPU_UNBOUND, &q->requeue_work
+
+
+
+clear;strace -k -vvv ./write
+open("write.txt", O_RDWR|O_CREAT, 035060) = 3
+ > /usr/lib64/libc-2.17.so(__open_nocancel+0x7) [0xef980]
+ > /home/xb/project/linux/trace/strace/test/write(main+0x36) [0x5e8]
+ > /usr/lib64/libc-2.17.so(__libc_start_main+0xf5) [0x22625]
+ > /home/xb/project/linux/trace/strace/test/write(_start+0x29) [0x509]
+write(3, "pilgrimtao is cool\n", 19)    = 19
+ > /usr/lib64/libc-2.17.so(__write_nocancel+0x7) [0xefc20]
+addr2line -Cife /usr/lib64/libc-2.17.so 0xefc20
+
+write详解: https://blog.csdn.net/linuxheik/article/details/76131256
+write -> __write_nocancel __libc_write(glibc-2.11.2中的io/write.c) -> -> SYSCALL_DEFINE3(write
+#define __NR_write 4
+__SYSCALL(__NR_write, sys_write)
+ssize_t ksys_write
+	ret = vfs_write(f.file, buf, count, ppos)
+		file->f_op->write(file, buf, count, pos)
+
+
+
+struct blk_plug {
+blk_plug 允许通过短时间保存 I/O 片段来构建相关请求的队列。 这允许将顺序请求合并为单个较大的请求。 由于请求会批量从每个任务列表移至设备的 request_queue，因此可扩展性得到提高，因为 request_queue 锁的锁争用减少了。在尝试将请求添加到插入列表器时，可以不禁用抢占。 合并。 详情请参见schedule()，其中调用了blk_flush_plug()
+
+
+bio_alloc_bioset
+	punt_bios_to_rescuer
+
+
+
+ctx申请代码参考：__scsi_scan_target -> scsi_report_lun_scan -> scsi_alloc_sdev -> blk_mq_init_queue -> blk_mq_init_queue_data -> blk_mq_init_allocated_queue -> blk_mq_alloc_ctxs/blk_mq_realloc_hw_ctxs
+
+io调度器:
+插入：blk_mq_sched_insert_request -> ops.insert_requests
+取出：__ blk_mq_sched_dispatch_requests -> blk_mq_do_dispatch_sched -> __ blk_mq_do_dispatch_sched -> ops.dispatch_request
+将request发送给disk：__ blk_mq_do_dispatch_sched -> blk_mq_dispatch_rq_list -> .queue_rq
+
+
+
+per disk per channel的数据结构 -> struct blk_mq_hw_ctx {
+
+
+
+
+
+
+blk_mq_run_hw_queue+1
+__blk_mq_free_request+113
+blk_flush_complete_seq+227
+flush_end_io+469
+scsi_end_request+143
+scsi_io_completion+342
+blk_done_softirq+185
+__softirqentry_text_start+268
+asm_call_sysvec_on_stack+18
+do_softirq_own_stack+55
+irq_exit_rcu+243
+sysvec_call_function_single+52
+asm_sysvec_call_function_single+18
+native_safe_halt+14
+acpi_idle_do_entry+75
+acpi_idle_enter+90
+cpuidle_enter_state+145
+cpuidle_enter+41
+do_idle+636
+cpu_startup_entry+25
+start_secondary+280
+secondary_startup_64_no_verify+176
+
+
+
+blk_mq_run_hw_queue+1
+blk_mq_submit_bio+1067
+submit_bio_noacct+748
+dm_wq_work+68
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+
+blk_mq_run_hw_queue+1
+blk_mq_run_hw_queues+52
+blk_mq_requeue_work+350
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+blk_mq_run_hw_queue+1
+blk_mq_sched_insert_request+240
+blk_mq_submit_bio+985
+submit_bio_noacct+748
+submit_bio+67
+iomap_submit_ioend.isra.45+74
+xfs_vm_writepages+100
+do_writepages+65
+__filemap_fdatawrite_range+199
+file_write_and_wait_range+94
+xfs_file_fsync+99
+do_fsync+56
+__x64_sys_fsync+16
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68 -> SYM_INNER_LABEL(entry_SYSCALL_64_after_hwframe, SYM_L_GLOBAL) -> call	do_syscall_64		/* returns with IRQs disabled */ -> 深入理解Linux系统调用: https://www.cnblogs.com/lm273/p/12964220.html
+
+
+
+
+查看行号:
+rpm -ql kernel-debug-debuginfo | grep vmlinux
+gdb `rpm -ql kernel-debug-debuginfo | grep vmlinux`
+(gdb) list *(blk_mq_submit_bio+985)
+
+
+blk_mq_do_dispatch_sched
+	void blk_mq_delay_run_hw_queue
+		kblockd_mod_delayed_work_on(blk_mq_hctx_next_cpu(hctx), &hctx->run_work
+			mod_delayed_work_on
+				__queue_delayed_work
+				...
+		异步处理request -> INIT_DELAYED_WORK(&hctx->run_work, blk_mq_run_work_fn)
+
+
+
+
+tee<<EOF>test.bt
+#include <linux/blk-mq.h>
+kprobe:blk_mq_dispatch_rq_list
+{
+    printf("blk_mq_dispatch_rq_list a3:%d\n", arg3); // str(((path *)arg0)->dentry->d_name.name)
+}
+EOF
+bpftrace test.bt
+
+
+系统调用表: arch/x86/entry/syscalls/syscall_64.tbl
+
+
+...
+static struct path_selector_type st_ps = {
+	.name		= "service-time",
+static int __init dm_st_init(void)
+	DMINFO("version " ST_VERSION " loaded")
+
+
+日志解读:
+2877 [29759.238769] device-mapper: multipath service-time: version 0.3.0 loaded -> DMINFO("version " ST_VERSION " loaded")
+2878 [30418.496673]  connection9:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4325075259, last ping 4325080320, now 4325085696
+2879 [30418.501470]  connection9:0: detected conn error (1022)
+2880 [30423.616696]  session9: session recovery timed out after 5 secs
+2881 [30423.688673] device-mapper: multipath: 253:3: Failing path 8:16.
+2882 [30458.693772] sd 14:0:0:1: Power-on or device reset occurred
+2883 [30459.693704] device-mapper: multipath: 253:3: Reinstating path 8:16.
+
+
+static blk_status_t scsi_queue_rq
+scsi_device_state_check
+	 sd 15:0:0:1: rejecting I/O to offline device
+
+
+static int sd_eh_action
+	scsi_device_set_state(sdev, SDEV_OFFLINE)
+
+
+870720] blk_update_request: I/O error, dev sdc, sector 0 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+[25293.170506] device-mapper: multipath: 253:3: Failing path 8:32.
+[25293.174884] blk_update_request: I/O error, dev dm-3, sector 209715072 op 0x0:(READ) flags 0x80700 phys_seg 1 prio class 0
+[25293.175001] blk_update_request: I/O error, dev dm-3, sector 209715072 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 0
+[25293.175084] Buffer I/O error on dev dm-3, logical block 26214384, async page read
+[25615.286254] sysctl (1311306): drop_caches: 3
+
+
+设置状态位:
+static const struct {
+	enum scsi_device_state	value;
+	char			*name;
+} sdev_states[] = {
+	{ SDEV_CREATED, "created" },
+	{ SDEV_RUNNING, "running" },
+	{ SDEV_CANCEL, "cancel" },
+	{ SDEV_DEL, "deleted" },
+	{ SDEV_QUIESCE, "quiesce" },
+	{ SDEV_OFFLINE,	"offline" },
+	{ SDEV_TRANSPORT_OFFLINE, "transport-offline" },
+	{ SDEV_BLOCK,	"blocked" },
+	{ SDEV_CREATED_BLOCK, "created-blocked" },
+};
+
+
+scsi_eh_ready_devs
+static void scsi_eh_offline_sdevs
+	scsi_device_set_state(sdev, SDEV_OFFLINE)
+
+
+[root@node1 ~]# bpftrace -e 'kprobe:scsi_device_set_state { printf("bt:%s\n", kstack); }'
+scsi_device_set_state+1
+scsi_probe_and_add_lun+2132
+__scsi_scan_target+236
+scsi_scan_target+248
+iscsi_user_scan_session+299
+device_for_each_child+87
+iscsi_user_scan+67
+store_scan+189
+kernfs_fop_write_iter+287
+new_sync_write+287
+vfs_write+388
+ksys_write+89
+do_syscall_64+51
+entry_SYSCALL_64_after_hwframe+68
+
+
+断连
+scsi_device_set_state+1
+scsi_internal_device_block_nowait+24
+device_block+43
+starget_for_each_device+128
+target_block+40
+device_for_each_child+87
+__iscsi_block_session+103
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+
+scsi_host_block(struct Scsi_Host *shost)
+scsi_internal_device_block_nowait
+
+
+
+scsi_target_unblock+1
+session_recovery_timedout+218
+process_one_work+431
+worker_thread+48
+kthread+278
+ret_from_fork+34
+
+
+
+stap探测内核:
+stap -e 'probe kernel.function("iscsi_session_recovery_timedout").call {printf("%s\n", $cls_session$); exit(); }'
+动态打印变量: bpftrace -e 'kprobe:iscsi_session_recovery_timedout { printf("a1%d\n", arg1); }'
+
+
+
+tee<<EOF>iscsi_session_recovery_timedout.bt
+#include <scsi/libiscsi.h>
+#include <scsi/scsi_transport_iscsi.h>
+kprobe:iscsi_session_recovery_timedout
+{
+	printf("session_state:%lu\n", ((struct iscsi_session *)(((struct iscsi_cls_session *)arg0)->dd_data))->state);
+}
+EOF
+bpftrace iscsi_session_recovery_timedout.bt
+session_state:5 -> ISCSI_STATE_IN_RECOVERY
+
+
+tee<<EOF>test.bt
+#include <rdma/rdma_cm.h>
+kprobe:nvme_rdma_cm_handler
+{
+	printf("event: %d\n", ((struct rdma_cm_event *)arg1)->event);
+}
+EOF
+bpftrace test.bt
+
+
+tee<<EOF>test.bt
+#include <scsi/libiscsi.h>
+#include <scsi/scsi_transport_iscsi.h>
+kprobe:iscsi_conn_error_event
+{
+	printf("conn_state:%lu\n",((struct iscsi_cls_conn *)arg0)->state);
+	printf("flags:%lu\n",((struct iscsi_cls_conn *)arg0)->flags);
+	// printf("flags:%#lx\n", (&((struct iscsi_cls_conn *)arg0))->flags);
+}
+EOF
+bpftrace test.bt
+
+
+scsi_ioctl_reset
+scsi_abort_eh_cmnd
+scsi_try_target_reset
+	rtn = hostt->eh_target_reset_handler(scmd) -> iscsi_eh_recover_target
+
+
+
+
+scsi_log_completion
+	scmd_printk(KERN_INFO, cmd, "scsi host busy %d failed %d\n"
+
+
+task:
+initiator_tgt, iscsi, kernel, task
+1、用户态进程拉取 initaitor 数据的办法，这个对协议前置可能有用。说白了，用户态都已经有写入磁盘的数据了，我为啥还需要 target ? 直接加载rbd发往我们分布式集群不行吗，还要走一层target调用，不就是多此一举吗？
+2、用户态进程既然已经有所有数据了，那么是不是协议的所有逻辑都在用户态里面了？ 比如 nop_in, nop_out 和 BHS/AHS
+
+目的:
+1. 协议前置, 减少IO路径
+2. 多路径下, 数据不一致问题
+
+3.initiator -> tgt 自定义预留字段
+4. netlink 搂数据
+
+5. 多路径失败时, 如何通知tgt(利用现有消息类型或新定义消息类型?), 尽量不走内核, 1.iopath, 2.fail_path, 通知流程
+(1) io路径流程
+(2) fail_path流程, 与map_io的关系?
+(3) 解决方案
+疑问: 
+1) 之前的IO如何处理, retry?
+2) 继续深入细节?
+
+
+使用 perf 实用程序跟踪
+perf list 'iscsi:*'
+/usr/bin/perf trace --no-syscalls --event="iscsi:iscsi_dbg_trans_conn"
+
+
+[root@node1 ~]# /usr/bin/perf trace --event="iscsi:iscsi_dbg_trans_session"
+     0.000 iscsi:iscsi_dbg_trans_session:session5: __iscsi_block_session Blocking session
+
+    29.082 iscsi:iscsi_dbg_trans_session:session5: __iscsi_block_session Completed SCSI target blocking
+
+  5114.112 iscsi:iscsi_dbg_trans_session:session5: session_recovery_timedout Unblocking SCSI target
+
+  5114.136 iscsi:iscsi_dbg_trans_session:session5: session_recovery_timedout Completed unblocking SCSI target
+
+
+iscsi_conn_error_event+1
+call_timer_fn+41
+run_timer_softirq+474
+__softirqentry_text_start+268
+asm_call_on_stack+18
+do_softirq_own_stack+55
+irq_exit_rcu+243
+sysvec_apic_timer_interrupt+52
+asm_sysvec_apic_timer_interrupt+18
+native_safe_halt+14
+acpi_idle_do_entry+75
+acpi_idle_enter+90
+cpuidle_enter_state+145
+cpuidle_enter+41
+do_idle+636
+cpu_startup_entry+25
+start_secondary+280
+secondary_startup_64_no_verify+176
+
+
+
+补丁: https://github.com/torvalds/linux/commit/23d6fefbb3f6b1cc29794427588b470ed06ff64e
+scsi：iscsi：修复内核 conn 故障处理
+提交 0ab710458da1（“scsi：iscsi：完全在内核空间中执行连接失败”）具有此补丁修复的以下回归/错误：
+1. 它可以将命令返回到上层，例如 dm-multipath，在那里可以重试它们。 成功后，fs/app 可以将新的 I/O 发送到相同的扇区，但我们让命令在固件或网络层中运行。 如果用户空间未启动，我们需要调用 ep_disconnect。 此补丁仅修复卸载驱动程序的问题。 iscsi_tcp 将在单独的提交中修复，因为它没有 ep_disconnect 调用。
+2. 实现 ep_disconnect 的驱动程序期望在 conn_stop 之前调用它。 除了崩溃之外，如果在 ep_disconnect 之前调用 cleanup_task 调用，它可能会为 session1 释放驱动程序/卡资源，然后可以将它们分配给 session2。 但由于驱动程序的 ep_disconnect 未被调用，因此它尚未清理固件，因此该卡仍在使用原始 cmd 的资源。
+3. stop_conn_work_fn 可以在用户空间完成恢复后运行，并且我们正在愉快地使用会话。 然后，根据当时发生的情况，我们最终会遇到各种错误。
+我们也可以在用户空间调用 stop_conn 和 ep_disconnect 之后运行 stop_conn_work_fn ，现在将调用 start/bind conn 。 如果 stop_conn_work_fn 在绑定之后但启动之前运行，我们将使 conn 处于未绑定但有点启动的状态，即使驱动程序已设置为不再期望 I/O 的状态，也可能允许 IO。
+4. 如果我们尚未运行内核 stop_conn 函数，则在 iscsi_if_destroy_conn 中返回 -EAGAIN 会破坏用户空间。 我们应该为来电者这样做
+
+https://github.com/torvalds/linux/commit/0ab710458da113a71c461c4df27e7f1353d9f864
+scsi：iscsi：完全在内核空间中执行连接失败连接失败处理取决于存在的守护程序（至少）停止连接并开始恢复。 这是多路径场景中的一个问题，如果守护进程由于某种原因失败，SCSI 路径永远不会被标记为关闭，多路径不会执行故障转移，并且设备的 IO 将永远等待该连接恢复。
+该补丁完全在内核内部执行连接故障。 这样，即使守护进程已终止，也可以进行故障转移并且挂起的 IO 可以继续。 一旦守护进程再次激活，它可以执行恢复过程（如果适用）
+
+
+
+内核收到iscsid从用户态发来的netlink消息: ISCSI_UEVENT_STOP_CONN
+err = iscsi_if_transport_conn(transport, nlh) -> static int iscsi_if_transport_conn
+	conn = iscsi_conn_lookup(ev->u.stop_conn.sid
+	return iscsi_if_stop_conn(conn, ev->u.stop_conn.flag) -> static int iscsi_if_stop_conn
+		... h内核简单关闭连接
+
+
+
+用户态 -> 
+static int dev_status
+	__dev_status(md, param)
+	...
+
+
+tgt原理懂了，感觉要实现不难。内核应该就是发个uevent然后sched，等待唤醒
+
+
+uevent原理: 
+uevent_net_init
+/sys/kernel/uevent_helper
+
+reboot, call_usermodehelper, 执行用户态可执行程序
+static int run_cmd(const char *cmd)
+struct thermal_cooling_device
+echo "my_event" > /dev/uevent
+
+
+
+nvmeof, rdma
+nvme_mpath_init_ctrl
+
+
+
+static int nvme_rdma_cm_handler
+case RDMA_CM_EVENT_TIMEWAIT_EXIT
+nvme_rdma_error_recovery(queue->ctrl)
+static void nvme_rdma_error_recovery
+	dev_warn(ctrl->ctrl.device, "starting error recovery\n") -> starting error recovery
+	queue_work(nvme_reset_wq, &ctrl->err_work) -> nvme_rdma_error_recovery_work <- INIT_WORK(&ctrl->err_work, nvme_rdma_error_recovery_work)
+		nvme_stop_keep_alive
+
+
+
+
+
+nvme_rdma_error_recovery+1
+nvme_rdma_cm_handler+269
+cma_cm_event_handler+37
+cma_ib_handler+167
+cm_process_work+34
+cm_work_handler+1839
+process_one_work+423
+worker_thread+48
+kthread+274
+ret_from_fork+31
+
+
+nvme_rdma_error_recovery+1
+nvme_rdma_recv_done+726
+__ib_process_cq+127
+ib_poll_handler+44
+irq_poll_softirq+118
+__softirqentry_text_start+227
+irq_exit+256
+do_IRQ+127
+ret_from_intr+0
+mwait_idle+127
+do_idle+497
+cpu_startup_entry+111
+start_secondary+423
+secondary_startup_64+183
+
+
+打开所有调试: echo -n '-p' > /mnt/dbg/dynamic_debug/control
+echo -n '+p' > /mnt/dbg/dynamic_debug/control
+echo -n '+mf' > /mnt/dbg/dynamic_debug/control
+
+动态调试:
+mkdir /mnt/dbg
+mount -t debugfs none /mnt/dbg
+echo "module nvme_fabrics +p" > /mnt/dbg/dynamic_debug/control
+echo "module nvme_rdma +p" > /mnt/dbg/dynamic_debug/control
+echo "module nvmet +p" > /mnt/dbg/dynamic_debug/control
+
+
+
+
+动态调试文档: lib/Kconfig.debug
+
+
+
+nvmeof -> cli write -> PATH_NVME_FABRICS	"/dev/nvme-fabrics"
+drivers/nvme/host/fabrics.c
+static struct miscdevice nvmf_misc = {
+	.minor		= MISC_DYNAMIC_MINOR,
+	.name           = "nvme-fabrics",
+	.fops		= &nvmf_dev_fops,
+};
+
+static int __init nvmf_init
+  nvmf_class = class_create("nvme-fabrics") -> /sys/class/nvme-fabrics
+	nvmf_device device_create(nvmf_class, NULL, MKDEV(0, 0), NULL, "ctl") -> ctl -> ../../devices/virtual/nvme-fabrics/ctl
+  // /sys/class/nvme-fabrics/ctl
+  // /sys/class/misc/nvme-fabrics
+  // /dev/nvme-fabrics
+  ret = misc_register(&nvmf_misc)
+
+
+
+分配命名空间, 也就是块设备, 指定符号操作表: disk->fops = &nvme_bdev_ops;, 
+nvme_alloc_ns
+  nvme_init_ns_head
+    nvme_alloc_ns_head
+      nvme_mpath_alloc_disk
+        if (!(ctrl->subsys->cmic & NVME_CTRL_CMIC_MULTI_CTRL) || !multipath)
+          return 0;
+        head->disk = alloc_disk(0)
+        sprintf(head->disk->disk_name, "nvme%dn%d",
+                ctrl->subsys->instance, head->instance);
+  nvme_set_disk_name(disk_name, ns, ctrl, &flags)
+    if (!multipath) {
+      sprintf(disk_name, "nvme%dn%d", ctrl->instance, ns->head->instance);
+    } else if (ns->head->disk) {
+      sprintf(disk_name, "nvme%dc%dn%d", ctrl->subsys->instance,
+              ctrl->instance, ns->head->instance);
+      *flags = GENHD_FL_HIDDEN;
+    } else {
+      sprintf(disk_name, "nvme%dn%d", ctrl->subsys->instance,
+              ns->head->instance);
+    }
+  disk = alloc_disk_node(0, node)
+  memcpy(disk->disk_name, disk_name, DISK_NAME_LEN)
+  ns->disk = disk
+  // /sys/class/nvme-fabrics/ctl/nvmeA/nvmeXcYnZ
+  // /dev/nvmeXcYnZ -- hidden if multipathing enabled
+  device_add_disk(ctrl->device, ns->disk)
+  sysfs_create_group(&disk_to_dev(ns->disk)->kobj,
+          &nvme_ns_id_attr_group)
+  nvme_mpath_add_disk(ns, id)
+    nvme_mpath_set_live
+      // /sys/class/nvme-subsystem/nvme-subsysA/nvmeXnY
+      // /dev/nvmeXnY
+      device_add_disk(&head->subsys->dev, head->disk)  -> 添加磁盘, 一个块设备就是一个ns
+      sysfs_create_group(&disk_to_dev(head->disk)->kobj,
+              &nvme_ns_id_attr_group)
+
+nvmf_init
+  nvmf_class = class_create(THIS_MODULE, "nvme-fabrics")
+  // /sys/class/nvme-fabrics/ctl
+  nvmf_device =	device_create(nvmf_class)
+  // /sys/class/misc/nvme-fabrics
+  // /dev/nvme-fabrics
+  misc_register(&nvmf_misc)
+
+
+nvme_core_init
+  alloc_chrdev_region(&nvme_chr_devt, 0, NVME_MINORS, "nvme")
+  nvme_class = class_create(THIS_MODULE, "nvme")
+  nvme_subsys_class = class_create(THIS_MODULE, "nvme-subsystem")
+
+
+
+nvmf_create_ctrl(nvmf_device)
+  nvme_tcp_create_ctrl
+    nvme_init_ctrl
+      ctrl->dev = dev
+      ctrl->device->class = nvme_class
+      ctrl->device->parent = ctrl->dev
+      dev_set_name(ctrl->device, "nvme%d", ctrl->instance)
+      // /sys/class/nvme-fabrics/ctl/nvmeX
+      // /sys/class/nvme/nvmeX
+      // /dev/nvmeX
+      cdev_device_add(&ctrl->cdev, ctrl->device)
+    nvme_tcp_setup_ctrl
+
+
+
+nvme_init_subsystem
+  subsys->dev.class = nvme_subsys_class
+  dev_set_name(&subsys->dev, "nvme-subsys%d", ctrl->instance)
+  // /sys/class/nvme-subsystem/nvme-subsysA
+  device_add(&subsys->dev)
+  // /sys/calss/nvme-fabrics/ctl/nvmeX ->
+  // /sys/class/nvme-subsystem/nvme-subsysA/nvmeX
+  sysfs_create_link(&subsys->dev.kobj, &ctrl->device->kobj,
+          dev_name(ctrl->device))
+
+
+
+常见问题:
+错误: no handler found for transport 
+
+RDMA相关, 建连/初始化等
+drivers/nvme/host/rdma.c
+nvmf_dev_open
+seq_open() 设置@file，将其与@op 描述的序列关联起来。 @op->start() 设置迭代器并返回序列的第一个元素。 @op->stop() 将其关闭。 @op->next() 返回序列的下一个元素。 @op->show() 将元素打印到缓冲区中。 如果出现错误 ->start() 和 ->next() 返回 ERR_PTR(错误)。 在序列末尾，它们返回 %NULL。 ->show() 如果成功则返回 0，如果出错则返回负数。 返回 SEQ_SKIP 意味着“丢弃该元素并继续”。 注意：seq_open()将分配一个struct seq_file并将其指针存储在@file->private_data中。 该指针不应被修改
+nvmf_dev_show
+	seq_printf(seq_file, "instance=%d,cntlid=%d\n"
+
+
+static const struct file_operations nvmf_dev_fops = {
+	.owner		= THIS_MODULE,
+	.write		= nvmf_dev_write,
+	.read		= seq_read,
+	.open		= nvmf_dev_open,
+	.release	= nvmf_dev_release,
+};
+static ssize_t nvmf_dev_write
+	buf = memdup_user_nul(ubuf, count) -> 内存拷贝 -> duplicate memory region from user space and NUL-terminate
+	nvmf_create_ctrl(struct device *dev, const char *buf) -> /sys/class/nvme-fabrics ->  参考, kernel-nvmf: https://blog.csdn.net/u013565071/article/details/124190259
+		struct nvmf_ctrl_options *opts -> 关键数据结构体 -> nvme-fabrics：添加通用 NVMe over Fabrics 库，NVMe over Fabrics 库为传输和 nvme 核心提供接口，以处理独立于底层传输的特定于结构的命令和属性，此外，fabrics 库添加了一个杂项设备 允许实际创建结构控制器的接口，因为我们不能像 PCI 情况那样自动发现它。 nvme-cli 实用程序已得到增强，可以使用此接口来支持结构连接和发现
+		nvmf_parse_options
+		request_module("nvme-%s", opts->transport) -> nvme-rdma.ko -> 当内核发现一个需要的module不在内核中时，会调用request_module去用户空间创建进程去加载这个缺失的module, Linux内核模块的自动加载及request_module系统调用: https://blog.csdn.net/weixin_40710708/article/details/106525247
+		nvmf_check_required_opts
+		down_read(&nvmf_transports_rwsem) -> nvme-fabrics：将 nvmf_transports_mutex 转换为 rwsem 互斥体可防止在创建控制器时更改传输列表，但使用普通的旧互斥体意味着它还会序列化控制器创建。 这不必要地减慢了创建多个控制器的速度 - 例如，对于 RDMA 传输，创建控制器涉及为每个 IO 队列建立一个连接，这涉及更多的网络/软件往返，因此延迟可能会变得很严重。解决此问题的最简单方法是 将互斥量更改为 rwsem，并仅在列表发生变化时保留它以进行写入。 由于我们可以在创建控制器时读取rwsem，因此我们可以并行创建多个控制器, rw_semaphore,对于无竞争的 rwsem，计数和所有者是任务在获取 rwsem 时需要接触的唯一字段。 因此，它们被放置在彼此旁边，以增加它们共享相同缓存行的机会。 在竞争的 rwsem 中，所有者可能是结构中最常访问的字段，因为持有 osq 锁的乐观等待者将在所有者上旋转。 对于嵌入式 rwsem，包含结构中的其他热字段应远离 rwsem，以减少它们共享相同缓存行而导致缓存行弹跳问题的机会, down_read()是读者用来得到读写信号量sem时调用的，如果该信号量在被写者所持有，则对该函数的调用会导致调用者的睡眠。通过该操作，多个读者可以获得读写信号量, https://deepinout.com/linux-kernel-api/linux-kernel-api-synchronization-mechanism/linux-kernel-api-down_read.html
+		nvmf_lookup_transport
+		try_module_get -> 首先判断模块module是否处于活动状态，然后通过local_inc()宏操作将模块module的引用计数加1
+		up_read(&nvmf_transports_rwsem);
+		nvmf_check_required_opts
+		nvmf_check_allowed_opts -> 检查选项
+		ctrl = ops->create_ctrl -> .create_ctrl	= nvme_rdma_create_ctrl -> static struct nvme_ctrl *nvme_rdma_create_ctrl -> 创建控制器
+			inet_pton_with_scope -> 将tgt地址和端口转为socket地址
+			nvme_rdma_existing_controller -> 比较6元组: <Host NQN, Host ID, local address, remote address, remote port, SUBSYS NQN>
+				nvmf_ip_options_match
+			INIT_DELAYED_WORK(&ctrl->reconnect_work nvme_rdma_reconnect_ctrl_work -> nvme-rdma：集中控制器设置序列，将控制器序列集中到单个例程，该例程在故障后正确清理，而不是在多个流程中具有多个外观（创建、重置、重新连接）。我们在这里还获得的一件事是理智/边界 连接回动态控制器时也会检查
+			INIT_WORK(&ctrl->err_work, nvme_rdma_error_recovery_work)
+				nvme_stop_keep_alive -> nvme-rdma：在错误恢复中不要完全停止控制器，通过在已经发生故障的控制器上调用 nvme_stop_ctrl 将等待扫描工作完成（仅通过识别超时到期时间，即 60 秒）。 当我们已经知道控制器发生故障时，这是不必要的
+					cancel_delayed_work_sync(&ctrl->ka_work)
+				flush_work
+				nvme_rdma_teardown_io_queues(ctrl, false);
+				nvme_unquiesce_io_queues(&ctrl->ctrl);
+				nvme_rdma_teardown_admin_queue(ctrl, false);
+				nvme_unquiesce_admin_queue(&ctrl->ctrl);
+				nvme_auth_stop(&ctrl->ctrl);
+				nvme_rdma_reconnect_or_remove -> 重连或移除
+					queue_delayed_work(nvme_wq, &ctrl->reconnect_work -> nvme_rdma_reconnect_ctrl_work
+						nvme_rdma_setup_ctrl
+						...
+			INIT_WORK(&ctrl->ctrl.reset_work, nvme_rdma_reset_ctrl_work)
+			nvme_init_ctrl -> 初始化nvme控制器, 初始化 NVMe 控制器结构。 这需要在最早的初始化期间调用，以便我们在探测期间拥有初始化的结构, nvme：将 chardev 和 sysfs 接口移至通用代码为此，我们需要添加适当的控制器初始化例程和除 PCIe 控制器列表之外的所有控制器列表，该列表保留在 pci.c 中。 请注意，当对控制器的最后一个引用被删除时，我们会删除 sysfs 设备 - 旧代码会将其保留更长时间，这没有多大意义。这需要一个新的 ->reset_ctrl 操作来实现控制器重置，并需要一个新的 ->reset_ctrl 操作来实现控制器重置。 ->write_reg32 实现子系统重置所需的操作。 现在，我们还存储 NVMe 合规版本的缓存副本以及控制器是否连接到子系统或不在通用控制器结构中的标志
+				INIT_LIST_HEAD(&ctrl->namespaces) -> 初始命名空间链表
+				init_rwsem(&ctrl->namespaces_rwsem)
+				INIT_WORK(&ctrl->scan_work, nvme_scan_work)
+					nvme_init_non_mdts_limits
+					nvme_scan_ns_list -> 扫描命名空间列表: https://blog.csdn.net/tiantao2012/article/details/72236113, 驱动架构分析: https://zhuanlan.zhihu.com/p/590851852, nvme_reset_work, 这个函数初始化nvme盘的admin和io队列（struct nvme_queue），同时初始化nvme盘的管理队列和请求队列对应的硬件队列描述结构blk_mq_tag_set，注意：这里的请求队列结构是struct request_queue，并不是nvme盘收发命令的admin和io队列，每个nvme逻辑盘只有一个请求队列，一个该请求队列对应多个nvme盘硬件io队列。nvme逻辑盘用struct nvme_ns结构表示，该结构包含通用盘设备结构：struct gendisk, blk_mq_tag_set结构包含一个物理nvme盘硬件队列数、队列深度、io请求及处理等信息，该结构包含物理块设备所有描述信息，是块设备软件请求队列和硬件物理存储设备队列之间的纽带，建立了系统软件层面的io请求队列和物理存储设备硬件队列的映射关系。通过该结构文件系统读写操作发送的io请求最终到达物理存储设备
+				INIT_WORK(&ctrl->async_event_work, nvme_async_event_work)
+				INIT_WORK(&ctrl->fw_act_work, nvme_fw_act_work)
+				INIT_WORK(&ctrl->delete_work, nvme_delete_ctrl_work)
+				INIT_DELAYED_WORK(&ctrl->ka_work, nvme_keep_alive_work)
+				INIT_DELAYED_WORK(&ctrl->failfast_work, nvme_failfast_work)
+				ctrl->ka_cmd.common.opcode = nvme_admin_keep_alive
+				ida_alloc -> idr, ida内核id机制: https://developer.aliyun.com/article/609295
+				device_initialize(&ctrl->ctrl_device)
+				nvme：将控制器引用计数切换为使用结构设备而不是为字符设备句柄分配单独的结构设备，而是将其嵌入到结构 nvme_ctrl 中并将其用于主控制器引用计数。 这消除了双重引用计数，并为我们提供了字符设备操作的自动引用。 我们暂时将 ctrl->device 保留为指针，以避免到处更改 printks，但将来我们可以研究采用与其他子系统类似的控制器结构的消息打印助手。请注意，delete_ctrl 操作始终已经有一个引用（或者通过 sysfs 由于此更改，或者因为 /dev/nvme-fabrics 节点上的每个打开文件现在输入时都有一个引用，所以我们不需要在那里执行 except_zero 变体
+					kobject_init
+					device_pm_init
+				ctrl->device->devt = MKDEV(MAJOR(nvme_ctrl_base_chr_devt) -> 创建设备主编号, MKDEV 用于将给定的主设备号和次设备号的值组合成 dev_t 类型的设备号, 创建/dev中的设备, alloc_chrdev_region函数，来让内核自动给我们分配设备号
+				dev_set_drvdata -> 函数用来设置device 的私有数据, 设置控制器指针
+				dev_set_name -> 设置设备名, 如: /dev/nvme2
+				nvme_get_ctrl
+				cdev_init(&ctrl->cdev, &nvme_dev_fops) -> 函数操作表为: static const struct file_operations nvme_dev_fops
+				cdev_device_add -> 添加字符设备
+					device_add
+				nvme_fault_inject_init
+				nvme_mpath_init_ctrl -> 多路径, nvme-multipath：修复 ANA 状态 nvme_init_identify 的双重初始化，因此 nvme_mpath_init 可以被多次调用，因此不得覆盖可能已初始化或正在使用的字段。 当控制器初始化时，分离出一个用于基本初始化的助手，并确保 init_identify 路径不会盲目地更改正在使用的数据结构
+					INIT_WORK(&ctrl->ana_work, nvme_ana_work)
+				nvme_auth_init_ctrl
+			changed = nvme_change_ctrl_state NVME_CTRL_CONNECTING
+			ret = nvme_rdma_setup_ctrl(ctrl, true) -> 变更: nvme-rdma：集中控制器设置序列将控制器序列集中到单个例程，该例程在故障后正确清理，而不是在多个流程中具有多个外观（创建、重置、重新连接）。 我们在这里还获得的一件事是在连接回动态控制器时进行健全性/边界检查
+				nvme_rdma_configure_admin_queue
+					nvme_rdma_alloc_queue(ctrl, 0, NVME_AQ_DEPTH)  -> 队列深度32 -> ...
+						queue->cm_id = rdma_create_id(&init_net, nvme_rdma_cm_handler
+						rdma_resolve_addr(queue->cm_id, src_addr -> 触发cm事件: RDMA_CM_EVENT_ADDR_RESOLVED -> cm_error = nvme_rdma_addr_resolved(queue)
+							nvme_rdma_create_queue_ib -> nvme-rdma：使 nvme_rdma_[create|destroy]_queue_ib 对称，我们将引用放在销毁例程中的设备上，因此我们应该在创建例程中查找并获取引用
+								queue->device = nvme_rdma_find_get_device(queue->cm_id)
+								nvme_rdma_create_cq(ibdev, queue)
+									ib_alloc_cq
+								nvme_rdma_create_qp(queue, send_wr_factor)
+									init_attr.event_handler = nvme_rdma_qp_event
+									init_attr.sq_sig_type = IB_SIGNAL_REQ_WR
+									init_attr.qp_type = IB_QPT_RC
+									rdma_create_qp(queue->cm_id, dev->pd, &init_attr)
+								queue->rsp_ring = nvme_rdma_alloc_ring(ibdev, queue->queue_size
+									ring = kcalloc(ib_queue_size
+									nvme_rdma_alloc_qe
+										ib_dma_map_single -> 将内核虚拟地址映射为 -> DMA地址
+											dma_map_single(dev->dma_device, cpu_addr, size, direction)
+								pages_per_mr = nvme_rdma_get_max_fr_pages
+								ib_mr_pool_init ?
+								NVME_RDMA_Q_TR_READY
+							rdma_set_service_type -> 设置服务类型, Setting Type of Service (ToS), https://github.com/ssbandjl/linux/commit/e63440d6a3134f7ae74bfb00bfc01db3efb8d3aa, nvme-rdma：为 rdma 传输添加 TOS 对于 RDMA 传输，TOS 是 IB QoS 的扩展，为客户端提供隔离不同类型数据的流量的能力。 RDMA CM 使用 rdma_set_service_type() 将其抽象为 ULP。 在内部，每个流量流都由一个连接来表示，该连接具有与普通连接一样的所有独立资源，并按服务类型进行区分。 换句话说，IP 对之间可以有多个 qp 连接，并且每个连接都支持唯一的服务类型。 TOS 用途之一是带宽管理，它允许为 QoS 类别设置带宽限制，例如 80% 带宽分配给 QoS 类别 A 的控制器，20% 分配给 QoS 类别 B 的控制器。 注意：除了 TOS 配置之外，还必须在目标（发送 RDMA 命令）和发起方的相关 HCA 上配置 QOS，以影响流量, 用法: nvme connect --tos=0 --transport=rdma --traddr=10.0.1.1 --nqn=test-nvme
+							rdma_resolve_route -> 触发cm事件: RDMA_CM_EVENT_ROUTE_RESOLVED -> cm_error = nvme_rdma_route_resolved(queue)
+								param.retry_count = 7 -> 发生错误时应在连接上重试数据传输操作的最大次数。 此设置控制发生超时时重试发送、RDMA 和原子操作的次数。 仅适用于 RDMA_PS_TCP, 
+								param.rnr_retry_count = 7 (规范中的特殊值) -> 设置连接参数, 最大重试无限次, 收到接收器未就绪 (RNR) 错误后应在连接上重试远程对等方发送操作的最大次数。 当发送请求在缓冲区已发布以接收传入数据之前到达时，会生成 RNR 错误。 仅适用于 RDMA_PS_TCP, 提供可靠、面向连接的 QP 通信，与 TCP 不同，RDMA 端口空间提供基于消息而不是流的通信
+								ret = rdma_connect_locked(queue->cm_id, &param) -> 连接服务端, 在服务端tgt, 触发cm事件: RDMA_CM_EVENT_CONNECT_REQUEST -> nvmet_rdma_queue_connect(cm_id, event)
+									nvmet_rdma_find_get_device(cm_id)
+										nline_page_count = num_pages
+										ndev->pd = ib_alloc_pd(ndev->device, 0) -> 分配保护域
+										nvmet_rdma_init_srqs(ndev) ?
+									queue = nvmet_rdma_alloc_queue(ndev, cm_id, event)
+										ret = nvmet_sq_init(&queue->nvme_sq)
+										nvmet_rdma_parse_cm_connect_req
+										INIT_WORK(&queue->release_work, nvmet_rdma_release_queue_work)
+										nvmet_rdma_alloc_rsps
+										nvmet_rdma_alloc_cmds ?
+										nvmet_rdma_create_queue_ib
+											rdma_create_qp
+											nvmet_rdma_post_recv
+									nvmet_rdma_cm_accept(cm_id, queue, &event->param.conn)
+										rdma_accept(cm_id, &param) -> 在host和tgt端触发cm事件: RDMA_CM_EVENT_ESTABLISHED
+											host: -> queue->cm_error = nvme_rdma_conn_established(queue)
+												nvme_rdma_post_recv -> nvme_rdma_recv_done
+												complete(&queue->cm_done) -> 唤醒等待的函数: nvme_rdma_wait_for_cm
+											-------------------------------------------------
+											tgt: -> nvmet_rdma_queue_established(queue)
+												nvmet_rdma_handle_command(queue, cmd)
+													nvmet_rdma_map_sgl
+									list_add_tail(&queue->queue_list, &nvmet_rdma_queue_list)
+						nvme_rdma_wait_for_cm(queue)
+						set_bit(NVME_RDMA_Q_ALLOCATED, &queue->flags)
+						...
+					ctrl->ctrl.numa_node = ibdev_to_node(ctrl->device->dev) -> 获取ib设备numa节点
+					T10-PI support -> nvme-rdma：添加元数据/T10-PI 支持，对于有能力的 HCA（例如 ConnectX-5/ConnectX-6），这将允许端到端保护信息直通和 NVMe over RDMA 传输验证。 元数据卸载支持是通过新的 RDMA 签名动词 API 实现的，并且为有能力的控制器启用
+					ctrl->max_fr_pages = nvme_rdma_get_max_fr_pages
+						return min_t(u32, NVME_RDMA_MAX_SEGMENTS, max_page_list_len - 1) -> 两数取其小
+					nvme_rdma_alloc_qe
+					nvme_alloc_admin_tag_set -> 参考: 驱动 | Linux | NVMe | 2. nvme_probe, https://blog.csdn.net/MissMango0820/article/details/129050219
+				nvme_rdma_configure_io_queues
+					nvme_rdma_alloc_io_queues -> ...
+					nvme_rdma_alloc_tag_set
+					nvme_rdma_start_io_queues
+					blk_mq_update_nr_hw_queues
+				nvme_change_ctrl_state
+				nvme_start_ctrl(&ctrl->ctrl) -> 启动nvme控制器, struct nvme_ctrl 抽象 NVMe 设备中和 NVMe 协议相关的部分
+					nvme_start_keep_alive -> 启动保活
+						nvme_queue_keep_alive_work(ctrl)
+							queue_delayed_work(nvme_wq, &ctrl->ka_work, ctrl->kato * HZ / 2) -> kato: nvme：添加保持活动支持定期保持活动是 NVMe over Fabrics 中的强制功能，在 PCIe 的 NVMe 1.2.1 中是可选功能。 此补丁添加了从主机定期发送的保持活动状态，以验证控制器是否仍然响应，反之亦然。 keep-alive 超时是用户定义的（使用 keep_alive_tmo 连接参数），默认为 5 秒。为了避免主机发送 keep-alive 与目标端 keep-alive 超时过期竞争的竞争条件，主机添加了一个宽限 向目标发布保持活动超时时，时间为 10 秒。如果保持活动失败（或超时），则会启动传输特定的错误恢复。目前仅连接 NVMe over Fabrics 以支持保持活动，但我们可以 一旦实际支持 PCIe 的控制器可用，即可轻松添加 PCIe 支持, nvme：清理 KATO 设置，根据 NVMe 基本规范，KATO 命令应以 KATO 间隔的一半发送，以正确考虑往返时间。 由于我们现在每个连接只发送一个 KATO 命令，因此我们可以轻松使用推荐值。 这还修复了 KATO 命令的请求超时与连接命令中的值不匹配的潜在问题，这可能会导致目标的虚假连接丢失
+							static void nvme_keep_alive_work
+								NVME_CRTL_ARRT_TBKAS , I/O completion seen, 看见IO完成 -> io完成时 nvme_complete_rq, 设置看见IO完成标记位 -> 基于流量的保持活动 (TBKAS) 允许主机和控制器在存在管理或 I/O 命令处理的情况下重新启动基于流量的保持活动计时器。 控制器对 TBKAS 位的支持在识别控制器数据结构的控制器属性中指示（参见图 275）。 如果控制器不支持基于流量的保活（TBKAS 清除为“0”），则保活功能的操作将在第 3.9.1 节中描述。 如果在保持活动超时间隔期间未处理管理命令或 I/O 命令而保持已建立的连接，则会出现基于流量的保持活动超时。 如果在保持活动超时间隔内处理管理命令或 I/O 命令，则在保持活动定时器到期时，应重新启动保持活动定时器。 如果在保持活动超时间隔内没有向控制器提交管理命令或 I/O 命令（如第 3.4.4 节中定义），则控制器可能会认为发生了保持活动超时。 如果管理命令或 I/O 命令在保持活动超时间隔内传输到控制器，则在保持活动定时器到期时，控制器应重新启动保持活动定时器。 如果主机在保持活动超时间隔内未收到任何管理命令或任何 I/O 命令的完成，则主机可能会认为发生了基于流量的保持活动超时。 如果管理命令或 I/O 命令在保持活动超时间隔内完成，则在保持活动定时器到期时，主机应重新启动保持活动定时器。 主机应在保持活动超时的一半时检查任何管理命令和 I/O 命令的命令完成队列条目，考虑到传输往返时间、传输延迟、命令处理时间和保持活动计时器粒度。 为了防止控制器检测到保持活动超时，如果在保持活动超时间隔的一半时间内没有管理命令和 I/O 命令发送到控制器，主机应发送保持活动命令,https://www.spinics.net/lists/stable-commits/msg304229.html, Keep Alive命令（参考第5.27.1.12节）和相关功能被主机用来确定控制器是否在运行，并被控制器用来确定主机是否在运行。当主机和控制器都可以访问并能够发出或处理命令时，它们就可以运行。控制器在Identify Controller data structure 中的KAS字段中指出Keep Alive Timer的粒度（参考Figure 275
+								blk_mq_alloc_request(ctrl->admin_q, nvme_req_op(&ctrl->ka_cmd) -> 分配KA管理命令
+								nvme_init_request(rq, &ctrl->ka_cmd)
+								blk_execute_rq_nowait(rq, false) -> 在队列尾部插入IO
+					nvme_enable_aen(ctrl) -> nvme：启用aen，无论是否存在I/O队列AEN通常与I/O队列的存在无关，因此无论是否存在都启用它们。 请注意，唯一的例外是发现控制器不支持任何请求的 AEN，并且 nvme_enable_aen 将尊重该请求并返回，因此无论如何启用它仍然是安全的。请注意，即使在初始命名空间扫描之前启用 AEN 也是安全的，因为我们在 工作队列上下文
+					nvme_queue_scan -> 参考: https://blog.csdn.net/tiantao2012/article/details/72236113
+					nvme_unquiesce_io_queues(ctrl)
+					nvme_mpath_update(ctrl) -> 更新nvme多路径, 从 nvme_init_identify() 调用的 nvme_mpath_init_identify() 从 ctrl 获取新的 ANA 日志。 这对于现有命名空间以及 ctrl 启动后可能发现的那些 scan_work 拥有最新的路径状态至关重要
+						nvme_parse_ana_log nvme_update_ana_state
+					nvme_change_uevent(ctrl, "NVME_EVENT=connected")
+			dev_info nvmf_ctrl_subsysnqn -> 打印info级别的调试信息
+		module_put(ops->module) -> module_put函数功能描述：该函数的功能是将一个特定模块module的引用计数减一，这样当一个模块的引用计数因为不为0而不能从内核中卸载时，可以调用此函数一次或多次，实现对模块计数的清零，从而实现模块卸载
+		...
+		pr_info("no handler found for transport %s.\n"
+	seq_file->private = ctrl
+
+
+
+##ini 初始化
+nvmf_dev_write
+ nvmf_create_ctrl :  ops->create_ctrl(dev, opts)
+  nvme_rdma_create_ctrl
+   reconnect_work   : nvme_rdma_reconnect_ctrl_work   // 初始化这些work
+   err_work         ：nvme_rdma_error_recovery_work   // 初始化这些work
+   reset_work       ：nvme_rdma_reset_ctrl_work       // 初始化这些work
+   nvme_init_ctrl      #### ctrl状态为NVME_CTRL_NEW
+    scan_work        ： nvme_scan_work
+	async_event_work ：nvme_async_event_work
+	fw_act_work      ：nvme_fw_act_work
+	delete_work      ：nvme_delete_ctrl_work
+	ka_work          ： nvme_keep_alive_work
+   #### ctrl状态变为 NVME_CTRL_CONNECTING
+   nvme_rdma_setup_ctrlr
+    nvme_rdma_configure_admin_queue   
+    nvme_rdma_configure_io_queues
+	#### ctrl状态变为  NVME_CTRL_LIVE
+	nvme_start_ctrl
+	 nvme_start_keep_alive
+	 nvme_queue_scan   :  ctrl->scan_work
+	 nvme_enable_aen   :  nvme_set_features, NVME_FEAT_ASYNC_EVENT
+	 queue_work        : async_event_work
+	 nvme_start_queues
+
+host删除一个设备的流程 
+nvme_sysfs_delete
+ nvme_delete_ctrl_sync
+  nvme_delete_ctrl
+    ### ctrlr状态变为 NVME_CTRL_DELETING
+    queue_work   : ctrl->delete_work  : nvme_delete_ctrl_work
+	 nvme_stop_ctrl
+	  nvme_mpath_stop
+	  nvme_stop_keep_alive
+	 nvme_remove_namespaces
+	 传输层删除ctrl    --会写cc寄存器 reg_write32,是否是这里引起tgt进行相应反应
+     nvme_put_ctrl
+
+tgt ns_change异步事件触发
+此为configfs的基本框架，当用户态修改该属性时，会调用store方法。
+nvmet_subsystems_group_ops
+nvmet_subsys_make
+ nvmet_namespaces_type
+  nvmet_namespaces_group_ops
+   nvmet_ns_make
+    nvmet_ns_type
+	 nvmet_ns_attrs
+	  nvmet_ns_attr_revalidate_size
+ 
+nvmet_ns_revalidate_size_store
+ nvmet_ns_revalidate   -- 里面区分了block_device和VFS 再进行size的比较判断是否有更改
+  nvmet_ns_changed      -- 获取ns之前大小和现在大小比较不同则进行更新
+   nvmet_ns_changed
+    nvmet_add_async_event
+     schedule_work     ：ctrl->async_event_work ：nvmet_async_event_work
+ 
+nvmet_async_event_work
+ nvmet_async_events_process
+  nvmet_set_result ：nvmet_async_event_result 将异步事件类型、信息填给req的rsp?
+  nvmet_req_complete
+   __nvmet_req_complete
+    nvmet_tcp_queue_response                     
+	  queue_work_on  ： nvmet_tcp_io_work    回复给host,内核的io流程处理还需要仔细看
+	  
+	 
+ctrl->nr_async_event_cmds  这个东西不太理解是不是可以理解为 aer_req ?
+
+
+
+void nvme_complete_rq
+	switch (nvme_decide_disposition(req))
+
+
+static struct config_group *nvmet_ports_make
+	config_group_init_type_name(&port->subsys_group,
+				"subsystems", &nvmet_port_subsys_type);
+
+
+strace -vvv ln -s /sys/kernel/config/nvmet/subsystems/nvme-subsystem-name /sys/kernel/config/nvmet/ports/1/subsystems/nvme-subsystem-name
+gdb --args ln -s /sys/kernel/config/nvmet/subsystems/nvme-subsystem-name /sys/kernel/config/nvmet/ports/1/subsystems/nvme-subsystem-name
+coreutils-8.22-24.el7_9.2.x86_64
+src/ln.c -> https://github.com/ssbandjl/coreutils/blob/master/src/ln.c
+main -> do_link -> symlink
+do_link (file[0], file[1])
+ok = ((symbolic_link ? symlink (source, dest)
+symlink("/sys/kernel/config/nvmet/subsystems/nvme-subsystem-name", "/sys/kernel/config/nvmet/ports/1/subsystems/nvme-subsystem-name")
+.symlink	= configfs_symlink -> int configfs_symlink
+ret = type->ct_item_ops->allow_link(parent_item, target_item)
+allow_link | drop_link
+static int nvmet_port_subsys_allow_link -> 软连接, 该补丁引入了 NVMe 子系统、控制器和发现服务的实现，允许跨结构（例如以太网、FC 等）导出 NVMe 命名空间。该实现符合 NVMe 1.2.1 规范，并与 NVMe over Fabrics 主机实现进行互操作。 配置使用 configfs 进行，最好使用 http://git.infradead.org/users/hch/nvmetcli.git 中的 nvmetcli 工具执行，该工具在 README 文件中还提供了所需步骤的详细说明
+一个 config_item 可以提供 ct_item_ops->allow_link() 和 ct_item_ops->drop_link() 方法。如果 ->allow_link() 方法存在，就可以调用 symlink(2)，将 config_item 作为链接的来源。这些链接只允许在 configfs 的 config_items 之间进行，任何在 configfs 文件系统之外的 symlink(2) 调用都会被拒绝, configfs-用户空间控制的内核对象配置, https://www.cnblogs.com/sctb/p/13901054.html
+	int nvmet_enable_port
+		ret = ops->add_port(port)
+		echo 1 > /config/nvmet/subsystems/${NAME}/attr_pi_enable
+		echo 1 > /config/nvmet/ports/${PORT_NUM}/param_pi_enable
+		static const struct nvmet_fabrics_ops nvmet_rdma_ops
+		.add_port		= nvmet_rdma_add_port
+		static int nvmet_rdma_add_port
+			INIT_DELAYED_WORK(&port->repair_work, nvmet_rdma_repair_port_work)
+			inet_pton_with_scope -> 将ipv4/v6转换为socket
+			nvmet_rdma_enable_port
+				cm_id = rdma_create_id(&init_net, nvmet_rdma_cm_handler, port -> rdma_id中有事件时触发事件回调
+				rdma_set_afonly
+				rdma_bind_addr(cm_id, addr)
+				ret = rdma_listen(cm_id, 128) -> 等待host连接触发 RDMA_CM_EVENT_CONNECT_REQUEST 事件
+				port->cm_id = cm_id
+	list_add_tail
+	nvmet_port_disc_changed	-> aens: Asynchronous Event Notifications
+		__nvmet_disc_changed
+			nvmet_add_async_event NVME_AER_NOTICE_DISC_CHANGED
+				queue_work(nvmet_wq, &ctrl->async_event_work) -> tgt -> host -> 异步通知
+		discovery_chg -> rdma未实现
+
+
+
+
+
+
+
+nvme_rdma_setup_ctrl
+nvme_rdma_configure_admin_queue
+	nvme_rdma_configure_io_queues
+		nvme_rdma_alloc_io_queues
+			nvme_rdma_alloc_queue
+
+
+
+
+static int nvme_rdma_alloc_queue
+rdma_resolve_addr RDMA_CM_EVENT_ADDR_RESOLVED
+nvme_rdma_addr_resolved
+	nvme_rdma_create_queue_ib
+	rdma_resolve_route
+static int nvme_rdma_cm_handler
+case RDMA_CM_EVENT_ROUTE_RESOLVED static int nvme_rdma_route_resolved
+	rdma_connect_locked -> LU-14488 o2ib：如果定义了 rdma_connect_locked，请使用 rdma_connect_locked，上游内核 5.10 和 MOFED-5.2-2 中添加了 rdma_connect_locked()。 此后，不允许在 RDMA CM 事件处理程序中调用 rdma_connect()； 必须使用 rdma_connect_locked() ，此提交添加配置检查以检测 rdma_connect_locked() 是否可用并更新事件处理程序以调用正确的函数, https://git.whamcloud.com/?p=fs/lustre-release.git;a=commit;h=d43375868aba4edcf0bc637256a9fb102709f14f
+
+	
+
+
+nvme_io_path:
+static struct blk_mq_ops nvme_mq_ops = {
+	.queue_rq         = nvme_queue_rq, //请求处理接口，该接口获取请求队列中的请求和物理盘进行数据交互 -> static blk_status_t nvme_queue_rq
+
+从块数据中拿到IO请求, 封装为PDU
+struct request *req = bd->rq
+struct nvme_iod *iod = blk_mq_rq_to_pdu(req)
+准备NVME请求 nvme_prep_rq
+    设置NVME命令 nvme_setup_cmd
+    发起IO请求 nvme_start_request
+        发起多路径请求 -> nvme_mpath_start_request(rq)
+        或将请求封装到块层队列 -> blk_mq_start_request(rq)
+        
+
+
+
+NVME命令/操作码:
+enum nvme_opcode {
+	nvme_cmd_flush		= 0x00,
+	nvme_cmd_write		= 0x01,
+	nvme_cmd_read		= 0x02,
+	nvme_cmd_write_uncor	= 0x04,
+	nvme_cmd_compare	= 0x05,
+	nvme_cmd_write_zeroes	= 0x08,
+	nvme_cmd_dsm		= 0x09,
+	nvme_cmd_verify		= 0x0c,
+	nvme_cmd_resv_register	= 0x0d,
+	nvme_cmd_resv_report	= 0x0e,
+	nvme_cmd_resv_acquire	= 0x11,
+	nvme_cmd_resv_release	= 0x15,
+	nvme_cmd_zone_mgmt_send	= 0x79,
+	nvme_cmd_zone_mgmt_recv	= 0x7a,
+	nvme_cmd_zone_append	= 0x7d,
+	nvme_cmd_vendor_start	= 0x80,
+};
+
+
+
+...
+disk = alloc_disk_node(0, node)
+//设置盘控制操作接口，通过该操作可以直接向盘发送读写命令，不经过io块设备管理系统
+disk->fops = &nvme_fops
+
+
+nvme驱动源码: https://developer.aliyun.com/article/609295
+static struct pci_driver nvme_driver
+int driver_register(struct device_driver *drv)
+
+
+NVMe设备, #define PCI_CLASS_STORAGE_EXPRESS	0x010802
+
+commit:
+https://github.com/ssbandjl/linux/commit/62f99b62e5e3b88d23b6ced4380199e8386965af
+Call Trace:
+ blk_mq_exit_hctx+0x5c/0xf0
+ blk_mq_exit_queue+0xd4/0x100
+ blk_cleanup_queue+0x9a/0xc0
+ nvme_rdma_destroy_io_queues+0x52/0x60 [nvme_rdma]
+ nvme_rdma_shutdown_ctrl+0x3e/0x80 [nvme_rdma]
+ nvme_do_delete_ctrl+0x53/0x80 [nvme_core]
+ nvme_sysfs_delete+0x45/0x60 [nvme_core]
+ kernfs_fop_write+0x105/0x180
+ vfs_write+0xad/0x1a0
+ ksys_write+0x5a/0xd0
+ do_syscall_64+0x55/0x110
+ entry_SYSCALL_64_after_hwframe+0x44/0xa9
+RIP: 0033:0x7fa215417154
+此崩溃的原因是访问已释放的 ib_device 以在 exit_request 命令期间执行 dma_unmap。 其根本原因是，在重新连接期间，所有队列都被销毁并重新创建（并且 ib_device 由队列进行引用计数并被释放），但标记集保持活动状态并且所有 DMA 映射（我们在 init_request）保存在请求上下文中。 原始提交修复了在绑定（又名 nic teaming）测试期间引入的另一个错误，该错误在某些情况下会更改底层 ib_device 并导致内存泄漏和可能的分段错误。 此提交是一个补充提交，它还更改了保存在请求上下文中的错误 DMA 映射，并使请求 sqe dma 映射随命令生命周期动态化（即在 .queue_rq 中映射并在 .complete 中取消映射）。 它还修复了上述在销毁标记集期间访问释放的 ib_device 时发生的崩溃问题
+
+
+
+
+	struct ibv_qp_attr qp_attr;
+	struct ibv_qp_init_attr init_attr;
+	ibv_query_qp(rqpair->rdma_qp->qp, &qp_attr, IBV_QP_STATE, &init_attr);
+	SPDK_ERRLOG("SSSS qp timeout:%d, retry_cnt:%d, rnr_retry:%d\n",  qp_attr.timeout, qp_attr.retry_cnt, qp_attr.rnr_retry);
+ibv_query_qp(event->id->qp, &qp_attr, IBV_QP_STATE, &init_attr);
+
+			ibv_query_qp(event->id->qp, &qp_attr, IBV_QP_STATE, &init_attr);
+			SPDK_ERRLOG("SSSS qp timeout:%d, retry_cnt:%d, rnr_retry:%d\n",  qp_attr.timeout, qp_attr.retry_cnt, qp_attr.rnr_retry);
+
+tee<<EOF>test.bt
+#include <linux/path.h>
+
+kprobe:nvme_rdma_cm_handler
+{
+    printf("ev: %p\n", ev->id->qp);
+}
+EOF
+bpftrace test.bt
+
+
+
+static int cm_init_qp_rts_attr(struct cm_id_private *cm_id_priv,
+
+
+https://blog.csdn.net/qq_38158479/article/details/129959432: rdma ack包 Syndrome字段含义总结,该字段占一个字节，最高位(7bit)是保留的 5，6bit为11表示这是一个NAK包，01表示RNR NAK包，00是正常情况，代表正确的收到了一个ack包
+rxe_comp.c -> static inline enum comp_state check_ack
+
+
+
+nvme connect --reconnect-delay=30 --transport=rdma --traddr=10.0.1.14 --nqn=test-nvme
+nvme connect -r 30 -t rdma -a 10.0.1.14 -n test-nvme
+
+Jul 11 15:15:01 192-169-26-64 systemd: Started Session 6580 of user root.
+Jul 11 15:16:01 192-169-26-64 systemd: Started Session 6581 of user root.
+Jul 11 15:16:08 192-169-26-64 kernel: nvme nvme3: starting error recovery
+Jul 11 15:16:11 192-169-26-64 kernel: nvme nvme3: I/O 0 QID 0 timeout
+Jul 11 15:16:11 192-169-26-64 kernel: nvme nvme3: failed nvme_keep_alive_end_io error=10
+Jul 11 15:16:12 192-169-26-64 kernel: nvme nvme3: Reconnecting in 2 seconds...   -> reconnect_delay, opts->reconnect_delay = NVMF_DEF_RECONNECT_DELAY 10
+Jul 11 15:17:01 192-169-26-64 systemd: Started Session 6582 of user root.
+Jul 11 15:17:10 192-169-26-64 Keepalived_vrrp[24300]: Kernel is reporting: interface ib17-0 DOWN
+Jul 11 15:17:10 192-169-26-64 Keepalived_vrrp[24300]: VRRP_Instance(VI_1) Entering FAULT STATE
+Jul 11 15:17:10 192-169-26-64 Keepalived_vrrp[24300]: VRRP_Instance(VI_1) removing protocol VIPs.
+Jul 11 15:17:10 192-169-26-64 Keepalived_vrrp[24300]: VRRP_Instance(VI_1) Now in FAULT state
+Jul 11 15:17:17 192-169-26-64 kernel: nvme nvme2: I/O 0 QID 0 timeout
+Jul 11 15:17:17 192-169-26-64 kernel: nvme nvme2: starting error recovery
+
+
+        opts->max_reconnects = DIV_ROUND_UP(ctrl_loss_tmo,
+                        opts->reconnect_delay); 
+默认是600s 
+次数 =  600s / 每次重连的时间间隔  向上取整
+600s是可配置的
+重连的时间间隔也是可配置的
+
+
+nvme-cli, 用户态发现target, nvme discovery
+...
+add_ctrl -> static int add_ctrl(const char *argstr)
+	open(PATH_NVME_FABRICS, O_RDWR)
+	write(fd, argstr, len) -> 写设备, 触发内核驱动处理 -> nqn=nqn.2014-08.org.nvmexpress.discovery,transport=rdma,traddr=175.17.53.73,trsvcid=4420,hostnqn=nqn.2014-08.org.nvmexpress:uuid:a8dce057-b5a2-492e-8da3-9cf328f401c7,hostid=a20d3ab6-2c0a-4335-8552-305 ->
+		Jul 12 11:13:56 s63 kernel: nvme nvme0: new ctrl: NQN "nqn.2014-08.org.nvmexpress.discovery", addr 172.17.29.65:4420   # 内核打印
+		Jul 12 11:14:01 s63 systemd: Started Session 3337 of user root.
+
+
+
+
+ctrl = ops->create_ctrl(dev, opts);
+modinfo nvme_rdma
+nm -a /lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-core.ko|grep nvme_rdma_create_ctrl
+drivers/nvme/host/rdma.c
+static struct nvme_ctrl *nvme_rdma_create_ctrl
+	dev_info(ctrl->ctrl.device, "new ctrl: NQN \"%s\", addr %pISpcs\n"
+
+
+
+bpftrace -e 'kprobe:nvme_rdma_create_ctrl{ printf("%s", kstack); }'
+stap -l 'process("/lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").function("nvme_rdma_create_ctrl")'
+stap -ve 'probe kernel.function("nvme_rdma_create_ctrl") { print_backtrace() printf("\n") }'
+stap -ve 'probe process("lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").function("nvme_rdma_create_ctrl")'
+stap -ve 'probe process("lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").statement("nvme_rdma_create_ctrl@drivers/nvme/host/rdma.c")'
+probe process("/workspace/test/gdb/test").statement("main@/workspace/test/gdb/main.c:24")
+stap -ve 'probe process("/usr/lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").function("nvme_rdma_create_ctrl") { print_backtrace() printf("\n") }'
+
+
+内核驱动调试需要安装debuginfo:
+[root@s64 stap]# stap -ve 'probe process("/usr/lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko").function("nvme_rdma_create_ctrl") { print_backtrace() printf("\n") }'
+Pass 1: parsed user script and 482 library scripts using 282980virt/83340res/7028shr/76644data kb, in 460usr/30sys/486real ms.
+WARNING: cannot find module /usr/lib/modules/5.10.38-21.hl10.el7.x86_64/extra/mlnx-nvme/host/nvme-rdma.ko debuginfo: Callbacks missing for ET_REL file [man warning::debuginfo]
+Pass 2: analyzed script: 1 probe, 1 function, 0 embeds, 0 globals using 287140virt/89692res/11348shr/78708data kb, in 30usr/0sys/36real ms.
+Missing separate debuginfos, use: debuginfo-install mlnx-nvme-5.7-OFED.5.7.1.0.2.1.kver.5.10.38_21.hl10.el7.x86_64.x86_64 
+
+https://forums.developer.nvidia.com/t/how-to-enable-the-debuginfo-for-the-libraries-of-ofed/207063
+find|grep debuginfo
+rpm -ivh ./MLNX_OFED_LINUX-5.7-1.0.2.0-5.10.38-21.hl10.el7.x86_64/mlnx_iso.7012/MLNX_OFED_SRC-5.7-1.0.2.0/RPMS/centos-release-7-9.2009.1.el7.centos/x86_64/mlnx-ofa_kernel-debuginfo-5.7-OFED.5.7.1.0.2.1.rhel7u9.x86_64.rpm
+
+
+重新编译rdma驱动:
+rpm2cio -id
+tar xf
+cd
+./autogen.sh ( if necessary)
+./configure --prefix= --enable-debug
+make -j install
+export LD_LIBRARY_PATH=/lib (or lib64)
+
+
+nvmf_get_log_page_discovery -> static int nvmf_get_log_page_discovery -> /dev/nvme0
+	nvme_discovery_log -> int nvme_get_log -> nvme_get_log13 -> .opcode		= nvme_admin_get_log_page -> return ioctl(fd, ioctl_cmd, cmd) -> 管理命令: nvme_admin_get_log_page		= 0x02
+	enum nvme_admin_opcode nvme管理命令 -> linux/nvme.h
+	nvme_submit_admin_passthru
+		ioctl(fd, NVME_IOCTL_ADMIN_CMD, cmd) -> 转到内核驱动处理 -> nvme_ctrl_ioctl
+
+...
+文件系统fs:
+.unlocked_ioctl	= nvme_dev_ioctl
+nvme_user_cmd
+	copy_from_user
+	nvme_validate_passthru_nsid
+	c.common.opcode = cmd.opcode;
+	...
+	nvme_cmd_allowed
+	status = nvme_submit_user_cmd
+		nvme_alloc_user_request
+			blk_mq_alloc_request
+			nvme_init_request
+			nvme_req(req)->flags |= NVME_REQ_USERCMD
+		nvme_map_user_request -> nvme_alloc_request 需要大量参数。 将其分成两个函数以减少参数数量。 第一个保留名称 nvme_alloc_request, 而第二个名为 nvme_map_user_request
+		bio = req->bio
+		ctrl = nvme_req(req)->ctrl
+		nvme_passthru_start
+			nvme_command_effects
+			nvme_mpath_start_freeze
+			nvme_start_freeze
+		et = nvme_execute_rq(req, false)
+			status = blk_execute_rq(rq, at_head)
+				blk_mq_insert_request -> ... -> nvme_rdma_queue_rq
+				blk_mq_run_hw_queue
+				blk_rq_is_poll -> false HCTX_TYPE_DEFAULT
+				wait_for_completion_io
+		blk_rq_unmap_user(bio)
+		blk_mq_free_request(req)
+		nvme_passthru_end(ctrl, effects, cmd, ret)
+
+
+tee<<EOF>test.bt
+#include <linux/blk-mq.h>
+kprobe:blk_execute_rq
+{
+    printf("%d\n", (((struct request *)arg0)->mq_hctx->type));
+    // printf("%lu\n", hang_check);
+}
+EOF
+bpftrace test.bt
+
+
+
+nvme控制文件:
+[root@s64 ctl]# pwd
+/sys/class/nvme-fabrics/ctl
+[root@s64 ctl]# tree -L 5
+.
+├── power
+│   ├── async
+│   ├── autosuspend_delay_ms
+│   ├── control
+│   ├── runtime_active_kids
+│   ├── runtime_active_time
+│   ├── runtime_enabled
+│   ├── runtime_status
+│   ├── runtime_suspended_time
+│   └── runtime_usage
+├── subsystem -> ../../../../class/nvme-fabrics
+└── uevent
+
+2 directories, 10 files
+
+控制器和子系统为何是嵌套的?
+[root@s64 ctl]# pwd
+/sys/class/nvme-fabrics/ctl/subsystem/ctl/subsystem/ctl/subsystem/ctl/subsystem/ctl/subsystem/ctl/subsystem/ctl
+
+
+
+blk_complete_reqs
+	rq->q->mq_ops->complete(rq)
+nvme_host_path_error | nvme_rdma_complete_rq
+
+nvme_complete_rq
+nvme_decide_disposition
+	nvme_is_path_error
+nvme_complete_rq
+case FAILOVER
+nvme_failover_req
+	nvme_mpath_clear_current_path
+		rcu_assign_pointer(head->current_path[node], NULL)
+
+
+
+nvme_ns_head_submit_bio
+nvme_find_path
+
+
+struct nvme_command
+nvme_rw_command, 当命令完成不论成功还是失败，controller都应该发送一个表明命令状态的CQE到关联的I/O CQ完成队列
+nvme write /dev/nvme0n1 -d test.log -z 10
+nvme read /dev/nvme0n1 -d test.log -z 10
+
+
+
+发送,或接收完成
+nvme_rdma_recv_done
+	nvme_rdma_process_nvme_rsp
+		nvme_rdma_end_request(req)
+			nvme_complete_rq
+				nvme_find_rq
+					u8 genctr = nvme_genctr_from_cid(command_id)
+					u16 tag = nvme_tag_from_cid(command_id)
+
+
+$2 = {
+  opcode = 1 '\001', 
+  flags = 0 '\000', 
+  control = 0, 
+  nblocks = 1, 
+  rsvd = 0, 
+  metadata = 0, 
+  addr = 6635520, 
+  slba = 0, 
+  dsmgmt = 0, 
+  reftag = 0, 
+  apptag = 0, 
+  appmask = 0
+}
+NVME_IOCTL_ADMIN_CMD：用于向NVMe设备发送管理命令，例如格式化磁盘、获取设备信息、查询SMART信息等等
+NVME_IOCTL_SUBMIT_IO：用于向NVMe设备提交I/O请求，例如读写数据、擦除块等等
+NVME_IOCTL_IO_CMD：用于向NVMe设备发送I/O命令，可以通过该命令发送NVMe特定的I/O命令，例如读取控制器寄存器、读取命名空间属性等等
+NVME_IOCTL_RESET：用于重置NVMe设备，该命令会将设备恢复到出厂默认状态
+static int nvme_ns_ioctl -> switch (cmd)
+nvme write -> case NVME_IOCTL_SUBMIT_IO -> ioctl解密: https://www.cnblogs.com/mmmmmmmelody/p/10500263.html
+return nvme_submit_io(ns, argp)
+	copy_from_user(&io, uio, sizeof(io))
+	length = (io.nblocks + 1) << ns->lba_shift
+	c.rw.nsid = cpu_to_le32(ns->head->ns_id)
+	nvme_submit_user_cmd(ns->queue, &c, io.addr, length, metadata, meta_len, lower_32_bits(io.slba), NULL, 0, 0)
+		nvme_alloc_user_request
+		nvme_map_user_request -> 有用户数据
+		ctrl = nvme_req(req)->ctrl
+		nvme_passthru_start
+		nvme_execute_rq
+		...
+		ib_post_send
+
+
+
+调度器: kernel/sched/sched.h
+
+cpu架构/体系: arch
+系统字长: BITS_PER_LONG, c long type
+不透明类型: typedef xxx
+数据类型: include/linux/types.h
+有符号/无符号: signed char i = -1; unsigned char i = 255;
+
+内核block层Multi queue多队列的一次优化实践: https://blog.csdn.net/hu1610552336/article/details/121072592?spm=1001.2014.3001.5502
+drivers/mmc/card/block.c -> static int mmc_blk_probe
+
+
+
+
+https://docs.kernel.org/driver-api/scsi.html
+https://github.com/ssbandjl/linux.git
+bio下发流程: https://blog.csdn.net/flyingnosky/article/details/121362813
+io路径: https://zhuanlan.zhihu.com/p/545906763
+用户态与内核态通信netlink: https://gist.github.com/lflish/15e85da8bb9200794255439d0563b195
+
+dmesg -w
+
+git tag -d v5.10
+
+nvme
+static struct blk_mq_ops nvme_mq_ops -> struct blk_mq_ops 
+static const struct blk_mq_ops bsg_mq_ops = {
+	.queue_rq		= bsg_queue_rq,
+	.init_request		= bsg_init_rq,
+	.exit_request		= bsg_exit_rq,
+	.complete		= bsg_complete,
+	.timeout		= bsg_timeout,
+};
+
+驱动目录: drivers/nvme/Makefile
+参考: https://mp.weixin.qq.com/s/GKVIY_NOXDfUCOho4zBMzw
+Kconfig 文件的作用是：
+1.控制make menuconfig时， 出现的配置选项；
+2.根据用户配置界面的选择，将配置结果保存在.config 配置文件（该文件将提供给Makefile使用，用以决定要编译的内核组件以及如何编译）
+
+drivers/nvme/host/core.c
+module_init(nvme_core_init) -> static int __init nvme_core_init(void)
+alloc_chrdev_region nvme
+class_create("nvme")
+
+drivers/nvme/target/rdma.c
+static int __init nvmet_rdma_init(void)
+ib_register_client -> drivers/infiniband/core/device.c -> int ib_register_client -> IB 驱动程序的上层用户可以使用 ib_register_client() 来注册 IB 设备添加和删除的回调。 添加 IB 设备时，将调用每个已注册客户端的 add 方法（按照客户端注册的顺序），而当删除设备时，将调用每个客户端的 remove 方法（按照客户端注册的相反顺序）。 另外，调用ib_register_client()时，客户端会收到所有已经注册的设备的add回调
+nvmet_register_transport -> int nvmet_register_transport
+	down_write
+	up_write
+
+EXPORT_SYMBOL(ib_register_client) 导出符号表
+
+multi_path:
+drivers/md/md.c
+drivers/md/md-multipath.c
+
+
+.map = multipath_map_bio -> static int multipath_map_bio
+
+static void process_queued_bios
+
+dm-mpath.c -> static int fail_path #路径故障
+	pgpath->pg->ps.type->fail_path(&pgpath->pg->ps, &pgpath->path)
+	dm_path_uevent(DM_UEVENT_PATH_FAILED -> 此补丁添加了对失败路径和恢复路径的 dm_path_event 的调用 -> void dm_path_uevent
+		dm_build_path_uevent
+		dm_uevent_add -> void dm_uevent_add -> list_add(elist, &md->uevent_list) -> 挂链表
+		dm_send_uevents -> void dm_send_uevents
+			dm_copy_name_and_uuid
+			kobject_uevent_env 发送uevent, kobject_uevent这个函数原型如下，就是向用户空间发送uevent，可以理解为驱动（内核态）向用户（用户态）发送了一个KOBJ_ADD
+				kobject_uevent_net_broadcast -> 参考热拔插原理
+	queue_work
+	schedule_work
+static int __multipath_map_bio
+
+
+热拔插: 热插拔：在不重启系统的情况下，增减硬件设备。本文主要介绍linux下的热插拔 https://www.cnblogs.com/tzj-kernel/p/15307231.html
+热插拔：实现了驱动向用户态通知设备插拔
+（1）外设插入，硬件中断响应
+（2）总线发现新的设备，驱动probe 再调用device_add(设备驱动？？)
+（3）device_add调用kobject_uevent(, KOBJ_ADD)，向用户空间广播新设备加入事件通知；这里发出通知的方式，就是netlink；
+（4）用户空间运行的daemon(udev)收到event事件广播；
+（5）udev根据消息和环境变量，查询sysfs中的/sys的变化，按照规则(/etc/udev/rules.d/*)，在/dev目录下自动创建设备节点；
+（6）运行 /sbin/hotplug 脚本
+kobject_uevent_env--》kobject_uevent_net_broadcast--》uevent_net_broadcast_untagged或者uevent_net_broadcast_tagged--》netlink_broadcast，实际上就是将buf中的内容发送到用户空间，用户空间udev监听到此消息，则解析
+/sys/kernel/uevent_helper
+
+内核 uevents 和 udev 
+必需的设备信息由 sysfs 文件系统导出。对于内核检测到并已初始化的设备，将创建一个带有该设备名称的目录。它包含带有特定于设备属性的属性文件。
+每次添加或删除设备时，内核都会发送 uevent 来向 udev 通知更改。一旦启动，udev 守护程序便会读取并分析 /usr/lib/udev/rules.d/*.rules 和 /etc/udev/rules.d/*.rules 文件中的所有规则，并将它们保留在内存中。如果更改、添加或去除了规则文件，守护程序可以使用 udevadm control --reload 命令重新装载这些规则在内存中的表示。有关 udev 规则及其语法的更多细节，请参见第 22.6 节 “使用 udev 规则影响内核设备事件处理”。每个接收到的事件都根据所提供的规则集进行匹配。这些规则可以增加或更改事件环境键、为要创建的设备节点请求特定名称、添加指向该节点的符号链接或者添加设备节点创建后运行的程序。从内核 netlink 套接字接收驱动程序核心 uevent
+事件处理: https://documentation.suse.com/zh-cn/sles/15-SP1/html/SLES-all/cha-udev.html
+udev rule: ls -alh /usr/lib/udev/rules.d/
+cat /usr/lib/udev/rules.d/62-multipath.rules
+
+
+
+
+uevent设计: https://github.com/ssbandjl/linux/commit/7a8c3d3b92883798e4ead21dd48c16db0ec0ff6f
+device-mapper uevent代码为device-mapper增加了创建和发送kobject uevents（uevents）的能力。 以前的设备映射器事件只能通过 ioctl 接口获得。 uevents 接口的优点是事件包含环境属性，为事件提供增加的上下文，避免在收到事件后查询设备映射器设备的状态
+由 udevmonitor 捕获的生成的 uevent 示例
+
+
+insert_work(pwq, work, worklist, work_flags)
+
+dm_init_init
+	dm_early_create
+__bind
+dm_table_event_callback(t, event_callback, md)
+event_fn
+dm_table_event
+trigger_event
+
+__map_bio
+
+io_path, io路径
+static const struct block_device_operations dm_blk_dops = {
+	.submit_bio = dm_submit_bio,  -> static void dm_submit_bio
+
+dm_split_and_process_bio
+	__split_and_process_bio 选择正确的策略来处理非flush bio
+		dm_table_find_target
+		__map_bio
+			ti->type->map(ti, clone) -> .map = multipath_map_bio -> static int __multipath_map_bio -> bio_set_dev(bio, pgpath->path.dev->bdev) -> pgpath->pg->ps.type->start_io
+	bio_trim
+	trace_block_split
+	bio_inc_remaining
+	submit_bio_noacct -> void submit_bio_noacct(struct bio *bio) ->  为 I/O 重新提交 bio 到块设备层 bio 描述内存和设备上的位置。 这是 submit_bio() 的一个版本，只能用于通过堆叠块驱动程序重新提交给较低级别驱动程序的 I/O。 块层的所有文件系统和其他上层用户应该使用 submit_bio() 代替, bio 在节流之前已经被检查过，所以在从节流队列中调度它之前不需要再次检查它。 为此目的添加 submit_bio_noacct_nocheck() 的助手
+		__submit_bio_noacct_mq
+		submit_bio_noacct_nocheck -> submit_bio() 确实可以通过递归调用 submit_bio_noacct 添加更多的 bios
+			__submit_bio
+				blk_mq_submit_bio -> void blk_mq_submit_bio -> 向块设备提交bio, 会执行调度,合并等操作
+					blk_mq_bio_to_request
+					blk_queue_bounce -> 弹跳
+					__bio_split_to_limits
+					blk_mq_bio_to_request -> request
+					blk_mq_insert_request
+						blk_mq_request_bypass_insert
+					blk_mq_run_hw_queue
+
+blk_mq_plug_issue_direct
+blk_add_rq_to_plug
+
+blk_mq_requeue_request
+	blk_mq_sched_requeue_request
+		e->type->ops.requeue_request(rq) -> requeue_request = 
+
+blk_mq_submit_bio
+blk_mq_run_hw_queue
+__blk_mq_sched_dispatch_requests
+
+static const struct blk_mq_ops nvme_rdma_mq_ops = {
+	.queue_rq	= nvme_rdma_queue_rq,
+	.complete	= nvme_rdma_complete_rq,
+	.init_request	= nvme_rdma_init_request,
+	.exit_request	= nvme_rdma_exit_request,
+	.init_hctx	= nvme_rdma_init_hctx,
+	.timeout	= nvme_rdma_timeout,
+	.map_queues	= nvme_rdma_map_queues,
+	.poll		= nvme_rdma_poll,
+};
+nvme_rdma_queue_rq
+drivers/nvme/host/rdma.c -> static int nvme_rdma_post_send
+	ib_post_send
+
+
+三条链：current->bio_list存储在当前线程的所有bio; plug->mq_list使能plug/unplug机制时存放在缓存池的bio；若定义IO调度层，IO请求会发送到scheduler list中；若没有定义IO调度层，IO请求会发送到ctx->rq_lists
+每个线程若已经在执行blk_mq_submit_bio()，将新下发BIO链入到线程current->bio_list;
+依次处理current->list中的每个bio；
+若bio中存在数据在高端内存区，在低端内存区分配内存，将高端内存区数据拷贝到新分配的内存区，称为bounce过程，后面单独一节介绍；
+检查请求队列中的bio，若过大进行切分，称BIO的切分；
+尝试将bio合并到plug->mq_list中，然后尝试合并到IO调度层链表或ctx->rq_lists中；
+若没有合并，分配新的request；
+若定义plug，且没达到冲刷数目，加入到plug->mq_list；若达到冲刷数目，将冲刷下发（plug/unplug机制）；
+若定义IO调度器，往IO调度器中插入新的request（对于机械硬盘，通过IO调度层座合并和排序，有利于提高性能）;
+若 没有定义IO调度器，可以直接下发（对于较快的硬盘如nvme盘，进入调度层可能会浪费时间，跳过IO调度层有利于性能提升）
+（1）bounce过程
+（2）bio的切分和合并
+（3）IO请求和tag的分配
+（4）plug/unplug机制
+（5）IO调度器
+（4）其他
+
+
+app读写io:
+int main()
+{
+       char buff[128] = {0};
+       int fd = open("/var/pilgrimtao.txt", O_CREAT|O_RDWR);
+​
+       write(fd, "pilgrimtao is cool", 18);
+       pread(fd, buff, 128, 0);
+       printf("%s\n", buff);
+​
+       close(fd);
+       return 0;
+}
+
+
+文件系统:
+SYSCALL_DEFINE3(read, ...) -> ksys_read -> vfs_read -> read_iter -> xfs_file_read_iter
+SYSCALL_DEFINE3(write, ...) -> ksys_write -> vfs_write -> new_sync_write -> call_write_iter ->write_iter -> xfs_file_write_iter
+
+磁盘(disk)的访问模式有三种 BUFFERED、DIRECT、DAX。前面提到的由于page cache存在可以避免耗时的磁盘通信就是BUFFERED访问模式的集中体现；但是如果我要求用户的write请求要实时存储到磁盘里，不能只在内存中更新，那么此时我便需要DIRECT模式；大家可能听说过flash分为两种nand flash和nor flash，nor flash可以像ram一样直接通过地址线和数据线访问，不需要整块整块的刷，对于这种场景我们采用DAX模式。所以file_operations的read_iter和write_iter回调函数首先就需要根据不同的标志判断采用哪种访问模式
+kernel在2020年12月的patch中提出了folio的概念，我们可以把folio简单理解为一段连续内存，一个或多个page的集合，他和page的关系如图
+代码参考：xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_write_iter -> iomap_write_begin -> __filemap_get_folio -> filemap_alloc_folio
+
+读取磁盘inode代码参考：iomap_file_buffered_write -> iomap_iter -> .iomap_begin -> xfs_buffered_write_iomap_begin -> xfs_iread_extents -> xfs_btree_visit_blocks -> xfs_btree_readahead_ptr -> xfs_buf_readahead -> xfs_buf_readahead_map -> xfs_buf_read_map -> xfs_buf_read -> xfs_buf_submit -> __xfs_buf_submit -> xfs_buf_ioapply_map -> submit_bio
+
+代码参考： xfs_file_read_iter -> xfs_file_buffered_read -> generic_file_read_iter -> filemap_read -> filemap_get_pages -> filemap_create_folio -> filemap_alloc_folio -> folio_alloc
+filemap_get_pages -> filemap_readahead -> page_cache_async_ra -> ondemand_readahead -> do_page_cache_ra -> page_cache_ra_unbounded -> filemap_alloc_folio/filemap_add_folio
+
+xfs_file_read_iter -> xfs_file_buffered_read -> generic_file_read_iter -> filemap_read -> copy_folio_to_iter(offset)
+
+filemap_get_pages -> filemap_readahead -> page_cache_async_ra -> ondemand_readahead -> do_page_cache_ra -> page_cache_ra_unbounded -> read_pages -> aops.readahead -> xfs_vm_readahead -> iomap_readahead -> iomap_iter -> ops.iomap_begin（xfs文件系统维护的回调函数）
+
+iomap_readahead -> iomap_readahead_iter -> iomap_readpage_iter -> bio_alloc/bio_add_folio
+
+代码参考：iomap_readahead -> iomap_iter -> ops.iomap_begin（xfs文件系统维护的回调函数）
+
+代码参考：
+sys_read：ondemand_readahead -> do_page_cache_ra -> page_cache_ra_unbounded -> xa_load（在sys_read流程中，因为一开始就会把所有的folio都拿到，不是一个一个拿的）
+iomap_readahead_iter -> readahead_folio
+sys_write：
+xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_write_iter -> iomap_write_begin -> __filemap_get_folio -> mapping_get_entry/filemap_add_folio （在sys_write流程，是用完一个folio，再申请新的folio）
+
+
+代码参考：
+sys_read：iomap_readpage_iter -> bio_add_folio -> __bio_try_merge_page
+sys_write：xfs_file_write_iter -> xfs_file_buffered_write -> iomap_file_buffered_write -> iomap_write_iter -> iomap_write_begin -> __iomap_write_begin -> iomap_read_folio_sync -> bio_init/bio_add_folio （一个bio只有一个bio_vec）
+
+
+bpf: bpf.h
+
+syscall 系统调用: linux/syscalls.h
+
+
+iscsi:
+ko:
+[root@n73 linux-5.10.182]# find . -name "*.ko"|grep scsi
+./drivers/firmware/iscsi_ibft.ko
+./drivers/message/fusion/mptscsih.ko
+./drivers/scsi/aacraid/aacraid.ko
+./drivers/scsi/aic7xxx/aic79xx.ko
+./drivers/scsi/arcmsr/arcmsr.ko
+./drivers/scsi/be2iscsi/be2iscsi.ko
+./drivers/scsi/bfa/bfa.ko
+./drivers/scsi/bnx2fc/bnx2fc.ko
+./drivers/scsi/bnx2i/bnx2i.ko
+./drivers/scsi/csiostor/csiostor.ko
+./drivers/scsi/cxgbi/cxgb3i/cxgb3i.ko
+./drivers/scsi/cxgbi/cxgb4i/cxgb4i.ko
+./drivers/scsi/cxgbi/libcxgbi.ko
+./drivers/scsi/fcoe/fcoe.ko
+./drivers/scsi/fcoe/libfcoe.ko
+./drivers/scsi/fnic/fnic.ko
+./drivers/scsi/isci/isci.ko
+./drivers/scsi/libfc/libfc.ko
+./drivers/scsi/libsas/libsas.ko
+./drivers/scsi/lpfc/lpfc.ko
+./drivers/scsi/megaraid/megaraid_sas.ko
+./drivers/scsi/mpt3sas/mpt3sas.ko
+./drivers/scsi/mvsas/mvsas.ko
+./drivers/scsi/pm8001/pm80xx.ko
+./drivers/scsi/qedf/qedf.ko
+./drivers/scsi/qedi/qedi.ko
+./drivers/scsi/qla2xxx/qla2xxx.ko
+./drivers/scsi/qla2xxx/tcm_qla2xxx.ko
+./drivers/scsi/smartpqi/smartpqi.ko
+./drivers/scsi/ufs/ufshcd-core.ko
+./drivers/scsi/ufs/ufshcd-pci.ko
+./drivers/scsi/3w-9xxx.ko
+./drivers/scsi/3w-sas.ko
+./drivers/scsi/ch.ko
+./drivers/scsi/hpsa.ko
+./drivers/scsi/hv_storvsc.ko
+./drivers/scsi/mvumi.ko
+./drivers/scsi/pmcraid.ko
+./drivers/scsi/libiscsi_tcp.ko
+./drivers/scsi/scsi_debug.ko
+./drivers/scsi/raid_class.ko
+./drivers/scsi/scsi_transport_fc.ko
+./drivers/scsi/scsi_transport_spi.ko
+./drivers/scsi/scsi_transport_sas.ko
+./drivers/scsi/hptiop.ko
+./drivers/scsi/initio.ko
+./drivers/scsi/iscsi_tcp.ko
+./drivers/scsi/scsi_transport_srp.ko
+./drivers/scsi/sd_mod.ko
+./drivers/scsi/ses.ko
+./drivers/scsi/sg.ko
+./drivers/scsi/sr_mod.ko
+./drivers/scsi/st.ko
+./drivers/scsi/stex.ko
+./drivers/scsi/virtio_scsi.ko
+./drivers/scsi/vmw_pvscsi.ko
+./drivers/target/iscsi/cxgbit/cxgbit.ko
+./drivers/target/iscsi/iscsi_target_mod.ko
+./drivers/target/target_core_pscsi.ko
+
+磁盘驱动sd: ./drivers/scsi/sd_mod.ko
+通用驱动sg: ./drivers/scsi/sg.ko
+
+drivers/scsi/sd.h
+include/scsi/scsi_host.h
+struct scsi_host_template, Let it rip 分叉, 
+drivers/scsi/scsi.c -> init -> static int __init init_scsi -> 驱动加载
+	scsi_init_devinfo
+	scsi_init_hosts
+	scsi_sysfs_register
+	scsi_netlink_init
+
+
+static struct pci_driver isci_pci_driver = {
+	.name		= DRV_NAME,
+	.id_table	= isci_id_table,
+	.probe		= isci_pci_probe,
+	.remove		= isci_pci_remove,
+	.driver.pm      = &isci_pm_ops,
+};
+isci_pci_probe
+isci_host_alloc
+scsi_host_alloc -> struct Scsi_Host *scsi_host_alloc
+	shost->ehandler = kthread_run(scsi_error_handler -> scsi_error_handler -> int scsi_error_handler -> 错误恢复
+		scsi_restart_operations(shost) -> static void scsi_restart_operations
+
+
+int iscsi_host_add -> 模块加载
+	scsi_add_host -> scsi_add_host_with_dma 
+
+scsi_remove_host -> 模块卸载
+
+Linux打印内核函数调用栈 dump_stack, krpobe, systemtap, ftrace, qemu等等, bpftrace, perf调性能
+
+
+void blk_finish_plug
+bpftrace -e 'tracepoint:block:block_rq_insert { printf("Block I/O by %s\n", kstack); }'
+Block I/O by 
+        __elv_add_request+259
+        blk_flush_plug_list+320
+        blk_finish_plug+20
+        _xfs_buf_ioapply+820
+        __xfs_buf_submit+114
+        xlog_bdstrat+55
+        xlog_sync+742
+        xlog_state_release_iclog+123
+        xfs_log_force_lsn+497
+        xfs_file_fsync+253
+        do_fsync+85
+        sys_fsync+16
+        system_call_fastpath+37
+
+lsmod|grep sd_mod
+modinfo sd_mod
+modinfo drivers/scsi/sd_mod.ko
+make clean; make; rmmod sd_mod.ko; insmod sd_mod.ko
+
+bpftrace -l | more
+
+#!/usr/local/bin/bpftrace
+tracepoint:syscalls:sys_enter_nanosleep
+{
+  printf("%s is sleeping.\n", comm);
+}
+
+bpftrace -e 'kprobe:do_sys_open { printf("opening: %s\n", str(arg1)); }'
+bpftrace -e 'kprobe:ip_output { @[kstack] = count(); }'
+
+bpftrace -e 'kprobe:scsi_error_handler { printf("bt:%s\n", kstack); }'
+
+动态跟踪事件: bpftrace -e 'kprobe:scsi_host_set_state { printf("bt:%s\n", kstack); }'
+bt:
+        scsi_host_set_state+1
+        scsi_remove_host+155
+        iscsi_host_remove+120
+        iscsi_sw_tcp_session_destroy+85 -> .destroy_session	= iscsi_sw_tcp_session_destroy
+        iscsi_if_recv_msg+3382 -> ISCSI_UEVENT_DESTROY_SESSION
+        iscsi_if_rx+202
+        netlink_unicast+421
+        netlink_sendmsg+539
+        sock_sendmsg+91
+        ____sys_sendmsg+451
+        ___sys_sendmsg+124
+        __sys_sendmsg+87
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+				
+断开会话:
+iscsiadm -m node --logoutall=all
+ISCSI_UEVENT_DESTROY_SESSION
+transport->destroy_session(session) -> iscsi_sw_tcp_session_destroy
+	if (scsi_host_set_state(shost, SHOST_CANCEL))
+
+rfc:
+7. iSCSI Error Handling and Recovery ..............................92
+bpftrace -e 't:syscalls:sys_enter_execve { printf("%s called %s\n", comm, str(args->filename)); }'
+
+查看所有事件: bpftrace -l|grep scsi
+
+scsi_scan_host -> void scsi_scan_host
+
+sd_spinup_disk
+	scsi_execute_cmd TEST_UNIT_READY START_UNIT
+
+scsi_execute_req 
+blk_execute_rq -> blk_status_t blk_execute_rq -> 底层调用高层(scci -> blk)
+
+
+错误恢复:
+● int (* eh_abort_handler) (struct scsi_cmnd *);
+● int (* eh_device_reset_handler) (struct scsi_cmnd *);
+● int (* eh_target_reset_handler) (struct scsi_cmnd *);
+● int (* eh_bus_reset_handler) (struct scsi_cmnd *);
+● int (* eh_host_reset_handler) (struct scsi_cmnd *);
+
+scsi_eh_scmd_add
+scsi_eh_abort_cmds
+scsi_eh_flush_done_q
+
+__blk_run_queue
+scsi_send_eh_cmnd
+
+查看会话: iscsiadm --mode session
+连接: iscsiadm -m node -T iqn.2018-01.com.h3c.onestor:622a4b9193bb4ee68cdb6cae6b76cc74 -p 172.16.156.3:3260 -l
+bt:
+        scsi_host_set_state+1
+        scsi_add_host_with_dma.cold.9+294
+        iscsi_sw_tcp_session_create+130
+        iscsi_if_create_session+48 -> iscsi_if_create_session(struct iscsi_internal *priv  -> ISCSI_UEVENT_CREATE_SESSION
+        iscsi_if_recv_msg+1109 -> iscsi_if_recv_msg(struct sk_buff *skb
+        iscsi_if_rx+202 -> .input	= iscsi_if_rx
+        netlink_unicast+421 -> int netlink_unicast
+        netlink_sendmsg+539
+        sock_sendmsg+91
+        ____sys_sendmsg+451
+        ___sys_sendmsg+124
+        __sys_sendmsg+87
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+
+
+netlink_kernel_create(&init_net, NETLINK_ISCSI, &cfg) -> netlink_kernel_create(struct net *net, int unit, struct netlink_kernel_cfg *cfg) ->input：为内核模块定义的netlink消息处理函数，当有消 息到达这个netlink socket时，该input函数指针就会被引用，且只有此函数返回时，调用者的sendmsg才能返回
+	nlk_sk(sk)->netlink_rcv = cfg->input -> nlk->netlink_rcv(skb) <- static int netlink_unicast_kernel
+
+
+netlink_unicast
+	netlink_unicast_kernel
+
+
+Attaching 1 probe...
+bt:
+        fail_path+1
+        multipath_message+342 -> .message = multipath_message
+        target_message+627
+        ctl_ioctl+431
+        dm_ctl_ioctl+10
+        __x64_sys_ioctl+132
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+
+int dm_register_target(struct target_type *tt)
+
+static ioctl_fn lookup_ioctl
+{DM_TARGET_MSG_CMD, 0, target_message} -> static int target_message
+	ti->type->message(ti, argc, argv, result, maxlen) -> static int multipath_message
+		action = fail_path;
+		action_dev(m, dev, action) -> static int action_dev
+			action(pgpath)
+
+
+Documentation/kbuild/modules.rst
+
+cp /lib/modules/`uname -r`/build/Makefile ./Makefile_current
+
+CONFIG_PREEMPT_BUILD=y
+此选项通过使所有内核代码（不在关键部分中执行）可抢占来减少内核的延迟。 这允许通过允许低优先级进程被非自愿地抢占来对交互事件做出反应，即使它在内核模式下执行系统调用，否则不会到达自然抢占点。 这允许应用程序即使在系统处于负载下时也能更“流畅”地运行，但代价是吞吐量略低，内核代码的运行时开销也很小。
+如果您正在为延迟要求在毫秒范围内的桌面或嵌入式系统构建内核，请选择此选项
+
+编译指定模块: 
+cd drivers/scsi/
+make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+
+.config -> CONFIG_SYSTEM_TRUSTED_KEYS
+make menuconfig
+
+include/config/kernel.release
+include/generated/utsrelease.h
+include/linux/vermagic.h
+
+查看压缩ko:
+cd /lib/modules/5.10.38-21.hl10.el7.x86_64/kernel/drivers/scsi
+xz -l sd_mod.ko.xz
+
+make modules_install
+make install
+grub2-set-default 0
+
+make oldconfig && make prepare
+
+include/generated/autoconf.h is generated in the make prepare step. If you are trying to build a kernel module, you will also need the make scripts step:
+gunzip < /proc/config.gz > .config
+make oldconfig
+make prepare
+make scripts
+
+ip set link xxx down (close 1 path) -> iscsi_check_transport_timeouts
+[12291.650194]  connection3:0: ping timeout of 5 secs expired, recv timeout 5, last rx 4306948309, last ping 4306953344, now 4306958848
+[12291.650313]  connection3:0: detected conn error (1022) <- void iscsi_conn_error_event
+[12296.770199]  session3: session recovery timed out after 5 secs
+[12297.554572] device-mapper: multipath: 253:3: Failing path 8:16.
+
+
+[root@node1 linux]# bpftrace -e 'kprobe:fail_path { printf("bt:%s\n", kstack); }'
+Attaching 1 probe...
+bt:
+        fail_path+1
+        multipath_message+342
+        target_message+627
+        ctl_ioctl+431
+        dm_ctl_ioctl+10
+        __x64_sys_ioctl+132
+        do_syscall_64+51
+        entry_SYSCALL_64_after_hwframe+68
+
+
+
+static struct iscsi_transport iscsi_sw_tcp_transport
+.create_conn		= iscsi_sw_tcp_conn_create, -> conn = transport->create_conn(session, ev->u.c_conn.cid)
+iscsi_sw_tcp_conn_create
+iscsi_tcp_conn_setup
+iscsi_conn_setup(struct iscsi_cls_session *cls_session
+iscsi_check_transport_timeouts -> callback
+	void iscsi_conn_error_event
+
+
+
+iscsiadm -> main.c
+MODE_DISCOVERY
+exec_disc_op
+do_target_discovery
+sendtargets
+do_software_sendtargets
+discovery_sendtargets
+iscsi_create_session
+iscsi_create_leading_conn
+create_conn -> kcreate_conn
+  ev.type = ISCSI_UEVENT_CREATE_CONN
+  rc = __kipc_call(iov, 2) -> driver -> kernel -> drivers/scsi/scsi_transport_iscsi.c -> iscsi_if_recv_msg
+  	case ISCSI_UEVENT_CREATE_CONN:
+		err = iscsi_if_create_conn(transport, ev);
+			session = iscsi_session_lookup(ev->u.c_conn.sid)
+			conn = transport->create_conn -> iscsi_sw_tcp_conn_create
+				iscsi_tcp_conn_setup
+
+
+
+discovery
+login/logout
+1. Discovery
+In this code path, we usually call to 
+discovery_sendtarget
+--> request_target
+     --> iscsi_io_send_pdu,  which basically writes on a socket opened by iscsiadm, and reads from the socket by "iscsi_io_rev_pdu".
+
+2. login/logout
+In this code path, it get usually triggers to 
+mgmt_ipc_session_login
+   -> __session_login_task -> static int __session_login_task
+    iscsi_sysfs_get_transport_by_name
+      transport_load_kmod
+		    rc = kmod_module_new_from_name(ctx, "ib_iser", &mod);
+        加载内核模块ko -> iscsi_tcp | ib_iser
+        __session_create
+          iscsi_setup_authentication
+          iscsi_session_init_params
+          list_add_tail(&session->list, &t->sessions)
+        __session_conn_create
+        iscsi_host_set_net_params
+        qtask->rsp.command = MGMT_IPC_SESSION_LOGIN
+        -> iscsi_conn_connect -> static int iscsi_conn_connect
+          iscsi_ev_context_get
+          conn->session->t->template->ep_connect -> iscsi_io_tcp_connect
+            connect(conn->socket_fd, (struct sockaddr *) ss, sizeof (*ss)) -> 连接到tgt
+                --> iscsi_sched_ev_context -> static int iscsi_sched_ev_context
+                  case EV_CONN_POLL -> actor_poll
+                        --> session_conn_poll -> static void session_conn_poll
+                          iscsi_ev_context_put
+                          session->t->template->ep_poll
+                          session_ipc_create -> static int session_ipc_create
+                            ipc->create_session -> kcreate_session(uint64_t transport_handle
+                              ev.type = ISCSI_UEVENT_CREATE_SESSION
+                              __kipc_call(iov, 2) -> __kipc_call(struct iovec *iovp, int count)
+                                kwritev(type, iovp, count) -> 调用内核态驱动函数 -> iscsi_if_recv_msg -> iscsi_if_create_session -> ...
+                              ...
+                                --> iscsi_login_req
+                                  iscsi_make_login_pdu
+                                    login_hdr->opcode = ISCSI_OP_LOGIN | ISCSI_OP_IMMEDIATE
+                                      --> iscsi_io_send_pdu -> send a PDU to the target -> iscsi_io_send_pdu(iscsi_conn_t *conn
+                                        case ISCSI_OP_LOGIN
+                                        login_hdr->flags & ISCSI_FLAG_LOGIN_TRANSIT
+In my understanding, discovery, login/logout does not involve iscsi kernel and send pdu over open by userspace socket.
+
+
+iscsi_if_create_session(struct iscsi_internal *priv
+	transport->create_session -> iscsi_sw_tcp_session_create
+		shost = iscsi_host_alloc -> struct Scsi_Host *iscsi_host_alloc
+      scsi_host_alloc -> struct Scsi_Host *scsi_host_alloc
+        shost->ehandler = kthread_run(scsi_error_handler, shost -> 错误处理 -> int scsi_error_handler(void *data)
+      ihost = shost_priv(shost)
+      init_waitqueue_head
+		iscsi_host_add
+		iscsi_session_setup
+		iscsi_tcp_r2tpool_alloc -> hook iscsi_tcp -> libiscsi_tcp
+
+
+int scsi_error_handler(void *data)
+
+
+断连内核栈
+[root@node1 ~]# bpftrace -e 'kprobe:iscsi_conn_error_event { printf("bt:%s\n", kstack); }'
+Attaching 1 probe...
+bt:
+        iscsi_conn_error_event+1
+        call_timer_fn+41
+        run_timer_softirq+474 -> 软中断,定时器, 内核定时器: https://cloud.tencent.com/developer/article/1720701, 内核定时器初始化会打开内核TIMER_SOFTIRQ软中断，执行时会执行到run_timer_softirq函数
+        __softirqentry_text_start+268 -> 分析cpu, perf -> perf top -C 0 --call-graph dwarf -d 30 -> 堆栈信息
+        asm_call_on_stack+18
+        do_softirq_own_stack+55
+        irq_exit_rcu+243
+        sysvec_apic_timer_interrupt+52
+        asm_sysvec_apic_timer_interrupt+18
+        native_safe_halt+14
+        acpi_idle_do_entry+75
+        acpi_idle_enter+90
+        cpuidle_enter_state+145
+        cpuidle_enter+41
+        do_idle+636
+        cpu_startup_entry+25
+        start_secondary+280
+        secondary_startup_64_no_verify+176
+
+run_local_timers
+run_timer_softirq -> 注册软中断处理函数 -> init_timers -> open_softirq(TIMER_SOFTIRQ, run_timer_softirq) -> 触发执行 -> raise_softirq(TIMER_SOFTIRQ)
+static void call_timer_fn
+  fn(timer) -> iscsi_conn_error_event
+
+
+iscsi_session_failure
+iscsi_conn_failure
+iscsi_recv_pdu -> iscsi收到PDU
+  iscsi_conn_error_event
+
+
+void iscsi_conn_error_event
+  ev->type = ISCSI_KEVENT_CONN_ERROR; 内核设置连接错误状态事件
+  iscsi_multicast_skb(skb, ISCSI_NL_GRP_ISCSID, GFP_ATOMIC)
+    nlmsg_multicast(nls, skb, 0, group, gfp) -> 通过netlink广播, 向用户态发送事件 -> static inline int nlmsg_multicast -> netlink_broadcast(sk, skb, portid, group, flags)
+  ...
+static int ctldev_handle
+  case ISCSI_KEVENT_CONN_ERROR
+  ipc_ev_clbk->sched_ev_context EV_CONN_ERROR -> iscsi_sched_ev_context -> static int iscsi_sched_ev_context
+    case EV_CONN_ERROR
+    ...
+
+
+nop_in, nop_out, BHS, AHS -> Allocate buffer for BHS + AHS
+The Basic Header Segment (BHS) is the first segment in all of the   iSCSI PDUs.  The BHS is a fixed-length 48-byte header segment.  It   MAY be followed by Additional Header Segments (AHS), a Header-Digest,   a Data Segment, and/or a Data-Digest
+
+
+make -C /lib/modules/`uname -r`/build M=$PWD
+make -C /lib/modules/`uname -r`/build M=$PWD modules_install
+
+iscsi_if_recv_msg
+case ISCSI_UEVENT_SEND_PDU
+iscsi_if_transport_conn
+case ISCSI_UEVENT_CREATE_CONN
+iscsi_if_create_conn
+	conn = transport->create_conn(session, ev->u.c_conn.cid)
+
+
+
+内存区域:
+
+
+tag_set: 标签集, 块设备驱动程序可以在前一个请求完成之前接受请求。 因此，上层需要一种方法来知道请求何时完成。 为此，每个请求在提交时都会添加一个“标签”，并在请求完成后使用完成通知发回。这些标签是标签集 (struct blk_mq_tag_set) 的一部分，该标签集对于设备而言是唯一的。 标记集结构在请求队列之前分配和初始化，并且还存储一些队列属性
+
+

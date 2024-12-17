@@ -1,0 +1,22 @@
+static void ice_service_task(struct work_struct *work)
+    ...
+    ice_clean_adminq_subtask(pf)
+        ice_clean_rq_elem
+        ice_aq_check_events
+
+    ice_check_media_subtask(pf);
+        ice_update_link_info
+            ice_aq_get_link_info
+                ice_aqc_opc_get_link_status
+    ice_check_for_hang_subtask(pf);
+        ice_trigger_sw_intr
+        ice_get_tx_pending
+    ice_sync_fltr_subtask(pf);
+    ice_handle_mdd_event(pf); -> ice_handle_mdd_event - 处理恶意驱动程序检测事件，@pf：指向从服务任务调用的 PF 结构的指针。 OICR 中断处理程序指示 MDD 事件。 VF MDD 日志记录由 net_ratelimit 保护。 其他 PF 和 VF 日志消息由 netif_msg_[rx|tx]_err 包装。 由于 VF Rx MDD 事件禁用队列，因此可以将 PF 配置为使用 ethtool 专用标志 mdd-auto-reset-vf 重置 VF
+        ice_print_vfs_mdd_events -> Ice：在 VF 重置之前打印 Rx MDD 自动重置消息，未记录 Rx MDD 自动重置消息，因为记录发生在 VF 重置之后并且 VF MDD 数据重新初始化。 在触发 VF 重置之前记录 Rx MDD 自动重置消息
+    ice_watchdog_subtask(pf); -> 不使用事件驱动调度的周期性任务
+        
+
+
+modprobe vfio-pci
+vfio_pci_init

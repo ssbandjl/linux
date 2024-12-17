@@ -328,7 +328,7 @@ ice_fltr_prepare_mac(struct ice_vsi *vsi, const u8 *mac,
  * @mac_action: pointer to add or remove MAC function
  */
 static int
-ice_fltr_prepare_mac_and_broadcast(struct ice_vsi *vsi, const u8 *mac,
+`ice_fltr_prepare_mac_and_broadcast(struct ice_vsi *vsi, const u8 *mac,
 				   enum ice_sw_fwd_act_type action,
 				   int(*mac_action)
 				   (struct ice_vsi *, struct list_head *))

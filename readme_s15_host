@@ -1,0 +1,352 @@
+blk_mq_virtio_map_queues
+
+virtio_blk stack:
+[11718.633882] Call Trace:
+[11718.633912]  ? show_regs.cold+0x1a/0x1f
+[11718.633941]  ? __die+0x90/0xd9
+[11718.633968]  ? die+0x30/0x50
+[11718.633995]  ? do_trap+0x85/0xf0
+[11718.634024]  ? do_error_trap+0x7c/0xc0
+[11718.634058]  ? xw_virtio_get_vq_affinity+0x9/0x10 [virtio_sw]
+[11718.634103]  ? do_invalid_op+0x3c/0x50
+[11718.634136]  ? xw_virtio_get_vq_affinity+0x9/0x10 [virtio_sw]
+[11718.634202]  ? invalid_op+0x1e/0x30
+[11718.634247]  ? xw_virtio_get_features+0x20/0x20 [virtio_sw]
+[11718.634309]  ? xw_virtio_get_vq_affinity+0x9/0x10 [virtio_sw]
+[11718.634374]  blk_mq_virtio_map_queues+0x41/0xb0
+[11718.634438]  virtblk_map_queues+0x18/0x20 [virtio_blk]
+[11718.634500]  blk_mq_update_queue_map+0xb6/0xc0
+[11718.634562]  blk_mq_alloc_tag_set+0x123/0x2e0
+[11718.634614]  virtblk_probe+0x1dc/0x847 [virtio_blk]
+[11718.634669]  ? _cond_resched+0x19/0x30
+[11718.634717]  ? virtio_add_status+0x3d/0x50
+[11718.634765]  virtio_dev_probe+0x195/0x230
+[11718.634814]  really_probe+0x159/0x3d0
+[11718.634857]  driver_probe_device+0xbc/0x100
+[11718.634905]  device_driver_attach+0x5d/0x70
+[11718.634952]  __driver_attach+0xa4/0x140
+[11718.634995]  ? device_driver_attach+0x70/0x70
+[11718.635046]  bus_for_each_dev+0x7e/0xc0
+[11718.635092]  driver_attach+0x1e/0x20
+[11718.635132]  bus_add_driver+0x161/0x200
+[11718.635179]  driver_register+0x74/0xd0
+[11718.635223]  register_virtio_driver+0x20/0x30
+[11718.635276]  init+0x54/0x1000 [virtio_blk]
+[11718.635323]  ? 0xffffffffc0b7d000
+[11718.635365]  do_one_initcall+0x4a/0x200
+[11718.635410]  ? _cond_resched+0x19/0x30
+[11718.635454]  ? kmem_cache_alloc_trace+0x177/0x240
+[11718.635508]  do_init_module+0x52/0x240
+[11718.635552]  load_module+0x128d/0x13d0
+[11718.635599]  __do_sys_finit_module+0xbe/0x120
+[11718.635649]  ? __do_sys_finit_module+0xbe/0x120
+[11718.635701]  __x64_sys_finit_module+0x1a/0x20
+[11718.635751]  do_syscall_64+0x57/0x190
+[11718.635795]  entry_SYSCALL_64_after_hwframe+0x61/0xc6
+
+
+
+virtblk_map_queues(struct blk_mq_tag_set *set)
+    blk_mq_virtio_map_queues(&set->map[HCTX_TYPE_DEFAULT], vblk->vdev, 0) -> 为 virtio 设备提供默认队列映射 @qmap：CPU 到硬件队列映射。@vdev：提供映射的 virtio 设备。@first_vec：用于队列的第一个中断向量（通常为 0）此函数假定 virtio 设备 @vdev 至少具有与 @set 队列一样多的可用中断向量。然后，它将查询每个队列对应的向量以获取其亲和性掩码，并构建队列映射，将队列映射到具有相应向量的 irq 亲和性的 CPU
+    for (queue = 0; queue < qmap->nr_queues; queue++)
+        mask = vdev->config->get_vq_affinity(vdev, first_vec + queue)
+        for_each_cpu(cpu, mask)
+			qmap->mq_map[cpu] = qmap->queue_offset + queue
+    else blk_mq_map_queues(qmap)
+        for_each_possible_cpu(cpu)
+
+
+
+virtblk_update_capacity
+
+
+
+read_dev_sector
+
+
+unregister_virtio_device
+    device_unregister
+        device_del
+            kill_device(dev)
+
+
+probe virtio_blk stack:
+[61705.903528] virtio_blk virtio0: [vda] 204800 512-byte logical blocks (105 MB/100 MiB)
+[61705.904307] set_capacity virtblk_update_capacity() /root/xb/project/linux/v5.4/linux/drivers/block/virtio_blk.c:479
+[61705.905064] xw_virtio_get_status() /root/xb/project/tipu/virtio-sw/virtio.c:57
+[61705.905818] device_add_disk virtblk_probe() /root/xb/project/linux/v5.4/linux/drivers/block/virtio_blk.c:916
+[61867.909694] INFO: task kworker/u16:0:7733 blocked for more than 120 seconds.
+[61867.913481]       Tainted: G           OE     5.4.0-187-generic #207-Ubuntu
+[61867.914980] "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+[61867.915684] kworker/u16:0   D    0  7733      2 0x80004000
+[61867.916393] Workqueue: xw_sw_wq2 xw_sw_service_task2 [virtio_sw]
+[61867.917134] Call Trace:
+[61867.918074]  __schedule+0x2e3/0x740
+[61867.919192]  schedule+0x42/0xb0
+[61867.919884]  io_schedule+0x16/0x40
+[61867.920557]  do_read_cache_page+0x407/0x860
+[61867.921248]  ? update_load_avg+0x7c/0x670
+[61867.922217]  ? file_fdatawait_range+0x30/0x30
+[61867.923421]  read_cache_page+0x12/0x20
+[61867.924543]  read_dev_sector+0x27/0xd0
+[61867.925195]  read_lba+0xbd/0x220
+[61867.926103]  ? kmem_cache_alloc_trace+0x177/0x240
+[61867.927220]  efi_partition+0x1e0/0x700
+[61867.927836]  ? vsnprintf+0x39e/0x4e0
+[61867.928437]  ? snprintf+0x49/0x60
+[61867.929032]  check_partition+0x154/0x250
+[61867.929774]  rescan_partitions+0xae/0x280
+[61867.930816]  bdev_disk_changed+0x5f/0x70
+[61867.931770]  __blkdev_get+0x3e3/0x580
+[61867.932336]  blkdev_get+0x3d/0x150
+[61867.932895]  __device_add_disk+0x329/0x480
+[61867.933445]  ? printk+0x58/0x6f
+[61867.934354]  device_add_disk+0x13/0x20
+[61867.934938]  virtblk_probe.cold+0x6aa/0x6c9 [virtio_blk]
+[61867.935451]  virtio_dev_probe+0x195/0x230
+[61867.935961]  really_probe+0x159/0x3d0
+[61867.936460]  driver_probe_device+0xbc/0x100
+[61867.936952]  __device_attach_driver+0x85/0xf0
+[61867.937436]  ? driver_allows_async_probing+0x50/0x50
+[61867.938219]  bus_for_each_drv+0x84/0xd0
+[61867.938717]  __device_attach+0xf5/0x1b0
+[61867.939175]  device_initial_probe+0x13/0x20
+[61867.939618]  bus_probe_device+0x8f/0xa0
+[61867.940061]  device_add+0x3c7/0x6b0
+[61867.940496]  ? xw_virtio_get_status+0x2c/0x35 [virtio_sw]
+[61867.940929]  register_virtio_device+0xb9/0x100
+[61867.941339]  xw_sw_handle_virtio_op_subtask.cold+0x3a8/0x475 [virtio_sw]
+[61867.941921]  xw_sw_service_task2+0x15/0x20 [virtio_sw]
+[61867.942351]  process_one_work+0x1eb/0x3b0
+[61867.942741]  worker_thread+0x4d/0x400
+[61867.943140]  kthread+0x104/0x140
+[61867.943521]  ? process_one_work+0x3b0/0x3b0
+[61867.943912]  ? kthread_park+0x90/0x90
+[61867.944294]  ret_from_fork+0x1f/0x40
+
+register_virtio_device
+    dev->config->reset(dev)
+    virtio_add_status(dev, VIRTIO_CONFIG_S_ACKNOWLEDGE)
+    device_add(&dev->dev) -> 将设备添加到设备层次结构。，@dev：设备。这是 device_register() 的第 2 部分，但可以单独调用 _iff_ device_initialize() 已被单独调用。这将通过 kobject_add() 将 @dev 添加到 kobject 层次结构，将其添加到设备的全局和兄弟列表，然后将其添加到驱动程序模型的其他相关子系统。不要对任何设备结构多次调用此例程或 device_register()。驱动程序模型核心不适用于取消注册然后恢复的设备。（除其他事项外，很难保证对 @dev 的先前化身的所有引用都已被删除。）而是分配并注册一个全新的 struct device。注意：调用此函数后，_永远_不要直接释放 @dev，即使它返回错误！始终使用 put_device() 放弃您的引用。经验法则是：如果 device_add() 成功，则在想要摆脱它时应调用 device_del()。如果 device_add() 没有成功，则仅使用 put_device() 来删除引用计数
+        kobj = get_device_parent(dev, parent)
+        kobject_add(&dev->kobj, dev->kobj.parent, NULL)
+        device_platform_notify(dev, KOBJ_ADD)
+        device_create_file(dev, &dev_attr_uevent)
+        device_add_class_symlinks(dev)
+        bus_add_device(dev)
+        dpm_sysfs_add(dev)
+        bus_probe_device(dev) -> virtblk_probe
+
+
+virtblk_probe(struct virtio_device *vdev)
+    init_vq
+        virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &desc)
+    vblk->tag_set.cmd_size = sizeof(struct virtblk_req) + sizeof(struct scatterlist) * sg_elems
+    blk_mq_init_queue
+    blk_mq_alloc_tag_set
+    virtblk_update_cache_mode
+        blk_queue_write_cache -> 用于设置块设备的写缓存策略
+        revalidate_disk
+    blk_queue_max_segments(q, vblk->sg_elems-2)
+    max_size = virtio_max_dma_size(vdev)
+    blk_queue_max_segment_size(q, max_size)
+    blk_mq_update_queue_map
+    virtblk_update_capacity(vblk, false)
+    device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups)
+        register_disk
+        blkdev_get(bdev, FMODE_READ, NULL) -> scan part
+            __blkdev_get(bdev, mode, 0)
+                disk = bdev_get_gendisk(bdev, &partno)
+                bdev->bd_part = disk_get_part(disk, partno)
+
+
+rescan_partitions
+    check_partition(disk, bdev)
+        state = allocate_partitions(hd)
+        snprintf(state->pp_buf, PAGE_SIZE, " %s:", state->name)
+        res = check_part[i++](state)
+            efi_partition -> CONFIG_EFI_PARTITION
+                unsigned ssz = bdev_logical_block_size(state->bdev) / 512
+                find_valid_gpt
+                    read_lba(state, 0, (u8 *)legacymbr, sizeof(*legacymbr))
+                        unsigned char *data = read_part_sector(state, n++, &sect)
+                            get_capacity(state->bdev->bd_disk)
+                            read_dev_sector(state->bdev, n, p)
+                                page = read_mapping_page(mapping, (pgoff_t)(n >> (PAGE_SHIFT-9)), NULL)
+                                    read_cache_page(mapping, index, NULL, data)
+                                        do_read_cache_page(mapping, index, filler, data, mapping_gfp_mask(mapping))
+                                        
+    disk_expand_part_tbl(disk, highest) -> 创建只支持一个分区的分区表，可动态扩展，这样可以节省资源。后面通过调用rescan_partitionpatioin来重新扫描分区，并再次调用此函数来创建新的分区表，将原分区表复制到新分区表，更新给gendisk->tbl,然后删除原分区表
+    part = add_partition(disk, p, from, size, state->parts[p].flags, &state->parts[p].info)
+
+
+
+samples/mic/mpssd/mpssd.c -> main
+    init_mic_list
+    start_daemon -> init_mic
+        open_state_fd
+        add_virtio_device
+            ioctl(fd, MIC_VIRTIO_ADD_DEVICE, dd)
+
+
+static long vop_ioctl
+    case MIC_VIRTIO_ADD_DEVICE
+        vop_virtio_add_device
+            INIT_WORK(&vdev->virtio_bh_work, vop_bh_handler)
+            vdev->virtio_cookie = vpdev->hw_ops->request_irq(vpdev,	_vop_virtio_intr_handler, irqname, vdev,
+
+set_dp(mic, type, va) -> VIRTIO_ID_BLOCK
+    mic->mic_virtblk.block_dp = dp
+vring_init(&vr0->vr, MIC_VRING_ENTRIES, vr0->va, MIC_VIRTIO_RING_ALIGN)
+
+
+module_vop_driver(vop_driver);
+vop_driver_probe
+    _vop_add_device
+        vdev->vdev.id.device = type -> block/fs/net
+        vdev->vdev.config = &vop_vq_config_ops
+        register_virtio_device(&vdev->vdev)
+    vop_init_debugfs
+
+static struct virtio_config_ops vop_vq_config_ops = {
+	.get_features = vop_get_features,
+	.finalize_features = vop_finalize_features,
+	.get = vop_get,
+        memcpy_fromio(buf, _vop_vq_configspace(desc) + offset, len)
+	.set = vop_set,
+	.get_status = vop_get_status,
+	.set_status = vop_set_status,
+	.reset = vop_reset,
+	.find_vqs = vop_find_vqs,
+        for (i = 0; i < nvqs; ++i) 
+            vqs[i] = vop_find_vq(dev, queue_idx++, callbacks[i], names[i], ctx ? ctx[i] : false)
+                vqconfig = _vop_vq_config(vdev->desc) + index
+                va = vpdev->hw_ops->remap(vpdev, le64_to_cpu(config.address), vr_size)
+                memset_io(va, 0x0, _vr_size)
+            vpdev->hw_ops->send_intr(vpdev, vdev->c2h_vdev_db)
+            vq = vop_new_virtqueue(index, le16_to_cpu(config.num), dev, ctx, (void __force *)va, vop_notify, callback, name, used)
+                vring_init(&vring, num, pages, MIC_VIRTIO_RING_ALIGN)
+                __vring_new_virtqueue
+                vop_notify
+                    vpdev->hw_ops->send_intr(vpdev, vdev->c2h_vdev_db)
+                        mic_mmio_write(mw, MIC_X100_SBOX_SDBIC0_DBREQ_BIT, MIC_X100_SBOX_BASE_ADDRESS + (MIC_X100_SBOX_SDBIC0 + (4 * doorbell)))
+            vdev->used[index] = dma_map_single(&vpdev->dev, used, vdev->used_size[index],DMA_BIDIRECTIONAL)
+            writeq(vdev->used[index], &vqconfig->used_address)
+	.del_vqs = vop_del_vqs,
+};
+
+
+
+virtqueue_add_sgs
+    
+
+printk("sg_elems:%d %s() %s:%d\n", sg_elems, __FUNCTION__, __FILE__, __LINE__);
+dump_stack();
+
+
+lsmod|grep virtio
+cd drivers/block/
+
+
+
+
+[  164.708400] virtio_blk vblk1: [vda] 1048576 512-byte logical blocks (537 MB/512 MiB)
+virtblk_update_capacity
+	dev_notice(&vdev->dev,
+		   "[%s] %s%llu %d-byte logical blocks (%s/%s)\n",
+		   vblk->disk->disk_name,
+		   resize ? "new size: " : "",
+		   nblocks,
+		   queue_logical_block_size(q),
+		   cap_str_10,
+		   cap_str_2);
+
+
+
+
+
+
+[  726.557855] INFO: task systemd-udevd:2496 blocked for more than 120 seconds.
+[  726.557861]       Tainted: G           OE     5.4.0-196-generic #216-Ubuntu
+[  726.557863] "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+[  726.557866] systemd-udevd   D    0  2496    903 0x80004326
+[  726.557870] Call Trace:
+[  726.557884]  __schedule+0x2e3/0x740
+[  726.557887]  schedule+0x42/0xb0
+[  726.557891]  io_schedule+0x16/0x40
+[  726.557900]  __lock_page+0x16a/0x2a0
+[  726.557906]  ? file_fdatawait_range+0x30/0x30
+[  726.557914]  truncate_inode_pages_range+0x4fa/0x890
+[  726.557921]  ? iter_to_pipe+0x49/0x240
+[  726.557926]  truncate_inode_pages+0x15/0x20
+[  726.557930]  kill_bdev+0x32/0x40
+[  726.557934]  __blkdev_put+0x89/0x200
+[  726.557937]  blkdev_put+0x4e/0xe0
+[  726.557939]  blkdev_close+0x26/0x30
+[  726.557947]  __fput+0xcc/0x260
+[  726.557950]  ____fput+0xe/0x10
+[  726.557957]  task_work_run+0x8f/0xb0
+[  726.557964]  do_exit+0x36e/0xaf0
+[  726.557968]  ? file_fdatawait_range+0x30/0x30
+[  726.557971]  do_group_exit+0x47/0xb0
+[  726.557975]  get_signal+0x169/0x890
+[  726.557977]  ? blkdev_read_iter+0x4a/0x60
+[  726.557985]  do_signal+0x37/0x6d0
+[  726.557989]  ? vfs_read+0x12e/0x160
+[  726.557999]  exit_to_usermode_loop+0xbf/0x160
+[  726.558003]  do_syscall_64+0x168/0x190
+[  726.558010]  entry_SYSCALL_64_after_hwframe+0x61/0xc6
+[  726.558014] RIP: 0033:0x7f5ae7c831f2
+[  726.558021] Code: Bad RIP value.
+[  726.558024] RSP: 002b:00007fffd78b4b28 EFLAGS: 00000246 ORIG_RAX: 0000000000000000
+[  726.558027] RAX: 0000000000005000 RBX: 00007f5ae691e028 RCX: 00007f5ae7c831f2
+[  726.558028] RDX: 0000000000040000 RSI: 00007f5ae691e038 RDI: 000000000000000f
+[  726.558030] RBP: 00005612e15bf210 R08: 00007f5ae691e010 R09: 0000000000000000
+[  726.558032] R10: 0000000000000022 R11: 0000000000000246 R12: 0000000000000000
+[  726.558033] R13: 0000000000040000 R14: 00007f5ae691e010 R15: 00005612e15bf260
+
+
+
+
+check_hung_task
+    pr_err("INFO: task %s:%d blocked for more than %ld seconds.\n", -> INFO: task systemd-udevd:2496 blocked for more than 120 seconds
+
+
+virtio_queue_rq
+
+blk_mq_complete_request
+
+
+
+bpf:
+samples/bpf/README.rst
+SEC("tracepoint/syscalls/sys_enter_open")
+SEC("tracepoint/syscalls/sys_enter_execve")
+
+apt install llvm
+llc --version
+make headers_install
+make menuconfig
+apt install libssl-dev
+apt install libelf-dev
+apt install -y libbpf-dev
+apt install clang
+apt-get install -y gcc-multilib
+apt install libncurses5-dev flex bison libelf-dev binutils-dev libssl-dev
+make samples/bpf/
+make M=samples/bpf
+
+clang -O2 -target bpf -c bpf_program.c -o bpf_program.o
+
+apt-file find bpf_load.h
+
+
+
+
+nvme_setup_discard
+
+bpf sec fentry nvme_submit_cmd
+
+apt install ecere-dev -y
+
+

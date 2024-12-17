@@ -1,0 +1,660 @@
+(gdb) p ndev
+$1 = (struct net_device *) 0xffff888037432000
+(gdb) p *((struct net_device *) 0xffff888037432000)
+$2 = {
+  name = "ens3\000\000\060:03.0\000\000\000",
+  name_node = 0xffff888036237a80,
+  ifalias = 0x0 <fixed_percpu_data>,
+  mem_end = 0,
+  mem_start = 0,
+  base_addr = 0,
+  state = 3,
+  dev_list = {
+    next = 0xffffffff831a77d0 <init_net+144>,
+    prev = 0xffff888100dea040
+  },
+  napi_list = {
+    next = 0xffff888037432d90,
+    prev = 0xffff888037432d90
+  },
+  unreg_list = {
+    next = 0xffff888037432060,
+    prev = 0xffff888037432060
+  },
+  close_list = {
+    next = 0xffff888037432070,
+    prev = 0xffff888037432070
+  },
+  ptype_all = {
+    next = 0xffff888037432080,
+    prev = 0xffff888037432080
+  },
+  ptype_specific = {
+    next = 0xffff888104d47db0,
+    prev = 0xffff888104d47db0
+
+  },
+  adj_list = {
+    upper = {
+      next = 0xffff8880374320a0,
+      prev = 0xffff8880374320a0
+    },
+    lower = {
+      next = 0xffff8880374320b0,
+      prev = 0xffff8880374320b0
+    }
+  },
+  flags = 4099,
+  priv_flags = 153632,
+  netdev_ops = 0xffffffffc005a200,
+  ifindex = 2,
+  gflags = 0,
+  hard_header_len = 14,
+  mtu = 1500,
+  needed_headroom = 0,
+  needed_tailroom = 0,
+  features = 84873,
+  hw_features = 720605627193837833,
+  wanted_features = 84233,
+  vlan_features = 589865,
+  hw_enc_features = 268435457,
+  mpls_features = 1,
+  gso_partial_features = 0,
+  min_mtu = 46,
+  max_mtu = 16110,
+  type = 1,
+  min_header_len = 14 '\016',
+
+  name_assign_type = 4 '\004',
+  group = 0,
+  stats = {
+    rx_packets = 525613,
+    tx_packets = 55971,
+    rx_bytes = 717119041,
+    tx_bytes = 7856656,
+    rx_errors = 0,
+    tx_errors = 0,
+    rx_dropped = 0,
+    tx_dropped = 0,
+    multicast = 34,
+    collisions = 0,
+    rx_length_errors = 0,
+    rx_over_errors = 0,
+    rx_crc_errors = 0,
+    rx_frame_errors = 0,
+    rx_fifo_errors = 0,
+    rx_missed_errors = 0,
+    tx_aborted_errors = 0,
+    tx_carrier_errors = 0,
+    tx_fifo_errors = 0,
+    tx_heartbeat_errors = 0,
+    tx_window_errors = 0,
+    rx_compressed = 0,
+    tx_compressed = 0
+  },
+  rx_dropped = {
+    counter = 0
+  },
+  tx_dropped = {
+
+    counter = 0
+  },
+  rx_nohandler = {
+    counter = 0
+  },
+  carrier_up_count = {
+    counter = 1
+  },
+  carrier_down_count = {
+    counter = 1
+  },
+  wireless_handlers = 0x0 <fixed_percpu_data>,
+  wireless_data = 0x0 <fixed_percpu_data>,
+  ethtool_ops = 0xffffffffc005b260,
+  l3mdev_ops = 0x0 <fixed_percpu_data>,
+  ndisc_ops = 0x0 <fixed_percpu_data>,
+  xfrmdev_ops = 0x0 <fixed_percpu_data>,
+  tlsdev_ops = 0x0 <fixed_percpu_data>,
+  header_ops = 0xffffffff823301c0 <eth_header_ops>,
+  operstate = 6 '\006',
+  link_mode = 0 '\000',
+  if_port = 0 '\000',
+  dma = 0 '\000',
+  perm_addr = "RT\000\022\064V", '\000' <repeats 25 times>,
+  addr_assign_type = 0 '\000',
+  addr_len = 6 '\006',
+  upper_level = 1 '\001',
+  lower_level = 1 '\001',
+  neigh_priv_len = 0,
+  dev_id = 0,
+  dev_port = 0,
+
+  padded = 0,
+  addr_list_lock = {
+    {
+      rlock = {
+        raw_lock = {
+          {
+            val = {
+              counter = 0
+            },
+            {
+              locked = 0 '\000',
+              pending = 0 '\000'
+            },
+            {
+              locked_pending = 0,
+              tail = 0
+            }
+          }
+        }
+      }
+    }
+  },
+  irq = 0,
+  uc = {
+    list = {
+      next = 0xffff888037432278,
+      prev = 0xffff888037432278
+    },
+    count = 0,
+    tree = {
+      rb_node = 0x0 <fixed_percpu_data>
+
+    }
+  },
+  mc = {
+    list = {
+      next = 0xffff888100a7b280,
+      prev = 0xffff888106087600
+    },
+    count = 7,
+    tree = {
+      rb_node = 0xffff888100c4fa10
+    }
+  },
+  dev_addrs = {
+    list = {
+      next = 0xffff8880367f1180,
+      prev = 0xffff8880367f1180
+    },
+    count = 1,
+    tree = {
+      rb_node = 0x0 <fixed_percpu_data>
+    }
+  },
+  queues_kset = 0xffff88810cabb7e0,
+  promiscuity = 0,
+  allmulti = 0,
+  uc_promisc = false,
+  vlan_info = 0x0 <fixed_percpu_data>,
+  dsa_ptr = 0x0 <fixed_percpu_data>,
+  tipc_ptr = 0x0 <fixed_percpu_data>,
+  atalk_ptr = 0x0 <fixed_percpu_data>,
+  ip_ptr = 0xffff88803404cc00,
+
+  ip6_ptr = 0xffff88803742e000,
+  ax25_ptr = 0x0 <fixed_percpu_data>,
+  ieee80211_ptr = 0x0 <fixed_percpu_data>,
+  ieee802154_ptr = 0x0 <fixed_percpu_data>,
+  mpls_ptr = 0x0 <fixed_percpu_data>,
+  mctp_ptr = 0x0 <fixed_percpu_data>,
+  dev_addr = 0xffff8880367f11a8 "RT",
+  _rx = 0xffff88810cac86c0,
+  num_rx_queues = 1,
+  real_num_rx_queues = 1,
+  xdp_prog = 0x0 <fixed_percpu_data>,
+  gro_flush_timeout = 0,
+  napi_defer_hard_irqs = 0,
+  rx_handler = 0x0 <fixed_percpu_data>,
+  rx_handler_data = 0x0 <fixed_percpu_data>,
+  miniq_ingress = 0x0 <fixed_percpu_data>,
+  ingress_queue = 0x0 <fixed_percpu_data>,
+  nf_hooks_ingress = 0x0 <fixed_percpu_data>,
+  broadcast = "\377\377\377\377\377\377", '\000' <repeats 25 times>,
+  rx_cpu_rmap = 0x0 <fixed_percpu_data>,
+  index_hlist = {
+    next = 0x0 <fixed_percpu_data>,
+    pprev = 0xffff888100de5010
+  },
+  _tx = 0xffff88810bfaa600,
+  num_tx_queues = 1,
+  real_num_tx_queues = 1,
+  qdisc = 0xffff88810cbb5400,
+  tx_queue_len = 1000,
+  tx_global_lock = {
+    {
+
+      rlock = {
+        raw_lock = {
+          {
+            val = {
+              counter = 0
+            },
+            {
+              locked = 0 '\000',
+              pending = 0 '\000'
+            },
+            {
+              locked_pending = 0,
+              tail = 0
+            }
+          }
+        }
+      }
+    }
+  },
+  xdp_bulkq = 0x0 <fixed_percpu_data>,
+  xps_maps = {0x0 <fixed_percpu_data>, 0x0 <fixed_percpu_data>},
+  miniq_egress = 0x0 <fixed_percpu_data>,
+  qdisc_hash = {{
+      first = 0x0 <fixed_percpu_data>
+    } <repeats 16 times>},
+  watchdog_timer = {
+    entry = {
+      next = 0x0 <fixed_percpu_data>,
+      pprev = 0xffff88813bd19248
+    },
+    expires = 4298317488,
+
+    function = 0xffffffff81ad48f0 <dev_watchdog>,
+    flags = 784334852
+  },
+  watchdog_timeo = 1250,
+  proto_down_reason = 0,
+  todo_list = {
+    next = 0x0 <fixed_percpu_data>,
+    prev = 0x0 <fixed_percpu_data>
+  },
+  pcpu_refcnt = 0x607ec4007040,
+  link_watch_list = {
+    next = 0xffff888037432508,
+    prev = 0xffff888037432508
+  },
+  reg_state = NETREG_REGISTERED,
+  dismantle = false,
+  rtnl_link_state = RTNL_LINK_INITIALIZED,
+  needs_free_netdev = false,
+  priv_destructor = 0x0 <fixed_percpu_data>,
+  npinfo = 0x0 <fixed_percpu_data>,
+  nd_net = {
+    net = 0xffffffff831a7740 <init_net>
+  },
+  ml_priv = 0x0 <fixed_percpu_data>,
+  ml_priv_type = ML_PRIV_NONE,
+  {
+    lstats = 0x0 <fixed_percpu_data>,
+    tstats = 0x0 <fixed_percpu_data>,
+    dstats = 0x0 <fixed_percpu_data>
+  },
+  garp_port = 0x0 <fixed_percpu_data>,
+
+  mrp_port = 0x0 <fixed_percpu_data>,
+  dev = {
+    kobj = {
+      name = 0xffff8880367ef8c0 "ens3",
+      entry = {
+        next = 0xffff888037425808,
+        prev = 0xffff88808b684808
+      },
+      parent = 0xffff88810cabb9c0,
+      kset = 0xffff888100181b40,
+      ktype = 0xffffffff83111e20 <device_ktype>,
+      sd = 0xffff88808b5c9a00,
+      kref = {
+        refcount = {
+          refs = {
+            counter = 4
+          }
+        }
+      },
+      state_initialized = 1,
+      state_in_sysfs = 1,
+      state_add_uevent_sent = 1,
+      state_remove_uevent_sent = 0,
+      uevent_suppress = 0
+    },
+    parent = 0xffff888100dd10d0,
+    p = 0xffff88810bc2f600,
+    init_name = 0x0 <fixed_percpu_data>,
+    type = 0x0 <fixed_percpu_data>,
+    bus = 0x0 <fixed_percpu_data>,
+    driver = 0x0 <fixed_percpu_data>,
+
+    platform_data = 0xffff888037432000,
+    driver_data = 0x0 <fixed_percpu_data>,
+    mutex = {
+      owner = {
+        counter = 0
+      },
+      wait_lock = {
+        raw_lock = {
+          {
+            val = {
+              counter = 0
+            },
+            {
+              locked = 0 '\000',
+              pending = 0 '\000'
+            },
+            {
+              locked_pending = 0,
+              tail = 0
+            }
+          }
+        }
+      },
+      osq = {
+        tail = {
+          counter = 0
+        }
+      },
+      wait_list = {
+        next = 0xffff8880374325f0,
+        prev = 0xffff8880374325f0
+
+      }
+    },
+    links = {
+      suppliers = {
+        next = 0xffff888037432600,
+        prev = 0xffff888037432600
+      },
+      consumers = {
+        next = 0xffff888037432610,
+        prev = 0xffff888037432610
+      },
+      defer_sync = {
+        next = 0xffff888037432620,
+        prev = 0xffff888037432620
+      },
+      status = DL_DEV_NO_DRIVER
+    },
+    power = {
+      power_state = {
+        event = 0
+      },
+      can_wakeup = 0,
+      async_suspend = 0,
+      in_dpm_list = true,
+      is_prepared = false,
+      is_suspended = false,
+      is_noirq_suspended = false,
+      is_late_suspended = false,
+      no_pm = false,
+      early_init = true,
+      direct_complete = false,
+
+      driver_flags = 0,
+      lock = {
+        {
+          rlock = {
+            raw_lock = {
+              {
+                val = {
+                  counter = 0
+                },
+                {
+                  locked = 0 '\000',
+                  pending = 0 '\000'
+                },
+                {
+                  locked_pending = 0,
+                  tail = 0
+                }
+              }
+            }
+          }
+        }
+      },
+      entry = {
+        next = 0xffff8880374258e8,
+        prev = 0xffff88808b6848e8
+      },
+      completion = {
+        done = 4294967295,
+        wait = {
+          lock = {
+            raw_lock = {
+
+              {
+                val = {
+                  counter = 0
+                },
+                {
+                  locked = 0 '\000',
+                  pending = 0 '\000'
+                },
+                {
+                  locked_pending = 0,
+                  tail = 0
+                }
+              }
+            }
+          },
+          task_list = {
+            next = 0xffff888037432668,
+            prev = 0xffff888037432668
+          }
+        }
+      },
+      wakeup = 0x0 <fixed_percpu_data>,
+      wakeup_path = false,
+      syscore = false,
+      no_pm_callbacks = true,
+      must_resume = 0,
+      may_skip_resume = 0,
+      suspend_timer = {
+        node = {
+          node = {
+            __rb_parent_color = 18446612682997180040,
+
+            rb_right = 0x0 <fixed_percpu_data>,
+            rb_left = 0x0 <fixed_percpu_data>
+          },
+          expires = 0
+        },
+        _softexpires = 0,
+        function = 0xffffffff8182add0 <pm_suspend_timer_fn>,
+        base = 0xffff88813bcdb140,
+        state = 0 '\000',
+        is_rel = 0 '\000',
+        is_soft = 0 '\000',
+        is_hard = 0 '\000'
+      },
+      timer_expires = 0,
+      work = {
+        data = {
+          counter = 68719476704
+        },
+        entry = {
+          next = 0xffff8880374326d8,
+          prev = 0xffff8880374326d8
+        },
+        func = 0xffffffff8182ae50 <pm_runtime_work>
+      },
+      wait_queue = {
+        lock = {
+          {
+            rlock = {
+              raw_lock = {
+                {
+                  val = {
+
+                    counter = 0
+                  },
+                  {
+                    locked = 0 '\000',
+                    pending = 0 '\000'
+                  },
+                  {
+                    locked_pending = 0,
+                    tail = 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        head = {
+          next = 0xffff8880374326f8,
+          prev = 0xffff8880374326f8
+        }
+      },
+      wakeirq = 0x0 <fixed_percpu_data>,
+      usage_count = {
+        counter = 0
+      },
+      child_count = {
+        counter = 0
+      },
+      disable_depth = 1,
+      idle_notification = 0,
+      request_pending = 0,
+      deferred_resume = 0,
+
+      needs_force_resume = 0,
+      runtime_auto = 1,
+      ignore_children = false,
+      no_callbacks = 0,
+      irq_safe = 0,
+      use_autosuspend = 0,
+      timer_autosuspends = 0,
+      memalloc_noio = 1,
+      links_count = 0,
+      request = RPM_REQ_NONE,
+      runtime_status = RPM_SUSPENDED,
+      runtime_error = 0,
+      autosuspend_delay = 0,
+      last_busy = 0,
+      active_time = 0,
+      suspended_time = 0,
+      accounting_timestamp = 0,
+      subsys_data = 0x0 <fixed_percpu_data>,
+      set_latency_tolerance = 0x0 <fixed_percpu_data>,
+      qos = 0x0 <fixed_percpu_data>
+    },
+    pm_domain = 0x0 <fixed_percpu_data>,
+    em_pd = 0x0 <fixed_percpu_data>,
+    msi_domain = 0x0 <fixed_percpu_data>,
+    pins = 0x0 <fixed_percpu_data>,
+    msi_lock = {
+      raw_lock = {
+        {
+          val = {
+            counter = 0
+          },
+
+          {
+            locked = 0 '\000',
+            pending = 0 '\000'
+          },
+          {
+            locked_pending = 0,
+            tail = 0
+          }
+        }
+      }
+    },
+    msi_list = {
+      next = 0xffff888037432790,
+      prev = 0xffff888037432790
+    },
+    dma_ops = 0x0 <fixed_percpu_data>,
+    dma_mask = 0x0 <fixed_percpu_data>,
+    coherent_dma_mask = 0,
+    bus_dma_limit = 0,
+    dma_range_map = 0x0 <fixed_percpu_data>,
+    dma_parms = 0x0 <fixed_percpu_data>,
+    dma_pools = {
+      next = 0xffff8880374327d0,
+      prev = 0xffff8880374327d0
+    },
+    dma_io_tlb_mem = 0xffffffff83648e00 <io_tlb_default_mem>,
+    archdata = {<No data fields>},
+    of_node = 0x0 <fixed_percpu_data>,
+    fwnode = 0x0 <fixed_percpu_data>,
+    numa_node = -1,
+    devt = 0,
+
+    id = 0,
+    devres_lock = {
+      {
+        rlock = {
+          raw_lock = {
+            {
+              val = {
+                counter = 0
+              },
+              {
+                locked = 0 '\000',
+                pending = 0 '\000'
+              },
+              {
+                locked_pending = 0,
+                tail = 0
+              }
+            }
+          }
+        }
+      }
+    },
+    devres_head = {
+      next = 0xffff888037432808,
+      prev = 0xffff888037432808
+    },
+    class = 0xffffffff826e70c0 <net_class>,
+    groups = 0xffff888037432848,
+    release = 0x0 <fixed_percpu_data>,
+    iommu_group = 0x0 <fixed_percpu_data>,
+    iommu = 0x0 <fixed_percpu_data>,
+
+    removable = DEVICE_REMOVABLE_NOT_SUPPORTED,
+    offline_disabled = false,
+    offline = false,
+    of_node_reused = false,
+    state_synced = false,
+    can_match = false
+  },
+  sysfs_groups = {0xffffffff8232b440 <netstat_group>, 0x0 <fixed_percpu_data>, 0x0 <fixed_percpu_data>, 0x0 <fixed_percpu_data>},
+  sysfs_rx_queue_group = 0x0 <fixed_percpu_data>,
+  rtnl_link_ops = 0x0 <fixed_percpu_data>,
+  gso_max_size = 65536,
+  gso_max_segs = 65535,
+  dcbnl_ops = 0x0 <fixed_percpu_data>,
+  num_tc = 0,
+  tc_to_txq = {{
+      count = 0,
+      offset = 0
+    } <repeats 16 times>},
+  prio_tc_map = '\000' <repeats 15 times>,
+  fcoe_ddp_xid = 0,
+  priomap = 0x0 <fixed_percpu_data>,
+  phydev = 0x0 <fixed_percpu_data>,
+  sfp_bus = 0x0 <fixed_percpu_data>,
+  qdisc_tx_busylock = 0x0 <fixed_percpu_data>,
+  qdisc_running_key = 0x0 <fixed_percpu_data>,
+  proto_down = false,
+  wol_enabled = 0,
+  threaded = 0,
+  net_notifier_list = {
+    next = 0xffff888037432910,
+    prev = 0xffff888037432910
+ 
+  },
+  macsec_ops = 0x0 <fixed_percpu_data>,
+  udp_tunnel_nic_info = 0x0 <fixed_percpu_data>,
+  udp_tunnel_nic = 0x0 <fixed_percpu_data>,
+  xdp_state = {{
+      prog = 0x0 <fixed_percpu_data>,
+      link = 0x0 <fixed_percpu_data>
+    }, {
+      prog = 0x0 <fixed_percpu_data>,
+      link = 0x0 <fixed_percpu_data>
+    }, {
+      prog = 0x0 <fixed_percpu_data>,
+      link = 0x0 <fixed_percpu_data>
+    }}
+}
+
+

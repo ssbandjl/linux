@@ -1,0 +1,18 @@
+include/rdma/rdma_cm.h
+
+
+#define RDMA_IB_IP_PS_MASK   0xFFFFFFFFFFFF0000ULL
+#define RDMA_IB_IP_PS_TCP    0x0000000001060000ULL
+#define RDMA_IB_IP_PS_UDP    0x0000000001110000ULL
+#define RDMA_IB_IP_PS_IB     0x00000000013F0000ULL
+
+
+
+change state, 
+cma_comp_exch
+    if ((ret = (id_priv->state == comp)))
+        id_priv->state = exch;
+
+
+struct sa_path_rec 
+
