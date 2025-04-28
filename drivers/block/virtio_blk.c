@@ -17,12 +17,38 @@
 #include <linux/numa.h>
 #include <uapi/linux/virtio_ring.h>
 
+#define pr_info_ffl(format, arg...)										\
+	pr_info("%s(), %s:%d, " format, __func__, __FILE__, __LINE__, ##arg)
+
+#define pr_debug_ffl(format, arg...)										\
+	pr_debug("%s(), %s:%d, " format, __func__, __FILE__, __LINE__, ##arg)
+
+#define pr_err_ffl(format, arg...)										\
+	pr_err("%s(), %s:%d, " format, __func__, __FILE__, __LINE__, ##arg)
+
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
 #define MAX_DISCARD_SEGMENTS 256u
 
 /* The maximum number of sg elements that fit into a virtqueue */
 #define VIRTIO_BLK_MAX_SG_ELEMS 32768
+
+static const char *const blk_op_type[14] = {
+    "VIRTIO_BLK_T_IN",
+    "VIRTIO_BLK_T_OUT",
+    "VIRTIO_BLK_T_SCSI_CMD",
+    "",
+    "VIRTIO_BLK_T_FLUSH",
+    "",
+    "",
+    "",
+    "VIRTIO_BLK_T_GET_ID",
+    "",
+    "",
+    "VIRTIO_BLK_T_DISCARD",
+    "",
+    "VIRTIO_BLK_T_WRITE_ZEROES"
+};
 
 static int major;
 static DEFINE_IDA(vd_index_ida);
@@ -197,6 +223,10 @@ static void virtblk_done(struct virtqueue *vq)
 	/* In case queue is stopped waiting for more buffers. */
 	if (req_done)
 		blk_mq_start_stopped_hw_queues(vblk->disk->queue, true);
+
+	pr_debug_ffl("req_type:%s(%d), sector:%lld, ioprio:%d\n",
+		blk_op_type[vbr->out_hdr.type], vbr->out_hdr.type, vbr->out_hdr.sector, vbr->out_hdr.ioprio);
+
 	spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 }
 
@@ -273,6 +303,9 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 		else
 			vbr->out_hdr.type |= cpu_to_virtio32(vblk->vdev, VIRTIO_BLK_T_IN);
 	}
+
+	pr_debug_ffl("req_type:%s(%d), sector:%lld, ioprio:%d\n",
+		blk_op_type[type], type, vbr->out_hdr.sector, vbr->out_hdr.ioprio);
 
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
 	err = virtblk_add_req(vblk->vqs[qid].vq, vbr, vbr->sg, num);
@@ -1001,6 +1034,8 @@ static int __init init(void)
 	virtblk_wq = alloc_workqueue("virtio-blk", 0, 0);
 	if (!virtblk_wq)
 		return -ENOMEM;
+
+	pr_debug_ffl("Register blk device\n");
 
 	major = register_blkdev(0, "virtblk");
 	if (major < 0) {
