@@ -837,6 +837,7 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
                     init_completion -> 完成：使用简单的等待队列完成使用 wait_queue_head_t 将等待者排队。 wait_queue_head_t 包含一个 spinlock_t 来保护等待者列表，从而排除它在启用 PREEMPT_RT 的内核上的真正原子上下文中使用。 等待队列头中的自旋锁不能被 raw_spinlock 替换，因为： - 等待队列可以有自定义唤醒回调，它获取其他 spinlock_t 锁并且执行时间可能很长 -wake_up() 在唤醒期间遍历无限数量的列表条目 并可能唤醒无数的服务员。 出于简单性和性能原因，complete() 应该可在启用 PREEMPT_RT 的内核上使用。 完成不使用自定义唤醒回调，并且通常是单个等待者，除了一些极端情况。 将完成中的等待队列替换为简单的等待队列（swait），该队列使用 raw_spinlock_t 来保护等待列表，因此可以安全地在 PREEMPT_RT 上的真正原子区域内使用。 没有语义或功能上的变化： - 完成使用 swait 提供的独占等待模式 -complete() 唤醒一个独占等待者 -complete_all() 唤醒所有等待者，同时持有锁，以保护等待队列免受新传入等待者的影响。 转换为 swait 保留了此行为。 complete_all() 可能会导致大量等待者同时被唤醒，从而导致未绑定的延迟，但大多数complete_all() 使用站点要么在测试或初始化代码中，要么只有很少数量的并发等待者，目前不会导致延迟 问题。 现在保持简单。 USB 小工具驱动程序中警告检查的修复只是无锁等待检查从一种等待队列类型到另一种等待队列类型的直接转换
                 mlx5_cq_debugfs_init
                 mlx5_init_reserved_gids
+					dev->roce.reserved_gids.start = tblsz
                 mlx5_vxlan_create
                     mlx5_vxlan_add_port -> net：将 IANA_VXLAN_UDP_PORT 定义添加到 vxlan 头文件 将 IANA_VXLAN_UDP_PORT (4789) 定义添加到 vxlan 头文件，以便驱动程序可以使用它而不是本地定义。 更新了本地定义为 4789 的驱动程序以使用它
                 mlx5_geneve_create
@@ -898,6 +899,8 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
                 mlx5_pagealloc_start
                 mlx5_eq_table_create
                     create_async_eqs
+                        MLX5_NB_INIT(&table->cq_err_nb, cq_err_event_notifier, CQ_ERROR) -> new
+                        mlx5_eq_notifier_register(dev, &table->cq_err_nb)
 			table->ctrl_irq = mlx5_ctrl_irq_request(dev)
 			MLX5_NB_INIT(&table->cq_err_nb, cq_err_event_notifier, CQ_ERROR)
 			mlx5_eq_notifier_register(dev, &table->cq_err_nb)
@@ -2464,6 +2467,7 @@ irdma_probe
 					rf->iw_msixtbl[i].idx = pmsix->entry;
 					rf->iw_msixtbl[i].irq = pmsix->vector;
 					rf->iw_msixtbl[i].cpu_affinity = ceq_idx;
+                    if (!i) -> 如果是第一个中断向量(i = 0)
             rf->obj_mem.size = ALIGN(8192, IRDMA_HW_PAGE_SIZE) -> 以4096为上界对齐, 分配8KB
             rf->obj_mem.va = dma_alloc_coherent(rf->hw.device, rf->obj_mem.size, &rf->obj_mem.pa, GFP_KERNEL) -> 申请连续的大块内存(8KB)
             irdma_initialize_dev
@@ -2555,8 +2559,13 @@ irdma_probe
             irdma_create_hmc_objs(rf, true, rf->rdma_ver) -> 初始化时驱动会按照支持QP数量规格把HMC准备好 -> create all hmc objects for the device
                 for (i = 0; i < IW_HMC_OBJ_TYPE_NUM; i++)
                     irdma_create_hmc_obj_type(dev, &info) -> irdma_sc_create_hmc_obj
-	                    irdma_find_sd_index_limit(info->hmc_info, info->rsrc_type, info->start_idx, info->count, &sd_idx, &sd_lmt) -> 查找段描述符索引限制，@hmc_info：指向 HMC 配置信息结构的指针 @type：我们正在搜索的 HMC 资源类型 @idx：对象的起始索引 @cnt：我们尝试创建的对象数量 @ sd_idx：返回相关段描述符索引的指针 @sd_limit：返回段描述符最大数量的指针 该函数计算 irdma_hmc_rsrc_type 定义的资源的段描述符索引和索引限制
-                        irdma_find_pd_index_limit(info->hmc_info, info->rsrc_type, info->start_idx, info->count, &pd_idx, &pd_lmt) -> finds page descriptor index limit
+	                    irdma_find_sd_index_limit(info->hmc_info, info->rsrc_type, info->start_idx, info->count, &sd_idx, &sd_lmt) -> SD, 查找段描述符索引限制，@hmc_info：指向 HMC 配置信息结构的指针 @type：我们正在搜索的 HMC 资源类型 @idx：对象的起始索引 @cnt：我们尝试创建的对象数量 @ sd_idx：返回相关段描述符索引的指针 @sd_limit：返回段描述符最大数量的指针 该函数计算 irdma_hmc_rsrc_type 定义的资源的段描述符索引和索引限制
+							fpm_addr = hmc_info->hmc_obj[(type)].base + hmc_info->hmc_obj[type].size * idx
+							fpm_limit = fpm_addr + hmc_info->hmc_obj[type].size * cnt
+							*sd_idx = (u32)(fpm_addr / IRDMA_HMC_DIRECT_BP_SIZE) -> fpm_addr / 2MB
+							*sd_limit = (u32)((fpm_limit - 1) / IRDMA_HMC_DIRECT_BP_SIZE)
+							*sd_limit += 1
+						irdma_find_pd_index_limit(info->hmc_info, info->rsrc_type, info->start_idx, info->count, &pd_idx, &pd_lmt) -> PD, finds page descriptor index limit
                         for (j = sd_idx; j < sd_lmt; j++)
                             irdma_add_sd_table_entry(dev->hw, info->hmc_info, j, info->entry_type, IRDMA_HMC_DIRECT_BP_SIZE) -> 0x200000 (2MB) -> RDMA/irdma：添加 HMC 后备存储设置功能，HW 使用主机内存作为多个协议上下文对象和队列状态跟踪的后备存储。 主机内存缓存 (HMC) 是负责管理存储在主机内存中的这些对象的组件。 添加函数和数据结构来管理 HMC 为各种对象使用的支持页面的分配 -> Adds a segment descriptor to the table (SD)
                                 allocate a 4K pd page or 2M backing page
@@ -2569,18 +2578,23 @@ irdma_probe
                                     memcpy(&sd_entry->u.pd_table.pd_page_addr, &dma_mem, sizeof(sd_entry->u.pd_table.pd_page_addr))
                                 else
                                     memcpy(&sd_entry->u.bp.addr, &dma_mem, sizeof(sd_entry->u.bp.addr))
-                            irdma_add_pd_table_entry -> Adds page descriptor to the specified table -> 将页面描述符添加到指定的表中，@dev：指向我们的设备结构的指针@hmc_info：指向HMC配置信息结构的指针@pd_index：要操作的页面描述符索引@rsrc_pg：如果不为NULL，则使用预分配的页面而不是分配 新的一个。 该函数： 1. 初始化 pd 条目 2. 在 pd_table 中添加 pd_entry 3. 在 irdma_hmc_pd_entry 结构中标记该条目有效 4. 将 pd_entry 的引用计数初始化为 1 假设： 1. pd 的内存应该固定，物理上连续并且 在 4K 边界上对齐并将内存归零。 2.大小应为4K
-                                if (!pd_entry->valid)
-                                    page->size = ALIGN(IRDMA_HMC_PAGED_BP_SIZE, IRDMA_HMC_PD_BP_BUF_ALIGNMENT)
-                                    page->va = dma_alloc_coherent(dev->hw->device, page->size, &page->pa,GFP_KERNEL)
-                                    memcpy(&pd_entry->bp.addr, page, sizeof(pd_entry->bp.addr))
-                                    pd_entry->bp.entry_type = IRDMA_SD_TYPE_PAGED
-                                    pd_entry->sd_index = sd_idx
-                                    pd_entry->valid = true
-                                    pd_table->use_cnt++
-                                    irdma_invalidate_pf_hmc_pd(dev, sd_idx, rel_pd_idx) -> 使 PF 硬件中的 pd 缓存无效
-                                        writel(val, dev->hw_regs[IRDMA_PFHMC_PDINV])
-                        sd_entry->valid = true
+							if (sd_entry->entry_type == IRDMA_SD_TYPE_PAGED && (dev->hmc_info == info->hmc_info && info->rsrc_type != IRDMA_HMC_IW_PBLE))
+								for (i = pd_idx1; i < pd_lmt1; i++)
+									ret_code = irdma_add_pd_table_entry(dev, info->hmc_info, i, NULL) -> Adds page descriptor to the specified table -> 将页面描述符添加到指定的表中，@dev：指向我们的设备结构的指针@hmc_info：指向HMC配置信息结构的指针@pd_index：要操作的页面描述符索引@rsrc_pg：如果不为NULL，则使用预分配的页面而不是分配 新的一个。 该函数： 1. 初始化 pd 条目 2. 在 pd_table 中添加 pd_entry 3. 在 irdma_hmc_pd_entry 结构中标记该条目有效 4. 将 pd_entry 的引用计数初始化为 1 假设： 1. pd 的内存应该固定，物理上连续并且 在 4K 边界上对齐并将内存归零。 2.大小应为4K
+										if (!pd_entry->valid)
+											page->size = ALIGN(IRDMA_HMC_PAGED_BP_SIZE, IRDMA_HMC_PD_BP_BUF_ALIGNMENT)
+											page->va = dma_alloc_coherent(dev->hw->device, page->size, &page->pa,GFP_KERNEL)
+											memcpy(&pd_entry->bp.addr, page, sizeof(pd_entry->bp.addr))
+											pd_entry->bp.entry_type = IRDMA_SD_TYPE_PAGED
+											pd_entry->sd_index = sd_idx
+											page_desc = page->pa | 0x1
+											pd_entry->valid = true
+											pd_table->use_cnt++
+											irdma_invalidate_pf_hmc_pd(dev, sd_idx, rel_pd_idx) -> 使 PF 硬件中的 pd 缓存无效
+												writel(val, dev->hw_regs[IRDMA_PFHMC_PDINV])
+                        info->hmc_info->sd_indexes[info->add_sd_cnt] = (u16)j
+						info->add_sd_cnt++
+						sd_entry->valid = true
                         irdma_hmc_finish_add_sd_reg(dev, info) -> irdma_hmc_sd_grp(dev, info->hmc_info, info->hmc_info->sd_indexes[0], info->add_sd_cnt, true) -> 为 cqp 设置 sd 条目组
                             for (i = sd_index; i < sd_index + sd_cnt; i++)
                                 irdma_set_sd_entry(pa, i, sd_entry->entry_type,
@@ -2614,9 +2628,11 @@ irdma_probe
                 cq->cq_uk.polarity = true -> 极性位/可反转/有效位
             irdma_sc_ccq_create(dev->ccq, 0, true, true)
                 irdma_sc_cq_create(ccq, scratch, check_overflow, post_sq) -> 创建完成队列
+                    ceq = cq->dev->ceq[cq->ceq_id]
                      irdma_sc_add_cq_ctx(ceq, cq) -> 为 ceq 添加 cq ctx 跟踪
                         ceq->reg_cq[ceq->reg_cq_size++] = cq
                      ...
+                     set_64bit_val(wqe, 8, (uintptr_t)cq >> 1) -> tmp_cq << 1
                 irdma_sc_ccq_create_done -> irdma_sc_poll_for_cqp_op_done(cqp, IRDMA_CQP_OP_CREATE_CQ, NULL) -> 等待 CQP SQ 中最后一次写入完成
                     while (1)
                         irdma_sc_ccq_get_cqe_info
@@ -2629,20 +2645,33 @@ irdma_probe
             num_ceqs = min(rf->msix_count, rf->sc_dev.hmc_fpm_misc.max_ceqs
             rf->ceqlist = kcalloc(num_ceqs, sizeof(*rf->ceqlist), GFP_KERNEL)
             irdma_create_ceq(rf, iwceq, 0, &rf->default_vsi) -> 创建完成事件队列
+				ceq_size = min(rf->sc_dev.hmc_info->hmc_obj[IRDMA_HMC_IW_CQ].cnt, dev->hw_attrs.max_hw_ceq_size)
+				iwceq->mem.size = ALIGN(sizeof(struct irdma_ceqe) * ceq_size, IRDMA_CEQ_ALIGNMENT)
+				iwceq->mem.va = dma_alloc_coherent(dev->hw->device, iwceq->mem.size, &iwceq->mem.pa, GFP_KERNEL)
+				info.ceqe_base = iwceq->mem.va
+				info.ceqe_pa = iwceq->mem.pa
                 irdma_sc_ceq_init(&iwceq->sc_ceq, &info)
-                irdma_cqp_ceq_cmd(&rf->sc_dev, &iwceq->sc_ceq, IRDMA_OP_CEQ_CREATE)
+					ceq->ceqe_base = (struct irdma_ceqe *)info->ceqe_base
+					ceq->polarity = 1
+					IRDMA_RING_INIT(ceq->ceq_ring, ceq->elem_cnt)
+                irdma_cqp_ceq_cmd(&rf->sc_dev, &iwceq->sc_ceq, IRDMA_OP_CEQ_CREATE) -> irdma_sc_ceq_create
                 or irdma_sc_cceq_create(&iwceq->sc_ceq, 0)
+					ret_code = irdma_sc_ceq_create(ceq, scratch, true)
 			i = rf->msix_shared ? 0 : 1 -> 共享模式取第0个索引
-            irdma_cfg_ceq_vector(rf, iwceq, 0, msix_vec) -> 为完成事件队列设置中断
+            irdma_cfg_ceq_vector(rf, iwceq, 0, msix_vec) -> 为完成事件队列设置中断, 传入ceq_id为0
                 if (rf->msix_shared && !ceq_id)
-                    tasklet_setup(&rf->dpc_tasklet, irdma_dpc)
+                    tasklet_setup(&rf->dpc_tasklet, irdma_dpc) -> 处理AEQ和CEQ0的事件
                     request_irq(msix_vec->irq, irdma_irq_handler, 0,
 						tasklet_schedule(&rf->dpc_tasklet)
                 else
-                    tasklet_setup(&iwceq->dpc_tasklet, irdma_ceq_dpc)
+                    tasklet_setup(&iwceq->dpc_tasklet, irdma_ceq_dpc) -> 只处理CEQ事件
                         irdma_process_ceq(rf, iwceq)
                             do cq = irdma_sc_process_ceq(dev, sc_ceq)
+								ceqe = IRDMA_GET_CURRENT_CEQ_ELEM(ceq)
+                                temp_cq = (struct irdma_sc_cq *)(unsigned long)(temp << 1) -> how to get cq
                                 ceq->polarity ^= 1
+								cq_idx = irdma_sc_find_reg_cq(ceq, cq);
+								IRDMA_RING_MOVE_TAIL(ceq->ceq_ring)
                                 irdma_sc_cq_ack(cq)
 									writel(cq->cq_uk.cq_id, cq->cq_uk.cq_ack_db)
 							if (cq->cq_type == IRDMA_CQ_TYPE_IWARP)
@@ -2705,6 +2734,13 @@ irdma_probe
         INIT_WORK(&rf->cqp_cmpl_work, cqp_compl_worker) -> irdma_cqp_ce_handler
             wake_up(&cqp_request->waitq)
             or cqp_request->callback_fcn(cqp_request)
+			if (cqe_count)
+				irdma_process_bh(dev);
+					status = irdma_exec_cqp_cmd(dev, pcmdinfo)
+				irdma_sc_ccq_arm(cq);
+					get_64bit_val(ccq->cq_uk.shadow_area, 32, &temp_val)
+					arm_seq_num++;
+					writel(ccq->cq_uk.cq_id, ccq->dev->cq_arm_db)
         irdma_sc_ccq_arm
     ice_get_qos_params
     irdma_fill_qos_info
@@ -2724,14 +2760,16 @@ irdma_probe
                         irdma_cqp_qp_create_cmd
                             cqp_info->cqp_cmd = IRDMA_OP_QP_CREATE
             status = irdma_setup_ceqs(rf, &iwdev->vsi) -> 管理设备 ceq 及其中断资源，@rf：RDMA PCI 函数 @vsi：此 CEQ 的 VSI 结构 为所有设备完成事件队列分配列表 创建 ceq 并配置其 msix 中断向量 如果 ceq 成功
-                status = irdma_create_ceq(rf, iwceq, ceq_id, vsi)
-                irdma_cfg_ceq_vector
-					irdma_dpc
-						irdma_process_aeq -> 处理异步事件
-							...
-							case IRDMA_AE_CQ_OPERATION_ERROR
-								if (iwcq->ibcq.event_handler)
-									iwcq->ibcq.event_handler(&ibevent, iwcq->ibcq.cq_context) -> ib_uverbs_cq_event_handler
+				for (ceq_id = 1; i < num_ceqs; i++, ceq_id++)
+					iwceq = &rf->ceqlist[ceq_id] -> get ceq_addr
+					status = irdma_create_ceq(rf, iwceq, ceq_id, vsi)
+					status = irdma_cfg_ceq_vector(rf, iwceq, ceq_id, msix_vec)
+						irdma_dpc
+							irdma_process_aeq -> 处理异步事件
+								...
+								case IRDMA_AE_CQ_OPERATION_ERROR
+									if (iwcq->ibcq.event_handler)
+										iwcq->ibcq.event_handler(&ibevent, iwcq->ibcq.cq_context) -> ib_uverbs_cq_event_handler
                 irdma_ena_intr
             iwdev->init_state = CEQS_CREATED
             status = irdma_hmc_init_pble(&rf->sc_dev, rf->pble_rsrc) -> Initialize pble resources during module load
@@ -2793,6 +2831,31 @@ irdma_probe
 
 
 
+/* types of hmc objects */
+static enum irdma_hmc_rsrc_type iw_hmc_obj_types[] = {
+	IRDMA_HMC_IW_QP,
+	IRDMA_HMC_IW_CQ,
+	IRDMA_HMC_IW_HTE,
+	IRDMA_HMC_IW_ARP,
+	IRDMA_HMC_IW_APBVT_ENTRY,
+	IRDMA_HMC_IW_MR,
+	IRDMA_HMC_IW_XF,
+	IRDMA_HMC_IW_XFFL,
+	IRDMA_HMC_IW_Q1,
+	IRDMA_HMC_IW_Q1FL,
+	IRDMA_HMC_IW_PBLE,
+	IRDMA_HMC_IW_TIMER,
+	IRDMA_HMC_IW_FSIMC,
+	IRDMA_HMC_IW_FSIAV,
+	IRDMA_HMC_IW_RRF,
+	IRDMA_HMC_IW_RRFFL,
+	IRDMA_HMC_IW_HDR,
+	IRDMA_HMC_IW_MD,
+	IRDMA_HMC_IW_OOISC,
+	IRDMA_HMC_IW_OOISCFFL,
+};
+
+#define IW_HMC_OBJ_TYPE_NUM	ARRAY_SIZE(iw_hmc_obj_types)
 
 static const struct irdma_irq_ops icrdma_irq_ops = {
 	.irdma_cfg_aeq = irdma_cfg_aeq,
@@ -4996,7 +5059,36 @@ static const struct ib_device_ops irdma_dev_ops = {
 	.dealloc_ucontext = irdma_dealloc_ucontext,
 	.dereg_mr = irdma_dereg_mr,
 	.destroy_cq = irdma_destroy_cq,
+		irdma_cq_wq_destroy(iwdev->rf, cq)
+			cqp_info->cqp_cmd = IRDMA_OP_CQ_DESTROY
+				irdma_sc_cq_destroy
+					set_64bit_val(wqe, 8, (uintptr_t)cq >> 1)
+					...
+		irdma_sc_cleanup_ceqes(cq, ceq)
+		irdma_cq_free_rsrc(iwdev->rf, iwcq)
 	.destroy_qp = irdma_destroy_qp,
+        if (iwqp->iwarp_state == IRDMA_QP_STATE_RTS)
+            irdma_modify_qp_to_err(&iwqp->sc_qp)
+        if (!iwqp->user_mode)
+            if (iwqp->iwscq)
+                irdma_clean_cqes(iwqp, iwqp->iwscq)
+                    irdma_uk_clean_cq(&iwqp->sc_qp.qp_uk, ukcq)
+                        do
+                            cqe = cq->cq_base[cq_head].buf
+                            if (polarity != temp)
+                                break
+                            dma_rmb()
+                            if ((void *)(unsigned long)comp_ctx == q)
+                                set_64bit_val(cqe, 8, 0)
+                            cq_head = (cq_head + 1) % cq->cq_ring.size
+                            if (!cq_head)
+                                temp ^= 1;
+                        while (true)
+        wait_for_completion(&iwqp->free_qp)
+        irdma_free_lsmm_rsrc(iwqp);
+        irdma_cqp_qp_destroy_cmd(&iwdev->rf->sc_dev, &iwqp->sc_qp);
+        irdma_remove_push_mmap_entries(iwqp);
+        irdma_free_qp_rsrc(iwqp);
 	.disassociate_ucontext = irdma_disassociate_ucontext,
 	.get_dev_fw_str = irdma_get_dev_fw_str,
 	.get_dma_mr = irdma_get_dma_mr,
@@ -5007,7 +5099,16 @@ static const struct ib_device_ops irdma_dev_ops = {
 	.mmap_free = irdma_mmap_free,
 	.poll_cq = irdma_poll_cq,
 	.post_recv = irdma_post_recv,
+        
 	.post_send = irdma_post_send,
+        if (ib_wr->send_flags & IB_SEND_INLINE)
+            err = irdma_uk_inline_send(ukqp, &info, false)
+                quanta = qp->wqe_ops.iw_inline_data_size_to_quanta(total_size)
+                wqe = irdma_qp_get_next_send_wqe(qp, &wqe_idx, quanta, total_size, info)
+                irdma_clr_wqes(qp, wqe_idx)
+                qp->wqe_ops.iw_copy_inline_data((u8 *)wqe, op_info->sg_list, op_info->num_sges, qp->swqe_polarity)
+        else
+            err = irdma_uk_send(ukqp, &info, false)
 	.query_device = irdma_query_device,
 	.query_port = irdma_query_port,
 	.query_qp = irdma_query_qp,
@@ -5027,10 +5128,20 @@ static const struct ib_device_ops irdma_dev_ops = {
         err = irdma_reg_user_mr_type_mem(iwmr, access, true)
 	.rereg_user_mr = irdma_rereg_user_mr,
 	.req_notify_cq = irdma_req_notify_cq,
-		irdma_uk_cq_request_notification(ukcq, cq_notify)
-			get_64bit_val(cq->shadow_area, 32, &temp_val)
-			set_64bit_val(cq->shadow_area, 32, temp_val)
-			writel(cq->cq_id, cq->cqe_alloc_db)
+        bool promo_event = false -> RDMA/irdma：如果此 CQ 没有 CE，则不要将 CQ 事件上报两次以上。如果允许应用程序在硬件未生成此 CQ 的新 CE 时将 CQ 事件上报两次以上，则完成事件 (CE) 会丢失。检查 CQ 是否已装备，如果没有，则为任何事件装备 CQ，否则仅在请求最后一个装备事件时才提升为任何事件装备 CQ
+        cq_notify = notify_flags == IB_CQ_SOLICITED ? IRDMA_CQ_COMPL_SOLICITED : IRDMA_CQ_COMPL_EVENT
+        Only promote to arm the CQ for any event if the last arm event was solicited
+        if (!atomic_cmpxchg(&iwcq->armed, 0, 1) || promo_event) -> atomic_cmpxchg 的作用是比较并交换。它将目标内存中的值与预期值进行比较：  如果目标值等于预期值，则将其替换为一个新的值。 如果不相等，则保持目标值不变，并返回当前值。 这是一种乐观锁机制，可以用来实现无锁数据结构和操作, 如果当前状态没有ARM, 则原子设置为ARMED, 或promo_event, 则向HW请求事件上报
+            iwcq->last_notify = cq_notify
+            irdma_uk_cq_request_notification(ukcq, cq_notify)
+                get_64bit_val(cq->shadow_area, 32, &temp_val)
+                arm_seq_num = (u8)FIELD_GET(IRDMA_CQ_DBSA_ARM_SEQ_NUM, temp_val)
+                arm_seq_num++;
+                if (cq_notify == IRDMA_CQ_COMPL_EVENT)
+                    arm_next = 1;
+                set_64bit_val(cq->shadow_area, 32, temp_val)
+                writel(cq->cq_id, cq->cqe_alloc_db)
+        if ((notify_flags & IB_CQ_REPORT_MISSED_EVENTS) && (!irdma_cq_empty(iwcq) || !list_empty(&iwcq->cmpl_generated))) -> 如果收到错过CQ的完成事件, 且CQ队列有完成条目, 且为了刷新CQ生成的完成通道不为空, 则返回1 -> https://github.com/torvalds/linux/commit/81091d7696ae71627ff80bbf2c6b0986d2c1cce3, RDMA/irdma：添加 SW 机制以在 QP 处于错误状态后生成错误 HW 刷新的完成，这不可靠。这可能导致应用程序挂起等待未完成 WR 的完成。在 QP 修改为错误后，实现 SW 机制以生成任何未完成 WR 的完成。这是通过在 QP 修改为错误并执行 HW 刷新后启动延迟工作器来实现的。工作器将生成完成，并在轮询 CQ 时返回给应用程序。此机制仅适用于内核应用程序
 	.resize_cq = irdma_resize_cq,
 	INIT_RDMA_OBJ_SIZE(ib_pd, irdma_pd, ibpd),
 	INIT_RDMA_OBJ_SIZE(ib_ucontext, irdma_ucontext, ibucontext),
@@ -5700,6 +5811,9 @@ poll_cq
     update_cons_index
     mlx5_get_cycles
 
+
+++cq->mcq.cons_index;
+get_sw_cqe
 
 
 test:
@@ -6798,6 +6912,51 @@ static const struct ib_device_ops mlx5_ib_dev_ops = {
 	.destroy_ah = mlx5_ib_destroy_ah,
 	.destroy_cq = mlx5_ib_destroy_cq,
 	.destroy_qp = mlx5_ib_destroy_qp,
+        if (mqp->type == IB_QPT_GSI)
+            return mlx5_ib_destroy_gsi(mqp)
+        if (mqp->type == MLX5_IB_QPT_DCT)
+            return mlx5_ib_destroy_dct(mqp)
+        destroy_qp_common(dev, mqp, udata)
+            if (qp->state != IB_QPS_RESET)
+            get_cqs(qp->type, qp->ibqp.send_cq, qp->ibqp.recv_cq, &send_cq,	&recv_cq)
+            mlx5_ib_lock_cqs(send_cq, recv_cq)
+            list_del(&qp->qps_list)
+            list_del(&qp->cq_send_list)
+            list_del(&qp->cq_recv_list)
+			if (!udata) -> kernel
+				__mlx5_ib_cq_clean(recv_cq, base->mqp.qpn, qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL)
+					for (prod_index = cq->mcq.cons_index; get_sw_cqe(cq, prod_index); prod_index++)
+						if (prod_index == cq->mcq.cons_index + cq->ibcq.cqe)
+							break
+					while ((int) --prod_index - (int) cq->mcq.cons_index >= 0)
+						cqe = get_cqe(cq, prod_index & cq->ibcq.cqe)
+						else if (nfreed)
+							dest = get_cqe(cq, (prod_index + nfreed) & cq->ibcq.cqe)
+							memcpy(dest, cqe, cq->mcq.cqe_sz)
+					if (nfreed)
+						cq->mcq.cons_index += nfreed
+						wmb()
+						mlx5_cq_set_ci(&cq->mcq)
+							*cq->set_ci_db = cpu_to_be32(cq->cons_index & 0xffffff)
+				if (send_cq != recv_cq)
+					__mlx5_ib_cq_clean(send_cq, base->mqp.qpn, NULL)
+			if (qp->type == IB_QPT_RAW_PACKET || qp->flags & IB_QP_CREATE_SOURCE_QPN)
+				destroy_raw_packet_qp(dev, qp)
+			else
+				err = mlx5_core_destroy_qp(dev, &base->mqp)
+					destroy_resource_common(dev, qp)
+						radix_tree_delete(&table->tree, qp->qpn | (qp->common.res << MLX5_USER_INDEX_LEN))
+						mlx5_core_put_rsc((struct mlx5_core_rsc_common *)qp)
+							if (refcount_dec_and_test(&common->refcount)) -> If the reference count is zero after decrementing, it returns true
+								complete(&common->free)
+						wait_for_completion(&qp->common.free)
+					MLX5_SET(destroy_qp_in, in, opcode, MLX5_CMD_OP_DESTROY_QP)
+			destroy_qp(dev, qp, base, udata)
+				if (udata)
+					mlx5_ib_db_unmap_user(context, &qp->db);
+					ib_umem_release(base->ubuffer.umem);
+				mlx5_db_free(dev->mdev, &qp->db)
+				mlx5_frag_buf_free(dev->mdev, &qp->buf)
 	.destroy_srq = mlx5_ib_destroy_srq,
 	.detach_mcast = mlx5_ib_mcg_detach,
 	.disassociate_ucontext = mlx5_ib_disassociate_ucontext,
@@ -6854,6 +7013,18 @@ static const struct ib_device_ops mlx5_ib_dev_ops = {
                 err = ib_umem_dmabuf_map_pages(umem_dmabuf)
                 return ib_umem_num_pages(mr->umem)
 	.req_notify_cq = mlx5_ib_arm_cq,
+		if (cq->notify_flags != IB_CQ_NEXT_COMP)
+			cq->notify_flags = flags & IB_CQ_SOLICITED_MASK
+		if ((flags & IB_CQ_REPORT_MISSED_EVENTS) && !list_empty(&cq->wc_list))
+			ret = 1;
+		mlx5_cq_arm(&cq->mcq, (flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED ? MLX5_CQ_DB_REQ_NOT_SOL : MLX5_CQ_DB_REQ_NOT, uar_page, to_mcq(ibcq)->mcq.cons_index)
+			sn = cq->arm_sn & 3
+			ci = cons_index & 0xffffff
+			*cq->arm_db = cpu_to_be32(sn << 28 | cmd | ci)
+			wmb()
+			doorbell[0] = cpu_to_be32(sn << 28 | cmd | ci);
+			doorbell[1] = cpu_to_be32(cq->cqn);
+			mlx5_write64(doorbell, uar_page + MLX5_CQ_DOORBELL)
 	.rereg_user_mr = mlx5_ib_rereg_user_mr,
 	.resize_cq = mlx5_ib_resize_cq,
 
@@ -8515,6 +8686,11 @@ irdma_inetaddr_event
                 irdma_manage_qhash(iwdev, nfo, IRDMA_QHASH_TYPE_TCP_SYN, op, NULL,
                     cqp_request = irdma_alloc_and_get_cqp_request(iwcqp, wait)
                     cqp_request->callback_fcn = irdma_send_syn_cqp_callback
+						irdma_send_syn(cm_node, 1)
+							sqbuf = cm_node->cm_core->form_cm_frame(cm_node, &opts, NULL, NULL, flags)
+							irdma_schedule_cm_timer(cm_node, sqbuf, IRDMA_TIMER_TYPE_SEND, 1, 0)
+								irdma_puda_send_buf(vsi->ilq, sqbuf)
+						irdma_rem_ref_cm_node(cm_node)
                     cqp_info->cqp_cmd = IRDMA_OP_MANAGE_QHASH_TABLE_ENTRY -> irdma_sc_manage_qhash_table_entry
                         set_64bit_val(wqe, 0, ether_addr_to_u64(info->mac_addr))
             irdma_manage_qhash
@@ -11058,6 +11234,14 @@ ib_dispatch_event
     else -> INIT_WORK(&work->work, ib_generic_event_task)
 
 
+nvme_rdma_cm_handler
+    case RDMA_CM_EVENT_ADDR_RESOLVED:
+            cm_error = nvme_rdma_addr_resolved(queue)
+                ret = nvme_rdma_create_queue_ib(queue)
+                    ret = nvme_rdma_create_cq(ibdev, queue)
+                        queue->ib_cq = ib_cq_pool_get(ibdev, queue->cq_size, comp_vector, IB_POLL_SOFTIRQ) -> ib_cq_pool_get() - 查找与给定的 cpu 提示匹配（或对于通配符亲和性最少使用）且适合 nr_cqe 的最少使用的完成队列。@dev：rdma 设备 @nr_cqe：所需的 cqe 条目数 @comp_vector_hint：驱动程序根据内部计数器分配 comp 向量的完成向量提示（-1）@poll_ctx：cq 轮询上下文查找满足 @comp_vector_hint 和 @nr_cqe 要求的 cq 并为我们声明其中的条目。如果没有可用的 cq，则分配一个符合要求的新 cq 并将其添加到设备池中。IB_POLL_DIRECT 不能用于共享 cq，因此它不是 @poll_ctx 的有效值
+                            ret = ib_alloc_cqs(dev, nr_cqe, poll_ctx) -> ib_alloc_cq
+
 
 ib_alloc_cq -> __ib_alloc_cq
     rdma_dim_init -> struct dim - 动态中断调节 (DIM) 的主要结构。用于保存有关特定 DIM 实例的所有信息。 @state：算法状态（见下文） @prev_stats：上一次迭代的测量速率（用于比较） @start_sample：当前迭代开始时的采样数据 @measuring_sample：用于更新当前事件的 &dim_sample @work：要执行的工作 @priv：指向暗淡结构的指针 @profile_ix：当前审核配置文件 @mode：CQ 周期计数模式 @tune_state：算法调整状态（见下文） @steps_right：迈向更高审核的步数 @steps_left ：降低适度程度所采取的步数 @tired：停车深度计数器 -> 内核文档: https://docs.kernel.org/networking/net_dim.html
@@ -13547,6 +13731,16 @@ static const struct fuse_iqueue_ops virtio_fs_fiq_ops = {
 	.wake_interrupt_and_unlock	= virtio_fs_wake_interrupt_and_unlock,
 	.wake_pending_and_unlock	= virtio_fs_wake_pending_and_unlock,
 	.release			= virtio_fs_fiq_release,
+};
+
+
+new:
+static const struct fuse_iqueue_ops virtio_fs_fiq_ops = {
+	.send_forget	= virtio_fs_send_forget,
+	.send_interrupt	= virtio_fs_send_interrupt,
+	.send_req	= virtio_fs_send_req,
+		ret = virtio_fs_enqueue_req(fsvq, req, false, GFP_ATOMIC)
+	.release	= virtio_fs_fiq_release,
 };
 
 
@@ -16086,6 +16280,12 @@ fuse_simple_request
             struct fuse_req *req = kmem_cache_zalloc(fuse_req_cachep, flags)
 
 
+fuse_simple_request
+	__fuse_simple_request(&invalid_mnt_idmap, fm, args)
+		__fuse_request_send(req)
+			fuse_send_one(fiq, req)
+				fiq->ops->send_req(fiq, req)
+
 
 
 
@@ -16675,7 +16875,7 @@ IB_USER_VERBS_CMD_RESIZE_CQ -> ib_uverbs_resize_cq
             cq->first_pm_pbl_idx = info->first_pm_pbl_idx;
             cq->pbl_chunk_size = info->pbl_chunk_size;
             irdma_uk_cq_resize(&cq->cq_uk, info->cq_base, info->cq_size)
-                cq->cq_base = cq_base;
+                cq->cq_base = cq_base; -> change origin cq's cq_base to new cq_base
                 cq->cq_size = cq_size;
                 IRDMA_RING_INIT(cq->cq_ring, cq->cq_size);
                 cq->polarity = 1;
@@ -16719,7 +16919,7 @@ mlx kernel resize cq:
     if (udata)
         resize_user(dev, cq, entries, udata, &cqe_size)
             umem = ib_umem_get(&dev->ib_dev, ucmd.buf_addr, (size_t)ucmd.cqe_size * entries, IB_ACCESS_LOCAL_WRITE)
-            cq->resize_umem = umem
+            cq->resize_umem = umem -> retrive resize_cq_buf
 			*cqe_size = ucmd.cqe_size
         page_size = mlx5_umem_find_best_cq_quantized_pgoff(
 			cq->resize_umem, cqc, log_page_size,
@@ -16767,7 +16967,19 @@ mlx kernel resize cq:
 					frag = ix >> fbc->log_frag_strides;
 					return fbc->frags[frag].buf + ((fbc->frag_sz_m1 & ix) << fbc->log_stride)
 				memcpy(dcqe, scqe, dsize)
+				++cq->mcq.cons_index
 
+
+
+
+irdma_initialize_ilq -> create iwarp local queue for cm
+
+
+irdma_initialize_ieq -> create iwarp exception queue
+	irdma_puda_create_rsrc
+		irdma_puda_cq_create
+			irdma_cqp_cq_create_cmd
+				cqp_info->cqp_cmd = IRDMA_OP_CQ_CREATE
 
 
 
@@ -16803,9 +17015,10 @@ IB_USER_VERBS_CMD_CREATE_CQ -> ib_uverbs_create_cq
                 cq->cq_pa = info->cq_base_pa
                 cq->virtual_map = info->virtual_map
                 cq->shadow_area_pa = info->shadow_area_pa
-            irdma_sc_cq_create
-                set_64bit_val(wqe, 32, (cq->virtual_map ? 0 : cq->cq_pa))
-                set_64bit_val(wqe, 40, cq->shadow_area_pa)
+			cqp_info->cqp_cmd = IRDMA_OP_CQ_CREATE
+				irdma_sc_cq_create
+					set_64bit_val(wqe, 32, (cq->virtual_map ? 0 : cq->cq_pa))
+					set_64bit_val(wqe, 40, cq->shadow_area_pa)
 		obj->uevent.event_file = READ_ONCE(attrs->ufile->default_async_file)
 		resp.base.cq_handle = obj->uevent.uobject.id
 
@@ -16915,9 +17128,6 @@ irdma_reg_user_mr
 ib_uverbs_event_read
 
 
-mlx5_ib_cq_event
-	if (ibcq->event_handler)
-		ibcq->event_handler(&event, ibcq->cq_context)
 
 
 
@@ -16941,6 +17151,9 @@ irdma_create_qp
 cq_err_event_notifier
 	if (cq->event)
 			cq->event(cq, type) -> mlx5_ib_cq_event
+                if (ibcq->event_handler)
+                    ibcq->event_handler(&event, ibcq->cq_context)
+
 
 
 mlx5_ib_stage_dev_notifier_init
@@ -16958,6 +17171,13 @@ bitmap_find_next_zero_area - 查找连续对齐的零区域@map：搜索所基�
 
 
 gdr:
+
+mlx5 dmabuf: de8f847a5114ff7cfcdfc114af8485c431dec703
+RDMA/mlx5：添加对使用 Data-direct 的 DMABUF MR 注册的支持 添加对使用 Data-direct 设备的 DMABUF MR 注册的支持。在用户空间调用注册具有数据直接位设置的 DMABUF MR 时，将遵循以下算法。1) 使用用户输入参数（FD、偏移量、长度）和 DMA PF 设备从 IB 核心获取固定的 DMABUF umem。需要 DMA PF 设备以允许 IOMMU 启用 DMA PF 通过 PCI 访问用户缓冲区。2) 根据用户缓冲区 VA 到 IOVA 映射设置其条目来创建 KSM MKEY，其中 MKEY 是数据直接设备交叉 MKEY。此 KSM MKEY 不可更改，将用作 MR 缓存的一部分。创建它的 PD 是内部设备“数据直接”内核 PD。3) 使用交叉访问模式创建指向 KSM MKEY 的交叉 MKEY。 4) 通过将 KSM MKEY 添加到 mlx5_ib 设备上管理的“数据直接”MKEY 列表中来管理 KSM MKEY。5) 将使用其提供的 PD 创建的交叉 MKEY 返回给用户。在 DMA PF 解除绑定流程中，驱动程序将撤销 KSM 条目。一旦应用程序注销其 MKEY，最终的注销将在后台进行。注意：- 此版本仅支持 PINNED UMEM 模式，因此不依赖于 ODP。- 由于 KSM 的硬件转换，应用程序提供的 IOVA 必须是系统页面对齐的。- 交叉 MKEY 不会是 umrable 或 MR 缓存的一部分，因为我们无法通过 UMR 更改其交叉（即 KSM）MKEY。
+
+mlx5_ib_data_direct_init
+
+
 enum uverbs_methods_mr {
 	UVERBS_METHOD_DM_MR_REG,
 	UVERBS_METHOD_MR_DESTROY,
@@ -17039,3 +17259,70 @@ rbd_obj_write_object
 		ceph_monc_renew_subs(&osdc->client->monc)
 				send_request(req)
 					ceph_con_send(&osd->o_con, ceph_msg_get(req->r_request))
+
+
+
+
+ae code:
+/* Async Events codes */
+
+
+irdma_disconnect_worker
+	irdma_cm_disconn_true
+		last_ae == IRDMA_AE_RDMAP_ROE_BAD_LLP_CLOSE -> RDMA/irdma: Flush iWARP QP if modified to ERR from RTR state,  When connection establishment fails in iWARP mode, an app can drain the QPs and hang because flush isn't issued when the QP is modified from RTR state to error. Issue a flush in this case using function irdma_cm_disconn().  Update irdma_cm_disconn() to do flush when cm_id is NULL, which is the case when the QP is in RTR state and there is an error in the connection establishment
+
+
+huwei:
+static const struct ib_device_ops hns_roce_v2_dev_ops = {
+	.destroy_qp = hns_roce_v2_destroy_qp,
+		set_bit(HNS_ROCE_STOP_FLUSH_FLAG, &hr_qp->flush_flag)
+		flush_work(&hr_qp->flush_work.work)
+		if (hr_qp->cong_type == CONG_TYPE_DIP)
+			put_dip_ctx_idx(hr_dev, hr_qp) -> RDMA/hns：修复不同 dgid 映射到相同 dip_idx 的问题，DIP 算法要求 dgid 和 dip_idx 之间一一映射。目前使用队列“spare_idx”存储使用 DIP 算法的 QP 的 QPN。对于新的 dgid，使用 spare_idx 中的 QPN 作为 dip_idx。此方法缺乏对 QPN 进行重复数据删除的机制，这可能导致不同的 dgid 共享相同的 dip_idx 并破坏一一映射要求。此补丁用 xarray 替换 spare_idx，并引入 dip_idx 的 refcnt 来指示使用此 dip_idx 的 QP 数量。dip_idx 管理的状态机实现为：* xarray 中索引处的条目为空 - 这表示尚未创建相应的 dip_idx。 * xarray 中索引处的条目不为空，但 refcnt 为 0 -- 这表示相应的 dip_idx 已创建但尚未用作 dip_idx。 * xarray 中索引处的条目不为空，且 refcnt 非 0 -- 这表示相应的 dip_idx 正在被 refcnt 个 DIP QP 使用
+		ret = hns_roce_v2_destroy_qp_common(hr_dev, hr_qp, udata)
+			if (modify_qp_is_ok(hr_qp))
+				ret = hns_roce_v2_modify_qp(&hr_qp->ibqp, NULL, 0, hr_qp->state, IB_QPS_RESET, udata)
+			hns_roce_lock_cqs(send_cq, recv_cq)
+			if (!udata)
+				__hns_roce_v2_cq_clean(recv_cq, hr_qp->qpn, (hr_qp->ibqp.srq ? to_hr_srq(hr_qp->ibqp.srq) : NULL))
+					for (prod_index = hr_cq->cons_index; get_sw_cqe_v2(hr_cq, prod_index); ++prod_index) {
+						if (prod_index > hr_cq->cons_index + hr_cq->ib_cq.cqe)
+							break;
+					}
+					while ((int) --prod_index - (int) hr_cq->cons_index >= 0)
+						cqe = get_cqe_v2(hr_cq, prod_index & hr_cq->ib_cq.cqe)
+						memcpy(dest, cqe, hr_cq->cqe_size)
+					if (nfreed)
+						hr_cq->cons_index += nfreed
+						update_cq_db(hr_dev, hr_cq)
+				if (send_cq && send_cq != recv_cq)
+					__hns_roce_v2_cq_clean(send_cq, hr_qp->qpn, NULL)
+			hns_roce_qp_remove(hr_dev, hr_qp)
+				list_del(&hr_qp->node)
+				list_del(&hr_qp->sq_node)
+				list_del(&hr_qp->rq_node)
+				__xa_erase(xa, hr_qp->qpn)
+		hns_roce_qp_destroy(hr_dev, hr_qp, udata)
+			wait_for_completion(&hr_qp->free)
+			free_qpc(hr_dev, hr_qp);
+			free_qpn(hr_dev, hr_qp);
+			free_qp_buf(hr_dev, hr_qp);
+			free_kernel_wrid(hr_qp);
+			free_qp_db(hr_dev, hr_qp, udata);
+			mutex_destroy(&hr_qp->mutex);
+	.modify_cq = hns_roce_v2_modify_cq,
+	.poll_cq = hns_roce_v2_poll_cq,
+	.post_recv = hns_roce_v2_post_recv,
+	.post_send = hns_roce_v2_post_send,
+	.query_qp = hns_roce_v2_query_qp,
+	.req_notify_cq = hns_roce_v2_req_notify_cq,
+};
+
+
+
+mlx5 create_qp, qpc
+create_kernel_qp
+
+
+ib_uverbs_destroy_cq
+    

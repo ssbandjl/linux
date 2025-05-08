@@ -2858,20 +2858,6 @@ dmaengine_prep_interleaved_dma
 dmaengine_submit
 
 
-https://www.kernel.org/doc/html/v4.9/media/kapi/v4l2-videobuf2.html
-static const struct vb2_ops xvip_dma_queue_qops = {
-    .queue_setup = xvip_dma_queue_setup,
-    .buf_prepare = xvip_dma_buffer_prepare,
-    .buf_queue = xvip_dma_buffer_queue,
-    .wait_prepare = vb2_ops_wait_prepare,
-    .wait_finish = vb2_ops_wait_finish,
-    .start_streaming = xvip_dma_start_streaming,
-    .stop_streaming = xvip_dma_stop_streaming,
-};
-
-xvip_dma_buffer_queue
-
-
 static struct platform_driver xvip_composite_driver = {
     .driver = {
         .name = "xilinx-video",
@@ -4976,6 +4962,13 @@ static const struct vb2_ops xvip_dma_queue_qops = {
 xvip_dma_buffer_queue
 
 
+dma_buf:
+UVERBS_METHOD_REG_DMABUF_MR -> static int UVERBS_HANDLER(UVERBS_METHOD_REG_DMABUF_MR)
+	mr = pd->device->ops.reg_user_mr_dmabuf(pd, offset, length, iova, fd,
+						access_flags,
+						attrs)
+
+
 static struct platform_driver xvip_composite_driver = {
     .driver = {
         .name = "xilinx-video",
@@ -5210,6 +5203,9 @@ static const struct ib_device_ops irdma_dev_ops = {
 	.query_qp = irdma_query_qp,
 	.reg_user_mr = irdma_reg_user_mr,
 	.reg_user_mr_dmabuf = irdma_reg_user_mr_dmabuf,
+		umem_dmabuf = ib_umem_dmabuf_get_pinned(pd->device, start, len, fd, access)
+		iwmr = irdma_alloc_iwmr(&umem_dmabuf->umem, pd, virt, IRDMA_MEMREG_TYPE_MEM)
+		irdma_reg_user_mr_type_mem(iwmr, access, true)
 	.rereg_user_mr = irdma_rereg_user_mr,
 	.req_notify_cq = irdma_req_notify_cq,
 	.resize_cq = irdma_resize_cq,
@@ -9033,4 +9029,12 @@ puda: privileged UDA
 #10 0xffffffffc06dd772 in rxe_net_add () at drivers/infiniband/core/device.c:2859
 #11 0xffffffffc06cf063 in rxe_newlink () at drivers/infiniband/core/device.c:2859
 
+
+ksan:
+Documentation/dev-tools/kasan.rst
+
+
+
+
+rdma_user_mmap_entry_insert
 
