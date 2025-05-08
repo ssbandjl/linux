@@ -217,6 +217,8 @@ static void virtblk_done(struct virtqueue *vq)
 			if (likely(!blk_should_fake_timeout(req->q)))
 				blk_mq_complete_request(req);
 			req_done = true;
+			pr_debug_ffl("req_type:%s(%d), sector:%lld, ioprio:%d\n",
+				blk_op_type[vbr->out_hdr.type], vbr->out_hdr.type, vbr->out_hdr.sector, vbr->out_hdr.ioprio);
 		}
 		if (unlikely(virtqueue_is_broken(vq)))
 			break;
@@ -226,8 +228,6 @@ static void virtblk_done(struct virtqueue *vq)
 	if (req_done)
 		blk_mq_start_stopped_hw_queues(vblk->disk->queue, true);
 
-	pr_debug_ffl("req_type:%s(%d), sector:%lld, ioprio:%d\n",
-		blk_op_type[vbr->out_hdr.type], vbr->out_hdr.type, vbr->out_hdr.sector, vbr->out_hdr.ioprio);
 
 	spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
 }

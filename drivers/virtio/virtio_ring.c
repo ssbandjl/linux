@@ -980,6 +980,15 @@ static struct virtqueue *vring_create_virtqueue_split(
 }
 
 
+// #define pr_info_ffl(format, arg...)										\
+// 	pr_info("%s(), %s:%d, " format, __func__, __FILE__, __LINE__, ##arg)
+
+// #define pr_debug_ffl(format, arg...)										\
+// 	pr_debug("%s(), %s:%d, " format, __func__, __FILE__, __LINE__, ##arg)
+
+// #define pr_err_ffl(format, arg...)										\
+// 	pr_err("%s(), %s:%d, " format, __func__, __FILE__, __LINE__, ##arg)
+	
 /*
  * Packed ring specific functions - *_packed().
  */
@@ -991,6 +1000,10 @@ static void vring_unmap_state_packed(const struct vring_virtqueue *vq,
 
 	if (!vq->use_dma_api)
 		return;
+
+	// pr_info_ffl("flags:%d\n", state->flags);
+	// pr_info_ffl("addr:%llu\n", state->addr);
+	// pr_info_ffl("len:%d\n", state->len);
 
 	flags = state->flags;
 
