@@ -46,6 +46,12 @@
 #include "mad_priv.h"
 #include "restrack.h"
 
+#ifndef pr_infos
+#define pr_infos(format, arg...)						\
+	pr_info("%s(), %s:%d, " format, __func__, __FILE__, __LINE__,	\
+		##arg)
+#endif
+
 /* Total number of ports combined across all struct ib_devices's */
 #define RDMA_MAX_PORTS 8192
 

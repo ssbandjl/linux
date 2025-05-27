@@ -425,13 +425,17 @@ EXPORT_SYMBOL(rdma_move_ah_attr);
 static int rdma_check_ah_attr(struct ib_device *device,
 			      struct rdma_ah_attr *ah_attr)
 {
-	if (!rdma_is_port_valid(device, ah_attr->port_num))
+	if (!rdma_is_port_valid(device, ah_attr->port_num)) {
+		pr_infos("err, port_num:%d\n", ah_attr->port_num);
 		return -EINVAL;
+	}
 
 	if ((rdma_is_grh_required(device, ah_attr->port_num) ||
 	     ah_attr->type == RDMA_AH_ATTR_TYPE_ROCE) &&
-	    !(ah_attr->ah_flags & IB_AH_GRH))
+	    !(ah_attr->ah_flags & IB_AH_GRH)) {
+		pr_infos("err,  ah_attr->type:%d, ah_attr->ah_flags:%d\n",  ah_attr->type, ah_attr->ah_flags);
 		return -EINVAL;
+	    }
 
 	if (ah_attr->grh.sgid_attr) {
 		/*
@@ -439,8 +443,11 @@ static int rdma_check_ah_attr(struct ib_device *device,
 		 * parameters
 		 */
 		if (ah_attr->grh.sgid_attr->index != ah_attr->grh.sgid_index ||
-		    ah_attr->grh.sgid_attr->port_num != ah_attr->port_num)
+		    ah_attr->grh.sgid_attr->port_num != ah_attr->port_num) {
+			pr_infos("err, ah_attr->grh.sgid_attr->index:%d, ah_attr->grh.sgid_index:%d, ah_attr->grh.sgid_attr->port_num:%d, ah_attr->port_num:%d\n",
+				ah_attr->grh.sgid_attr->index, ah_attr->grh.sgid_index, ah_attr->grh.sgid_attr->port_num, ah_attr->port_num);
 			return -EINVAL;
+		    }
 	}
 	return 0;
 }
@@ -460,8 +467,10 @@ static int rdma_fill_sgid_attr(struct ib_device *device,
 	*old_sgid_attr = ah_attr->grh.sgid_attr;
 
 	ret = rdma_check_ah_attr(device, ah_attr);
-	if (ret)
+	if (ret) {
+		pr_infos("err:%d\n", ret);
 		return ret;
+	}
 
 	if (!(ah_attr->ah_flags & IB_AH_GRH))
 		return 0;
@@ -472,8 +481,10 @@ static int rdma_fill_sgid_attr(struct ib_device *device,
 
 	sgid_attr =
 		rdma_get_gid_attr(device, ah_attr->port_num, grh->sgid_index);
-	if (IS_ERR(sgid_attr))
+	if (IS_ERR(sgid_attr)) {
+		pr_infos("err:%d\n", ret);
 		return PTR_ERR(sgid_attr);
+	}
 
 	/* Move ownerhip of the kref into the ah_attr */
 	grh->sgid_attr = sgid_attr;
@@ -1771,7 +1782,7 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 		ret = rdma_fill_sgid_attr(qp->device, &attr->ah_attr,
 					  &old_sgid_attr_av);
 		if (ret) {
-			pr_infos("Err:%d\n", ret);
+			pr_infos("Err:%d, attr_mask:%d\n", ret, attr_mask);
 			return ret;
 		}
 

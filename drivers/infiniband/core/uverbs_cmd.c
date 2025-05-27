@@ -1764,21 +1764,21 @@ static int modify_qp(struct uverbs_attr_bundle *attrs,
 			       attrs);
 	if (!qp) {
 		ret = -EINVAL;
-		pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __FILE__);
+		pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
 		goto out;
 	}
 
 	if ((cmd->base.attr_mask & IB_QP_PORT) &&
 	    !rdma_is_port_valid(qp->device, cmd->base.port_num)) {
 		ret = -EINVAL;
-		pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __FILE__);
+		pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
 		goto release_qp;
 	}
 
 	if ((cmd->base.attr_mask & IB_QP_AV)) {
 		if (!rdma_is_port_valid(qp->device, cmd->base.dest.port_num)) {
 			ret = -EINVAL;
-			pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __FILE__);
+			pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
 			goto release_qp;
 		}
 
@@ -1800,7 +1800,7 @@ static int modify_qp(struct uverbs_attr_bundle *attrs,
 		 */
 			if (cmd->base.dest.port_num != qp->real_qp->port) {
 				ret = -EINVAL;
-				pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __FILE__);
+				pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
 				goto release_qp;
 			}
 		} else {
@@ -1821,7 +1821,7 @@ static int modify_qp(struct uverbs_attr_bundle *attrs,
 			     == (IB_QP_AV | IB_QP_PORT)) &&
 			    cmd->base.port_num != cmd->base.dest.port_num) {
 				ret = -EINVAL;
-				pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __FILE__);
+				pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
 				goto release_qp;
 			}
 			if ((cmd->base.attr_mask & (IB_QP_AV | IB_QP_PORT))
@@ -1837,7 +1837,7 @@ static int modify_qp(struct uverbs_attr_bundle *attrs,
 	    !rdma_is_port_valid(qp->device, cmd->base.alt_dest.port_num) ||
 	    cmd->base.alt_port_num != cmd->base.alt_dest.port_num)) {
 		ret = -EINVAL;
-		pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __FILE__);
+		pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
 		goto release_qp;
 	}
 
@@ -1846,7 +1846,7 @@ static int modify_qp(struct uverbs_attr_bundle *attrs,
 	    (cmd->base.attr_mask & IB_QP_STATE &&
 	    cmd->base.qp_state > IB_QPS_ERR)) {
 		ret = -EINVAL;
-		pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __FILE__);
+		pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
 		goto release_qp;
 	}
 
@@ -1906,13 +1906,15 @@ static int modify_qp(struct uverbs_attr_bundle *attrs,
 				      modify_qp_mask(qp->qp_type,
 						     cmd->base.attr_mask),
 				      &attrs->driver_udata);
+	if (ret != 0 )
+		pr_err("ret:%d, %s(), %s:%d\n", ret, __FUNCTION__, __FILE__, __LINE__);
 
 release_qp:
 	rdma_lookup_put_uobject(&qp->uobject->uevent.uobject,
 				UVERBS_LOOKUP_READ);
 out:
 	kfree(attr);
-	pr_err("ret:%d, %s(), %s:%d\n", ret, __FUNCTION__, __FILE__, __FILE__);
+	pr_err("ret:%d, %s(), %s:%d\n", ret, __FUNCTION__, __FILE__, __LINE__);
 	return ret;
 }
 

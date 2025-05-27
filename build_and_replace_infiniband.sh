@@ -7,3 +7,4 @@ cp core/ib_core.ko /lib/modules/5.15.0+/kernel/drivers/infiniband/core/ib_core.k
 cp core/ib_uverbs.ko /lib/modules/5.15.0+/kernel/drivers/infiniband/core/ib_uverbs.ko
 cd -
 
+echo -e "Build and replace ib_core, ib_uverbs ok"

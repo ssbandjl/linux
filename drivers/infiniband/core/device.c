@@ -1367,6 +1367,7 @@ int ib_register_device(struct ib_device *device, const char *name,
 {
 	int ret;
 
+	pr_infos("Register ib dev:%s\n", name);
 	ret = assign_name(device, name);
 	if (ret)
 		return ret;
@@ -2753,6 +2754,7 @@ static int __init ib_core_init(void)
 {
 	int ret;
 
+	pr_infos("Init IB core\n");
 	ib_wq = alloc_workqueue("infiniband", 0, 0);
 	if (!ib_wq)
 		return -ENOMEM;
