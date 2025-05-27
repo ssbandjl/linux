@@ -1,6 +1,6 @@
 # apt-get install aptitude -y
 # aptitude install zstd
-# sudo apt-get install -y libzstd-dev libncurses5-dev libssl-dev bison flex libelf-dev gcc make openssl libc6-dev 
+# sudo apt-get install -y zstd libzstd-dev libncurses5-dev libssl-dev bison flex libelf-dev gcc make openssl libc6-dev 
 
 # make menuconfig
 
