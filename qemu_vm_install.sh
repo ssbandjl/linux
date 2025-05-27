@@ -49,6 +49,11 @@ CONFIG_CMA=y
 make -j32
 
 make headers_install
+
+make headers_install INSTALL_HDR_PATH=/usr/src/linux-headers-5.15.0+
+ln -s /usr/src/linux-headers-5.15.0+ /lib/modules/5.15.0+/build
+
+
 make defconfig
 make prepare
 make modules_prepare
