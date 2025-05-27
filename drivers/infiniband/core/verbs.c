@@ -433,8 +433,15 @@ static int rdma_check_ah_attr(struct ib_device *device,
 	if ((rdma_is_grh_required(device, ah_attr->port_num) ||
 	     ah_attr->type == RDMA_AH_ATTR_TYPE_ROCE) &&
 	    !(ah_attr->ah_flags & IB_AH_GRH)) {
-		if (rdma_is_grh_required(device, ah_attr->port_num))
-			pr_infos("rdma_is_grh_required,  ah_attr->type:%d, ah_attr->ah_flags:%d,  ah_attr->port_num:%d\n",  ah_attr->type, ah_attr->ah_flags, ah_attr->port_num);
+		if (rdma_is_grh_required(device, ah_attr->port_num)) {
+			pr_infos("rdma_is_grh_required,  ah_attr->type:%d, ah_attr->ah_flags:%d,  ah_attr->port_num:%d, cap_flag:%d\n",
+				ah_attr->type, ah_attr->ah_flags, ah_attr->port_num, device->port_data[ah_attr->port_num].immutable.core_cap_flags);
+		}
+		
+		if (ah_attr->ah_flags & IB_AH_GRH) {
+			pr_infos("AG_GRH\n");
+		}
+
 		pr_infos("err,  ah_attr->type:%d, ah_attr->ah_flags:%d,  ah_attr->port_num:%d\n",  ah_attr->type, ah_attr->ah_flags, ah_attr->port_num);
 		return -EINVAL;
 	    }
