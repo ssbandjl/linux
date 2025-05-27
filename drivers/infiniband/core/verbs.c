@@ -55,6 +55,12 @@
 #include "core_priv.h"
 #include <trace/events/rdma_core.h>
 
+#ifndef pr_infos
+#define pr_infos(format, arg...)						\
+	pr_info("%s(), %s:%d, " format, __func__, __FILE__, __LINE__,	\
+		##arg)
+#endif
+
 static int ib_resolve_eth_dmac(struct ib_device *device,
 			       struct rdma_ah_attr *ah_attr);
 
@@ -1764,8 +1770,10 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 	if (attr_mask & IB_QP_AV) {
 		ret = rdma_fill_sgid_attr(qp->device, &attr->ah_attr,
 					  &old_sgid_attr_av);
-		if (ret)
+		if (ret) {
+			pr_infos("Err:%d\n", ret);
 			return ret;
+		}
 
 		if (attr->ah_attr.type == RDMA_AH_ATTR_TYPE_ROCE &&
 		    is_qp_type_connected(qp)) {
@@ -1779,14 +1787,17 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 			if (udata) {
 				ret = ib_resolve_eth_dmac(qp->device,
 							  &attr->ah_attr);
-				if (ret)
+				if (ret) {
+					pr_infos("Err:%d\n", ret);
 					goto out_av;
+				}
 			}
 			slave = rdma_lag_get_ah_roce_slave(qp->device,
 							   &attr->ah_attr,
 							   GFP_KERNEL);
 			if (IS_ERR(slave)) {
 				ret = PTR_ERR(slave);
+				pr_infos("Err:%d\n", ret);
 				goto out_av;
 			}
 			attr->xmit_slave = slave;
@@ -1802,8 +1813,10 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 		 */
 		ret = rdma_fill_sgid_attr(qp->device, &attr->alt_ah_attr,
 					  &old_sgid_attr_alt_av);
-		if (ret)
+		if (ret) {
+			pr_infos("Err:%d\n", ret);
 			goto out_av;
+		}
 
 		/*
 		 * Today the core code can only handle alternate paths and APM
@@ -1813,6 +1826,7 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 				       attr->alt_ah_attr.port_num) &&
 		      rdma_protocol_ib(qp->device, port))) {
 			ret = -EINVAL;
+			pr_infos("Err:%d\n", ret);
 			goto out;
 		}
 	}
@@ -1842,8 +1856,10 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 		rdma_counter_bind_qp_auto(qp, attr->port_num);
 
 	ret = ib_security_modify_qp(qp, attr, attr_mask, udata);
-	if (ret)
+	if (ret) {
+		pr_infos("Err:%d\n", ret);
 		goto out;
+	}
 
 	if (attr_mask & IB_QP_PORT)
 		qp->port = attr->port_num;
@@ -1862,6 +1878,7 @@ out_av:
 		rdma_lag_put_ah_roce_slave(attr->xmit_slave);
 		rdma_unfill_sgid_attr(&attr->ah_attr, old_sgid_attr_av);
 	}
+	pr_infos("ret:%d\n", ret);
 	return ret;
 }
 
