@@ -1367,10 +1367,10 @@ int ib_register_device(struct ib_device *device, const char *name,
 {
 	int ret;
 
-	pr_infos("Register ib dev:%s\n", name);
 	ret = assign_name(device, name);
 	if (ret)
 		return ret;
+	pr_infos("Register ib dev:%s\n", name);
 
 	/*
 	 * If the caller does not provide a DMA capable device then the IB core

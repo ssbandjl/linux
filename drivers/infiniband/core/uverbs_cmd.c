@@ -1914,7 +1914,6 @@ release_qp:
 				UVERBS_LOOKUP_READ);
 out:
 	kfree(attr);
-	pr_err("ret:%d, %s(), %s:%d\n", ret, __FUNCTION__, __FILE__, __LINE__);
 	return ret;
 }
 
