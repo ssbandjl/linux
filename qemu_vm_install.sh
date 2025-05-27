@@ -1,3 +1,7 @@
+cp /boot/config-$(uname -r) .config
+make olddefconfig  # auto-accept defaults for new options
+
+
 # mount -t 9p -o trans=virtio kernelmake /root/project/linux/v5.15/linux
 make modules_install
 make install
