@@ -1,0 +1,4 @@
+#define dbg(format, arg...)						\
+	pr_info("%s(), %s:%d, (pid:%d): " format, __func__, __FILE__, __LINE__,	\
+		current->pid, ##arg)
+
