@@ -1730,8 +1730,10 @@ static void copy_ah_attr_from_uverbs(struct ib_device *dev,
 				     struct rdma_ah_attr *rdma_attr,
 				     struct ib_uverbs_qp_dest *uverb_attr)
 {
+	pr_infos("Copy AH attr\n");
 	rdma_attr->type = rdma_ah_find_type(dev, uverb_attr->port_num);
 	if (uverb_attr->is_global) {
+		pr_infos("Copy AH attr, is_global\n");
 		rdma_ah_set_grh(rdma_attr, NULL,
 				uverb_attr->flow_label,
 				uverb_attr->sgid_index,
@@ -1739,6 +1741,7 @@ static void copy_ah_attr_from_uverbs(struct ib_device *dev,
 				uverb_attr->traffic_class);
 		rdma_ah_set_dgid_raw(rdma_attr, uverb_attr->dgid);
 	} else {
+		pr_infos("Copy AH attr, not_global\n");
 		rdma_ah_set_ah_flags(rdma_attr, 0);
 	}
 	rdma_ah_set_dlid(rdma_attr, uverb_attr->dlid);
@@ -1776,6 +1779,7 @@ static int modify_qp(struct uverbs_attr_bundle *attrs,
 	}
 
 	if ((cmd->base.attr_mask & IB_QP_AV)) {
+		pr_infos("Modify QP with IB_QP_AV\n");
 		if (!rdma_is_port_valid(qp->device, cmd->base.dest.port_num)) {
 			ret = -EINVAL;
 			pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
