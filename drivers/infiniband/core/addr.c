@@ -51,6 +51,8 @@
 #include <rdma/rdma_netlink.h>
 #include <net/netlink.h>
 
+#include <linux/types.h>
+
 #include "core_priv.h"
 
 struct addr_req {
@@ -560,7 +562,18 @@ static int addr_resolve(struct sockaddr *src_in,
 	struct dst_entry *dst = NULL;
 	unsigned int ndev_flags = 0;
 	struct rtable *rt = NULL;
+
+	u8 *ip;
 	int ret;
+
+
+	struct sockaddr_in *sin = (struct sockaddr_in *)src_in;
+	ip = (u8 *)&sin->sin_addr.s_addr;
+	pr_infos("SRC IPv4: %pI4\n", ip);
+
+	sin = (struct sockaddr_in *)dst_in;
+	ip = (u8 *)&sin->sin_addr.s_addr;
+	pr_infos("DST IPv4: %pI4\n", ip);
 
 	if (!addr->net) {
 		pr_warn_ratelimited("%s: missing namespace\n", __func__);
@@ -581,29 +594,36 @@ static int addr_resolve(struct sockaddr *src_in,
 		 */
 		ret = set_addr_netns_by_gid_rcu(addr);
 		if (ret) {
+			pr_infos("ret:%d\n", ret);
 			rcu_read_unlock();
 			return ret;
 		}
 	}
 	if (src_in->sa_family == AF_INET) {
 		ret = addr4_resolve(src_in, dst_in, addr, &rt);
+		pr_infos("ret:%d\n", ret);
 		dst = &rt->dst;
 	} else {
 		ret = addr6_resolve(src_in, dst_in, addr, &dst);
+		pr_infos("ret:%d\n", ret);
 	}
 	if (ret) {
+		pr_infos("ret:%d\n", ret);
 		rcu_read_unlock();
 		goto done;
 	}
 	ret = rdma_set_src_addr_rcu(addr, &ndev_flags, dst_in, dst);
+	pr_infos("ret:%d\n", ret);
 	rcu_read_unlock();
 
 	/*
 	 * Resolve neighbor destination address if requested and
 	 * only if src addr translation didn't fail.
 	 */
-	if (!ret && resolve_neigh)
+	if (!ret && resolve_neigh) {
 		ret = addr_resolve_neigh(dst, dst_in, addr, ndev_flags, seq);
+		pr_infos("ret:%d\n", ret);
+	}
 
 	if (src_in->sa_family == AF_INET)
 		ip_rt_put(rt);
@@ -710,6 +730,7 @@ int rdma_resolve_ip(struct sockaddr *src_addr, const struct sockaddr *dst_addr,
 		break;
 	default:
 		ret = req->status;
+		pr_infos("ret:%d\n", ret);
 		goto err;
 	}
 	return ret;
@@ -832,7 +853,7 @@ int rdma_addr_find_l2_eth_by_grh(const union ib_gid *sgid,
 	dev_addr.sgid_attr = sgid_attr;
 
 	init_completion(&ctx.comp);
-	pr_infos("rdma_resolve_ip\n");
+	pr_infos("rdma_resolve_ip, dmac:%pM\n", dmac);
 	ret = rdma_resolve_ip((struct sockaddr *)&sgid_addr,
 			      (struct sockaddr *)&dgid_addr, &dev_addr, 1000,
 			      resolve_cb, true, &ctx);
