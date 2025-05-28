@@ -832,17 +832,22 @@ int rdma_addr_find_l2_eth_by_grh(const union ib_gid *sgid,
 	dev_addr.sgid_attr = sgid_attr;
 
 	init_completion(&ctx.comp);
+	pr_infos("rdma_resolve_ip\n");
 	ret = rdma_resolve_ip((struct sockaddr *)&sgid_addr,
 			      (struct sockaddr *)&dgid_addr, &dev_addr, 1000,
 			      resolve_cb, true, &ctx);
-	if (ret)
+	if (ret) {
+		pr_infos("rdma_resolve_ip err:%d\n", ret);
 		return ret;
+	}
 
 	wait_for_completion(&ctx.comp);
 
 	ret = ctx.status;
-	if (ret)
+	if (ret) {
+		pr_infos("comp err:%d\n", ret);
 		return ret;
+	}
 
 	memcpy(dmac, dev_addr.dst_dev_addr, ETH_ALEN);
 	*hoplimit = dev_addr.hoplimit;

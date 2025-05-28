@@ -791,6 +791,7 @@ static int ib_resolve_unicast_gid_dmac(struct ib_device *device,
 	    sgid_attr->gid_type == IB_GID_TYPE_ROCE) {
 		rdma_get_ll_mac((struct in6_addr *)grh->dgid.raw,
 				ah_attr->roce.dmac);
+		pr_infos("rdma_get_ll_mac\n");
 		return ret;
 	}
 
@@ -1750,6 +1751,7 @@ static int ib_resolve_eth_dmac(struct ib_device *device,
 	int ret = 0;
 
 	if (rdma_is_multicast_addr((struct in6_addr *)ah_attr->grh.dgid.raw)) {
+		pr_infos("Multicast addr\n");
 		if (ipv6_addr_v4mapped((struct in6_addr *)ah_attr->grh.dgid.raw)) {
 			__be32 addr = 0;
 
@@ -1760,6 +1762,7 @@ static int ib_resolve_eth_dmac(struct ib_device *device,
 					(char *)ah_attr->roce.dmac);
 		}
 	} else {
+		pr_infos("ib_resolve_unicast_gid_dmac\n");
 		ret = ib_resolve_unicast_gid_dmac(device, ah_attr);
 	}
 	return ret;
@@ -1805,7 +1808,7 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 				ret = ib_resolve_eth_dmac(qp->device,
 							  &attr->ah_attr);
 				if (ret) {
-					pr_infos("Err:%d\n", ret);
+					pr_infos("ib_resolve_eth_dmac err:%d\n", ret);
 					goto out_av;
 				}
 			}
