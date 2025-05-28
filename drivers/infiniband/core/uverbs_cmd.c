@@ -1932,6 +1932,9 @@ static int ib_uverbs_modify_qp(struct uverbs_attr_bundle *attrs)
 
 	if (cmd.base.attr_mask & ~IB_QP_ATTR_STANDARD_BITS)
 		return -EOPNOTSUPP;
+	
+	if (cmd.base.attr_mask & IB_QP_AV)
+		pr_infos("modify qp with IB_QP_AV\n");
 
 	return modify_qp(attrs, &cmd);
 }
