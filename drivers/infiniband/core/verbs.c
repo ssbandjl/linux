@@ -440,7 +440,7 @@ static int rdma_check_ah_attr(struct ib_device *device,
 			pr_infos("AG_GRH\n");
 		}
 
-		pr_infos("err,  ah_attr->type:%d, ah_attr->ah_flags:%d,  ah_attr->port_num:%d\n",  ah_attr->type, ah_attr->ah_flags, ah_attr->port_num);
+		// pr_infos("err,  ah_attr->type:%d, ah_attr->ah_flags:%d,  ah_attr->port_num:%d\n",  ah_attr->type, ah_attr->ah_flags, ah_attr->port_num);
 		return -EINVAL;
 	    }
 
@@ -1898,7 +1898,7 @@ out_av:
 		rdma_lag_put_ah_roce_slave(attr->xmit_slave);
 		rdma_unfill_sgid_attr(&attr->ah_attr, old_sgid_attr_av);
 	}
-	pr_infos("ret:%d\n", ret);
+	// pr_infos("ret:%d\n", ret);
 	return ret;
 }
 

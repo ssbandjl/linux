@@ -1779,7 +1779,7 @@ static int modify_qp(struct uverbs_attr_bundle *attrs,
 	}
 
 	if ((cmd->base.attr_mask & IB_QP_AV)) {
-		pr_infos("Modify QP with IB_QP_AV\n");
+		// pr_infos("Modify QP with IB_QP_AV\n");
 		if (!rdma_is_port_valid(qp->device, cmd->base.dest.port_num)) {
 			ret = -EINVAL;
 			pr_err("%s(), %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
@@ -1933,8 +1933,8 @@ static int ib_uverbs_modify_qp(struct uverbs_attr_bundle *attrs)
 	if (cmd.base.attr_mask & ~IB_QP_ATTR_STANDARD_BITS)
 		return -EOPNOTSUPP;
 	
-	if (cmd.base.attr_mask & IB_QP_AV)
-		pr_infos("modify qp with IB_QP_AV\n");
+	// if (cmd.base.attr_mask & IB_QP_AV)
+	// 	pr_infos("modify qp with IB_QP_AV\n");
 
 	return modify_qp(attrs, &cmd);
 }
