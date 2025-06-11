@@ -601,11 +601,13 @@ static int addr_resolve(struct sockaddr *src_in,
 	}
 	if (src_in->sa_family == AF_INET) {
 		ret = addr4_resolve(src_in, dst_in, addr, &rt);
-		pr_infos("ret:%d\n", ret);
+		if (ret !=0 )
+			pr_infos("Resolve Ipv4 failed, ret:%d\n", ret);
 		dst = &rt->dst;
 	} else {
 		ret = addr6_resolve(src_in, dst_in, addr, &dst);
-		pr_infos("ret:%d\n", ret);
+		if (ret != 0 )
+		pr_infos("Resolve Ipv6 failed, ret:%d\n", ret);
 	}
 	if (ret) {
 		pr_infos("ret:%d\n", ret);
@@ -613,7 +615,8 @@ static int addr_resolve(struct sockaddr *src_in,
 		goto done;
 	}
 	ret = rdma_set_src_addr_rcu(addr, &ndev_flags, dst_in, dst);
-	pr_infos("ret:%d\n", ret);
+	if (ret != 0 )
+		pr_infos("Rdma set src addr rcu failed, ret:%d\n", ret);
 	rcu_read_unlock();
 
 	/*
