@@ -12,6 +12,9 @@ cp core/ib_core.ko /lib/modules/`uname -r`/kernel/drivers/infiniband/core/ib_cor
 cp core/ib_uverbs.ko /lib/modules/`uname -r`/kernel/drivers/infiniband/core/ib_uverbs.ko
 cp core/iw_cm.ko /lib/modules/`uname -r`/kernel/drivers/infiniband/core/iw_cm.ko
 depmod -a
+modinfo ib_core|grep file
+modinfo ib_uverbs|grep file
+modinfo iw_cm|grep file
 cd -
 
 echo -e "Build and replace ib_core, ib_uverbs ok"
