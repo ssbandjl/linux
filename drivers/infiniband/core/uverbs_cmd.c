@@ -1733,7 +1733,7 @@ static void copy_ah_attr_from_uverbs(struct ib_device *dev,
 	// pr_infos("Copy AH attr\n");
 	rdma_attr->type = rdma_ah_find_type(dev, uverb_attr->port_num);
 	if (uverb_attr->is_global) {
-		pr_infos("Copy AH attr, is_global, dgid(IPv6):%pI6\n", uverb_attr->dgid);
+		// pr_infos("Copy AH attr, is_global, dgid(IPv6):%pI6\n", uverb_attr->dgid);
 		rdma_ah_set_grh(rdma_attr, NULL,
 				uverb_attr->flow_label,
 				uverb_attr->sgid_index,

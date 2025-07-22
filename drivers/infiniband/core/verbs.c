@@ -1751,7 +1751,7 @@ static int ib_resolve_eth_dmac(struct ib_device *device,
 	int ret = 0;
 
 	if (rdma_is_multicast_addr((struct in6_addr *)ah_attr->grh.dgid.raw)) {
-		pr_infos("Multicast addr\n");
+		// pr_infos("Multicast addr\n");
 		if (ipv6_addr_v4mapped((struct in6_addr *)ah_attr->grh.dgid.raw)) {
 			__be32 addr = 0;
 
@@ -1762,7 +1762,7 @@ static int ib_resolve_eth_dmac(struct ib_device *device,
 					(char *)ah_attr->roce.dmac);
 		}
 	} else {
-		pr_infos("ib_resolve_unicast_gid_dmac\n");
+		// pr_infos("ib_resolve_unicast_gid_dmac\n");
 		ret = ib_resolve_unicast_gid_dmac(device, ah_attr);
 	}
 	return ret;

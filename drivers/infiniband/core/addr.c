@@ -856,7 +856,7 @@ int rdma_addr_find_l2_eth_by_grh(const union ib_gid *sgid,
 	dev_addr.sgid_attr = sgid_attr;
 
 	init_completion(&ctx.comp);
-	pr_infos("rdma_resolve_ip, dmac:%pM\n", dmac);
+	// pr_infos("rdma_resolve_ip, dmac:%pM\n", dmac);
 	ret = rdma_resolve_ip((struct sockaddr *)&sgid_addr,
 			      (struct sockaddr *)&dgid_addr, &dev_addr, 1000,
 			      resolve_cb, true, &ctx);
