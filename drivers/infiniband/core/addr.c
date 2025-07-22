@@ -569,11 +569,11 @@ static int addr_resolve(struct sockaddr *src_in,
 
 	struct sockaddr_in *sin = (struct sockaddr_in *)src_in;
 	ip = (u8 *)&sin->sin_addr.s_addr;
-	pr_infos("SRC IPv4: %pI4\n", ip);
+	// pr_infos("SRC IPv4: %pI4\n", ip);
 
 	sin = (struct sockaddr_in *)dst_in;
 	ip = (u8 *)&sin->sin_addr.s_addr;
-	pr_infos("DST IPv4: %pI4\n", ip);
+	// pr_infos("DST IPv4: %pI4\n", ip);
 
 	if (!addr->net) {
 		pr_warn_ratelimited("%s: missing namespace\n", __func__);
@@ -594,7 +594,7 @@ static int addr_resolve(struct sockaddr *src_in,
 		 */
 		ret = set_addr_netns_by_gid_rcu(addr);
 		if (ret) {
-			pr_infos("ret:%d\n", ret);
+			// pr_infos("ret:%d\n", ret);
 			rcu_read_unlock();
 			return ret;
 		}
@@ -610,7 +610,7 @@ static int addr_resolve(struct sockaddr *src_in,
 		pr_infos("Resolve Ipv6 failed, ret:%d\n", ret);
 	}
 	if (ret) {
-		pr_infos("ret:%d\n", ret);
+		// pr_infos("ret:%d\n", ret);
 		rcu_read_unlock();
 		goto done;
 	}
@@ -625,7 +625,7 @@ static int addr_resolve(struct sockaddr *src_in,
 	 */
 	if (!ret && resolve_neigh) {
 		ret = addr_resolve_neigh(dst, dst_in, addr, ndev_flags, seq);
-		pr_infos("ret:%d\n", ret);
+		// pr_infos("ret:%d\n", ret);
 	}
 
 	if (src_in->sa_family == AF_INET)

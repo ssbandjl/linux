@@ -590,7 +590,7 @@ struct ib_ah *rdma_create_ah(struct ib_pd *pd, struct rdma_ah_attr *ah_attr,
 	struct ib_ah *ah;
 	int ret;
 	
-	pr_infos("rdma_fill_sgid_attr\n");
+	// pr_infos("rdma_fill_sgid_attr\n");
 	ret = rdma_fill_sgid_attr(pd->device, ah_attr, &old_sgid_attr);
 	if (ret)
 		return ERR_PTR(ret);
